@@ -112,14 +112,6 @@ class Tube:
     def _build_chain(self):
         pts = neville_sample(self.waypoints, self.n_samples)
         self._curve_pts = pts               # (n_samples, 3)
-        K = self.n_samples - 1
-
-        self._p0   = pts[:-1].copy()        # (K, 3) — segment start
-        self._p1   = pts[1:].copy()         # (K, 3) — segment end
-        self._ba   = self._p1 - self._p0   # (K, 3) — segment vectors
-        self._baba = (self._ba * self._ba).sum(axis=1)  # (K,) = |ba|²
-        norms      = np.sqrt(self._baba)
-        self._ax   = self._ba / (norms[:, None] + 1e-30)        # (K, 3) unit tangent
 
         # Precompute tangent at each sample point for fiber-axis export
         tangents = np.gradient(pts, axis=0)
@@ -199,21 +191,33 @@ class Tube:
         return t_enter, t_exit, n_enter, n_exit
 
     def _intersect_batch(self, o, d):
-        """Intersect one batch of B rays against all K capsules."""
-        B = len(o)
-        K = len(self._p0)
-        r = self.radius
+        """Intersect a batch of B rays against the swept tube surface.
 
-        p0   = self._p0    # (K, 3)
-        p1   = self._p1    # (K, 3)
-        ba   = self._ba    # (K, 3)
-        baba = self._baba  # (K,)
-        ax   = self._ax    # (K, 3)
+        The tube surface is the union of:
+          • K cylinder barrels — one per spline span, clipped to their span.
+          • N_s sphere caps   — one at every sample point (fills the elbow gap
+            at each curved junction).
 
-        # oa[b, k, :] = o[b] - p0[k]  — (B, K, 3)
-        oa = o[:, None, :] - p0[None, :, :]
+        Sphere cap normals (P − center)/r equal the adjacent cylinder barrel
+        normals at the boundary circle, so the surface is C0-smooth everywhere.
 
-        # (B, K) dot products — use element-wise ops instead of einsum
+        Exit is resolved by preferring a cylinder barrel tx (avoids a sphere
+        junction exit cutting off a longer cylinder path); sphere tx is the
+        fallback for rays that enter and exit purely through an elbow cap.
+        """
+        B    = len(o)
+        r    = self.radius
+        pts  = self._curve_pts      # (n_samples, 3)
+        p0   = pts[:-1]             # (K, 3)
+        ba   = pts[1:] - p0        # (K, 3)
+        baba = (ba * ba).sum(1)    # (K,)
+        ax   = ba / (np.sqrt(baba)[:, None] + 1e-30)   # (K, 3) unit tangent
+        K    = len(p0)
+        N_s  = len(pts)             # number of sphere caps
+
+        # oa[b, k] = o[b] - p0[k]  →  (B, K, 3)
+        oa   = o[:, None, :] - p0[None, :, :]
+
         bard = d @ ba.T                           # (B, K)
         baoa = np.einsum("bki,ki->bk", oa, ba)   # (B, K)
         rdoa = np.einsum("bi,bki->bk", d, oa)    # (B, K)
@@ -221,147 +225,99 @@ class Tube:
 
         baba_bk = baba[None, :]   # (1, K)
 
-        # ------- Cylinder barrel -------
+        # Cylinder barrel quadratic
         a_ = baba_bk - bard ** 2
         b_ = baba_bk * rdoa - baoa * bard
         c_ = baba_bk * oaoa - baoa ** 2 - r * r * baba_bk
         h_ = b_ * b_ - a_ * c_
 
         small_a = np.abs(a_) < 1e-12
-        inv_a   = np.where(small_a, 0.0,
-                           1.0 / np.where(small_a, 1.0, a_))
-        v_cyl = (h_ >= 0.0) & ~small_a
+        inv_a   = np.where(small_a, 0.0, 1.0 / np.where(small_a, 1.0, a_))
+        v_cyl   = (h_ >= 0.0) & ~small_a
 
-        sq = np.where(v_cyl, np.sqrt(np.maximum(h_, 0.0)), 0.0)
-        # Compute raw t values (finite even for invalid capsules) before
-        # setting invalid entries to _INF, to avoid inf*0 = NaN warnings.
+        sq     = np.where(v_cyl, np.sqrt(np.maximum(h_, 0.0)), 0.0)
         raw_te = (-b_ - sq) * inv_a
         raw_tx = (-b_ + sq) * inv_a
-        te_cyl = np.where(v_cyl, raw_te, _INF)
-        tx_cyl = np.where(v_cyl, raw_tx, _INF)
 
-        ye = baoa + raw_te * bard
-        yx = baoa + raw_tx * bard
-        in_seg = (baba_bk > 0)
-        te_cyl = np.where(v_cyl & (ye >= 0.0) & (ye <= baba_bk) & in_seg,
-                          te_cyl, _INF)
-        tx_cyl = np.where(v_cyl & (yx >= 0.0) & (yx <= baba_bk) & in_seg,
-                          tx_cyl, _INF)
+        # Clip to span: projection ye must lie in [0, baba]
+        ye     = baoa + raw_te * bard
+        yx     = baoa + raw_tx * bard
+        in_seg = baba_bk > 0
+        te_k   = np.where(v_cyl & (ye >= 0.0) & (ye <= baba_bk) & in_seg,
+                          raw_te, _INF)
+        tx_k   = np.where(v_cyl & (yx >= 0.0) & (yx <= baba_bk) & in_seg,
+                          raw_tx, _INF)
+        te_k   = np.where(te_k < tx_k, te_k, _INF)
 
-        # ------- Hemisphere cap at p0 -------
-        # oc0 = oa  (ray offset from p0)
-        b0   = rdoa
-        c0   = oaoa - r * r
-        disc0 = b0 * b0 - c0
-        v0   = disc0 >= 0.0
-        sq0  = np.where(v0, np.sqrt(np.maximum(disc0, 0.0)), 0.0)
-        raw_te0 = -b0 - sq0
-        raw_tx0 = -b0 + sq0
-        te0  = np.where(v0, raw_te0, _INF)
-        tx0  = np.where(v0, raw_tx0, _INF)
-        yte0 = baoa + raw_te0 * bard
-        ytx0 = baoa + raw_tx0 * bard
-        te0  = np.where(v0 & (yte0 <= 0.0), te0, _INF)
-        tx0  = np.where(v0 & (ytx0 <= 0.0), tx0, _INF)
+        # Sphere caps at every sample point  →  (B, N_s)
+        vc    = o[:, None, :] - pts[None, :, :]   # (B, N_s, 3)
+        b_sp  = np.einsum('bsi,bi->bs', vc, d)    # (B, N_s)
+        c_sp  = (vc * vc).sum(2) - r * r          # (B, N_s)
+        h_sp  = b_sp * b_sp - c_sp
+        v_sp  = h_sp >= 0.0
+        sq_sp = np.where(v_sp, np.sqrt(np.maximum(h_sp, 0.0)), 0.0)
+        te_sp = np.where(v_sp, -b_sp - sq_sp, _INF)
+        tx_sp = np.where(v_sp, -b_sp + sq_sp, _INF)
+        te_sp = np.where(te_sp < tx_sp, te_sp, _INF)
 
-        # ------- Hemisphere cap at p1 -------
-        # oc1 = oa - ba[k]  =  o - p1[k]
-        oc1  = oa - ba[None, :, :]          # (B, K, 3)
-        b1   = np.einsum("bi,bki->bk", d, oc1)
-        c1   = np.einsum("bki,bki->bk", oc1, oc1) - r * r
-        disc1 = b1 * b1 - c1
-        v1   = disc1 >= 0.0
-        sq1  = np.where(v1, np.sqrt(np.maximum(disc1, 0.0)), 0.0)
-        raw_te1 = -b1 - sq1
-        raw_tx1 = -b1 + sq1
-        te1  = np.where(v1, raw_te1, _INF)
-        tx1  = np.where(v1, raw_tx1, _INF)
-        yte1 = baoa + raw_te1 * bard
-        ytx1 = baoa + raw_tx1 * bard
-        te1  = np.where(v1 & (yte1 >= baba_bk), te1, _INF)
-        tx1  = np.where(v1 & (ytx1 >= baba_bk), tx1, _INF)
-
-        # ------- Combine across surfaces -------
-        # Entry: earliest surface hit; exit: earliest valid exit surface
-        te_k = np.minimum(np.minimum(te_cyl, te0), te1)   # (B, K)
-        tx_k = np.minimum(np.minimum(tx_cyl, tx0), tx1)   # (B, K)
-
-        # Invalidate capsules where te >= tx (no valid intersection interval)
-        te_k = np.where(te_k < tx_k, te_k, _INF)
-
-        # ------- Best capsule per ray -------
-        best_k  = np.argmin(te_k, axis=1)    # (B,)
+        # Best entry: cylinders (0..K-1) then spheres (K..K+N_s-1)
+        te_all  = np.concatenate([te_k, te_sp], axis=1)   # (B, K+N_s)
+        best_k  = np.argmin(te_all, axis=1)               # (B,)
         bi      = np.arange(B)
-        best_te = te_k[bi, best_k]            # (B,)
-        best_tx = tx_k[bi, best_k]            # (B,)
+        best_te = te_all[bi, best_k]                       # (B,)
 
-        # ------- Compute normals for hit rays -------
+        # Best exit — prefer cylinder; fall back to sphere if no cylinder exits.
+        tx_cyl_after = np.where(tx_k  > best_te[:, None], tx_k,  _INF)
+        tx_sp_after  = np.where(tx_sp > best_te[:, None], tx_sp, _INF)
+        exit_cyl_k   = np.argmin(tx_cyl_after, axis=1)
+        exit_sp_k    = np.argmin(tx_sp_after,  axis=1)
+        best_tx_cyl  = tx_cyl_after[bi, exit_cyl_k]
+        best_tx_sp   = tx_sp_after [bi, exit_sp_k]
+
+        use_cyl_exit = best_tx_cyl < _INF
+        best_tx = np.where(use_cyl_exit, best_tx_cyl, best_tx_sp)
+        # encode exit index in same te_all space: cylinders 0..K-1, spheres K..
+        exit_k  = np.where(use_cyl_exit, exit_cyl_k, exit_sp_k + K)
+
+        # Normals
         hit_mask = best_te < _INF
         ne = np.zeros((B, 3))
         nx = np.zeros((B, 3))
 
         if np.any(hit_mask):
-            hi    = np.where(hit_mask)[0]    # local hit indices
-            k_hi  = best_k[hi]               # winning capsule index per hit ray
+            hi = np.where(hit_mask)[0]
 
-            for which, t_vals, n_arr in [
-                    ("enter", best_te[hi], ne),
-                    ("exit",  best_tx[hi], nx)]:
+            for t_vals, k_all, n_arr in [
+                    (best_te[hi], best_k[hi],  ne),
+                    (best_tx[hi], exit_k[hi],  nx)]:
 
-                pts = o[hi] + t_vals[:, None] * d[hi]   # (n_hit, 3)
+                valid = hi[t_vals < _INF]
+                if len(valid) == 0:
+                    continue
+                k_v = k_all[t_vals < _INF]
+                t_v = t_vals[t_vals < _INF]
+                P_v = o[valid] + t_v[:, None] * d[valid]
 
-                if which == "enter":
-                    t_cyl_h = te_cyl[hi, k_hi]
-                    t_c0_h  = te0[hi, k_hi]
-                else:
-                    t_cyl_h = tx_cyl[hi, k_hi]
-                    t_c0_h  = tx0[hi, k_hi]
+                is_cyl = k_v < K
 
-                from_cyl  = np.abs(t_cyl_h - t_vals) < 1e-8
-                from_cap0 = (~from_cyl) & (np.abs(t_c0_h - t_vals) < 1e-8)
-                from_cap1 = ~from_cyl & ~from_cap0
+                if np.any(is_cyl):
+                    idx_c = valid[is_cyl]
+                    k_c   = k_v[is_cyl]
+                    P_c   = P_v[is_cyl]
+                    p0s   = p0[k_c]
+                    axs   = ax[k_c]
+                    proj  = ((P_c - p0s) * axs).sum(1)
+                    C_t   = p0s + proj[:, None] * axs
+                    rad   = P_c - C_t
+                    n_arr[idx_c] = rad / (
+                        np.linalg.norm(rad, axis=1, keepdims=True) + 1e-30)
 
-                # Internal junction caps keep full intersection coverage but
-                # use the smooth cylinder normal to avoid discontinuities (speckle).
-                # Only the true tube endpoints (k==0 start, k==K-1 end) use the
-                # sphere cap normal.
-                from_cyl  = (from_cyl
-                             | (from_cap0 & (k_hi > 0))
-                             | (from_cap1 & (k_hi < K - 1)))
-                from_cap0 = from_cap0 & (k_hi == 0)
-                from_cap1 = from_cap1 & (k_hi == K - 1)
-
-                normals = np.zeros((len(hi), 3))
-
-                if np.any(from_cyl):
-                    k_fc  = k_hi[from_cyl]
-                    p0s   = p0[k_fc]
-                    axs   = ax[k_fc]
-                    pts_c = pts[from_cyl]
-                    proj  = ((pts_c - p0s) * axs).sum(axis=1)
-
-                    # Smooth normal: interpolate spline tangent along capsule
-                    # instead of using the constant capsule-axis direction.
-                    # This gives continuously-varying normals across junctions.
-                    frac      = np.clip(proj / (np.sqrt(baba[k_fc]) + 1e-30),
-                                        0.0, 1.0)
-                    smooth_ax = (self._tangents[k_fc]     * (1.0 - frac[:, None]) +
-                                 self._tangents[k_fc + 1] * frac[:, None])
-                    smooth_ax /= (np.linalg.norm(smooth_ax, axis=1, keepdims=True)
-                                  + 1e-30)
-
-                    proj2  = ((pts_c - p0s) * smooth_ax).sum(axis=1)
-                    radial = pts_c - p0s - proj2[:, None] * smooth_ax
-                    normals[from_cyl] = radial / (
-                        np.linalg.norm(radial, axis=1, keepdims=True) + 1e-30)
-
-                if np.any(from_cap0):
-                    normals[from_cap0] = (pts[from_cap0] - p0[k_hi[from_cap0]]) / r
-
-                if np.any(from_cap1):
-                    normals[from_cap1] = (pts[from_cap1] - p1[k_hi[from_cap1]]) / r
-
-                n_arr[hi] = normals
+                if np.any(~is_cyl):
+                    idx_s   = valid[~is_cyl]
+                    centers = pts[k_v[~is_cyl] - K]
+                    rad     = P_v[~is_cyl] - centers
+                    n_arr[idx_s] = rad / (
+                        np.linalg.norm(rad, axis=1, keepdims=True) + 1e-30)
 
         return best_te, best_tx, ne, nx
 
