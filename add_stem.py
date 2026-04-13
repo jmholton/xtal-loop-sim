@@ -60,8 +60,8 @@ def parse_args():
                    help='Stem length in mm (default 0.7)')
     p.add_argument('--pitch-ratio', type=float, default=20.0,
                    help='Helix pitch / fiber_diameter ratio (default 20)')
-    p.add_argument('--n-samples-per-mm', type=float, default=100.0,
-                   help='Tube capsules per mm of arc length (default 100 = 1 µm/capsule)')
+    p.add_argument('--n-samples-per-mm', type=float, default=20.0,
+                   help='Tube capsules per mm of arc length (default 20 = 50 µm/capsule)')
     return p.parse_args()
 
 
@@ -101,10 +101,20 @@ def main():
     pitch        = args.pitch_ratio * fd_mm
     helix_radius = fd_mm / 2   # touching fibres: 2R = fd_mm
 
-    stem1 = helix_path(helix_radius, pitch, stem_length, n_points=8,
+    stem1 = helix_path(helix_radius, pitch, stem_length, n_points=40,
                        phase_offset=0.0, axis=stem_axis)
-    stem2 = helix_path(helix_radius, pitch, stem_length, n_points=8,
+    stem2 = helix_path(helix_radius, pitch, stem_length, n_points=40,
                        phase_offset=np.pi, axis=stem_axis)
+
+    # helix_path winds in the plane perpendicular to stem_axis.  For a hoop
+    # that lies in z=0, e1 = [0,0,1] so:
+    #   stem1[0] ≈ [0, 0, +fd/2]   (phase 0:  +e1 side)
+    #   stem2[0] ≈ [0, 0, -fd/2]   (phase π:  -e1 side)
+    # The two strands are separated by one fiber diameter in z at the junction.
+    # Adjust the hoop's first/last waypoints to sit at those junction positions
+    # so the tube objects are geometrically adjacent with no gap.
+    junc1 = stem1[0]   # exact junction point for strand 1
+    junc2 = stem2[0]   # exact junction point for strand 2
 
     # ------------------------------------------------------------------
     # Three separate tube objects — hoop and each stem strand get their
@@ -116,6 +126,10 @@ def main():
     # they are rendered identically by the tube primitive.
     # ------------------------------------------------------------------
     hoop_pts  = np.array(hoop_waypoints, dtype=float)
+    # Separate the hoop crossover endpoints in z by one fiber diameter so
+    # they meet the corresponding stem strands without a gap.
+    hoop_pts[0]  = junc1
+    hoop_pts[-1] = junc2
     hoop_arc  = _arc_length(hoop_pts)
     stem_arc  = _arc_length(stem1)   # same for stem2
 
@@ -137,7 +151,7 @@ def main():
                 'shape': {
                     'type':      'tube',
                     'diameter':  round(fd_mm, 6),
-                    'path':      hoop_waypoints,
+                    'path':      hoop_pts.tolist(),
                     'n_samples': n_for(hoop_arc),
                 },
             },
