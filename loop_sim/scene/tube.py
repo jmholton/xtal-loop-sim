@@ -11,6 +11,7 @@ Neville's algorithm builds an interpolating polynomial that passes through
 every supplied waypoint (unlike Bézier control points).
 """
 import numpy as np
+from scipy.interpolate import CubicSpline
 
 _INF = np.inf
 _BATCH = 8192   # rays processed per iteration in ray_intersect
@@ -47,12 +48,14 @@ def neville_sample(waypoints, n_samples):
     Sample an interpolating curve through `waypoints` at `n_samples`
     uniformly-spaced parameter values in [0, 1].
 
-    Uses Neville's algorithm with chord-length parameterization.  Keep
-    m ≤ 8 waypoints per tube; a global degree-(m-1) polynomial is smooth
-    and exact through all waypoints for small m, but exhibits Runge-phenomenon
-    oscillations for m > ~10 with uniform nodes.
+    Uses chord-length parameterization (t proportional to cumulative arc
+    length) so the parameter is proportional to physical distance.
 
-    waypoints : (m, 3) array  — m ≤ 8 strongly recommended
+    For m ≤ 4 points: global Neville polynomial (degree ≤ 3, no Runge risk).
+    For m > 4 points: CubicSpline (C2-smooth, no Runge oscillations).
+    Global Neville at degree 5+ causes Runge-phenomenon knots on curved paths.
+
+    waypoints : (m, 3) array
     n_samples : int
 
     Returns: (n_samples, 3) array of 3-D curve points.
@@ -67,7 +70,13 @@ def neville_sample(waypoints, n_samples):
     t_nodes = cumul / total if total > 1e-30 else np.linspace(0.0, 1.0, m)
 
     t_query = np.linspace(0.0, 1.0, n_samples)
-    return np.stack([neville_eval(waypoints, t_nodes, t) for t in t_query])
+
+    if m <= 4:
+        return np.stack([neville_eval(waypoints, t_nodes, t) for t in t_query])
+
+    # CubicSpline: C2-smooth, exact through all waypoints, no Runge oscillations.
+    cs = CubicSpline(t_nodes, waypoints)
+    return cs(t_query)
 
 
 # ---------------------------------------------------------------------------
