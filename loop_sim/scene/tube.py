@@ -11,7 +11,6 @@ Neville's algorithm builds an interpolating polynomial that passes through
 every supplied waypoint (unlike Bézier control points).
 """
 import numpy as np
-from scipy.interpolate import CubicSpline
 
 _INF = np.inf
 _BATCH = 8192   # rays processed per iteration in ray_intersect
@@ -48,14 +47,12 @@ def neville_sample(waypoints, n_samples):
     Sample an interpolating curve through `waypoints` at `n_samples`
     uniformly-spaced parameter values in [0, 1].
 
-    Uses chord-length parameterization: t_nodes are proportional to cumulative
-    arc length of the waypoint polyline.  This ensures the spline parameter is
-    roughly proportional to physical distance, which is essential when waypoint
-    spacing is non-uniform (e.g. a combined stem+hoop path where stem waypoints
-    are 8× denser than hoop waypoints).  Uniform parameterization would cause
-    the spline to oscillate badly in the sparse hoop region.
+    Uses Neville's algorithm with chord-length parameterization.  Keep
+    m ≤ 8 waypoints per tube; a global degree-(m-1) polynomial is smooth
+    and exact through all waypoints for small m, but exhibits Runge-phenomenon
+    oscillations for m > ~10 with uniform nodes.
 
-    waypoints : (m, 3) array
+    waypoints : (m, 3) array  — m ≤ 8 strongly recommended
     n_samples : int
 
     Returns: (n_samples, 3) array of 3-D curve points.
@@ -63,20 +60,14 @@ def neville_sample(waypoints, n_samples):
     waypoints = np.asarray(waypoints, dtype=float)
     m = len(waypoints)
 
-    # Chord-length parameterization
-    chords = np.linalg.norm(np.diff(waypoints, axis=0), axis=1)
-    cumul  = np.concatenate([[0.0], np.cumsum(chords)])
-    total  = cumul[-1]
+    # Chord-length parameterization: t proportional to cumulative arc length.
+    chords  = np.linalg.norm(np.diff(waypoints, axis=0), axis=1)
+    cumul   = np.concatenate([[0.0], np.cumsum(chords)])
+    total   = cumul[-1]
     t_nodes = cumul / total if total > 1e-30 else np.linspace(0.0, 1.0, m)
 
     t_query = np.linspace(0.0, 1.0, n_samples)
-
-    if m <= 4:
-        return np.stack([neville_eval(waypoints, t_nodes, t) for t in t_query])
-
-    # Cubic spline: C2-smooth, no Runge oscillations.
-    cs = CubicSpline(t_nodes, waypoints)
-    return cs(t_query)
+    return np.stack([neville_eval(waypoints, t_nodes, t) for t in t_query])
 
 
 # ---------------------------------------------------------------------------

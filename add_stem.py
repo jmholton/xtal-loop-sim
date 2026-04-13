@@ -101,9 +101,9 @@ def main():
     pitch        = args.pitch_ratio * fd_mm
     helix_radius = fd_mm / 2   # touching fibres: 2R = fd_mm
 
-    stem1 = helix_path(helix_radius, pitch, stem_length, n_points=40,
+    stem1 = helix_path(helix_radius, pitch, stem_length, n_points=8,
                        phase_offset=0.0, axis=stem_axis)
-    stem2 = helix_path(helix_radius, pitch, stem_length, n_points=40,
+    stem2 = helix_path(helix_radius, pitch, stem_length, n_points=8,
                        phase_offset=np.pi, axis=stem_axis)
 
     # ------------------------------------------------------------------
