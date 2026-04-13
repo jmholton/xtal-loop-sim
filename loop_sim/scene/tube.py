@@ -126,6 +126,14 @@ class Tube:
         tnorms   = np.linalg.norm(tangents, axis=1, keepdims=True)
         self._tangents = tangents / (tnorms + 1e-30)
 
+        # Cap masks: suppress hemisphere caps at internal junctions.
+        # Only the first capsule's start cap and last capsule's end cap are active.
+        # Internal caps cause cylinder-to-cap normal discontinuities (speckle).
+        cap0 = np.zeros(K, dtype=bool); cap0[0]     = True
+        cap1 = np.zeros(K, dtype=bool); cap1[K - 1] = True
+        self._cap0_mask = cap0[None, :]  # (1, K) — broadcast over (B, K)
+        self._cap1_mask = cap1[None, :]  # (1, K)
+
         # AABB for fast ray rejection (expanded by radius)
         self._bbox_lo = pts.min(axis=0) - self.radius   # (3,)
         self._bbox_hi = pts.max(axis=0) + self.radius   # (3,)
@@ -280,6 +288,12 @@ class Tube:
         ytx1 = baoa + raw_tx1 * bard
         te1  = np.where(v1 & (yte1 >= baba_bk), te1, _INF)
         tx1  = np.where(v1 & (ytx1 >= baba_bk), tx1, _INF)
+
+        # ------- Suppress caps at internal junctions -------
+        te0 = np.where(self._cap0_mask, te0, _INF)
+        tx0 = np.where(self._cap0_mask, tx0, _INF)
+        te1 = np.where(self._cap1_mask, te1, _INF)
+        tx1 = np.where(self._cap1_mask, tx1, _INF)
 
         # ------- Combine across surfaces -------
         # Entry: earliest surface hit; exit: earliest valid exit surface
