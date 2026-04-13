@@ -1,0 +1,30 @@
+# Generated images
+*.jpg
+*.jpeg
+*.png
+*.tif
+*.tiff
+
+# Generated scene files (built by the pipeline)
+scene.yaml
+loop.yaml
+
+# Backup files
+*.04-12-26*
+*~
+
+# Claude internal state
+.claude/
+
+# Misc
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+notes.com
+peak.txt
+this.yaml
+old/

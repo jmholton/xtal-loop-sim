@@ -1,0 +1,33 @@
+geometry:
+  beam_axis:    [0, 0, 1]
+  optical_axis: [0, 0, -1]
+  camera_fast:  [1, 0, 0]
+  camera_slow:  [0, -1, 0]
+  rotx_axis:    [1, 0, 0]
+  roty_axis:    [0, 1, 0]
+  rotz_axis:    [0, 0, 1]
+
+camera:
+  width:        704
+  height:       480
+  pixel_size:   0.0008233
+  na_objective: 0.28
+  na_condenser: 0.17
+
+beam:
+  spacing: 0.001
+  profile:  gaussian
+  fwhm_x:   0.05
+  fwhm_y:   0.03
+
+materials:
+  nylon:
+    n:          1.53
+    mu_optical: 0.1
+    mu_xray:    0.1
+    color:      [0.9, 0.8, 0.6]
+  air:
+    n:          1.0
+    mu_optical: 0.0
+    mu_xray:    0.0
+    color:      [1.0, 1.0, 1.0]
