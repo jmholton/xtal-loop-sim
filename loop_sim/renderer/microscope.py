@@ -266,15 +266,13 @@ def render(scene, goniometer, n_cond=1, jpeg_quality=85):
     px = (np.arange(W) - W / 2.0) * eff_px
     py = (np.arange(H) - H / 2.0) * eff_px
     gx, gy = np.meshgrid(px, py)   # (H, W)
-    origins_lab = (gx[:, :, None] * fast + gy[:, :, None] * slow).reshape(-1, 3)
-    # Shift origins so rays start well before the sample
-    origins_lab -= opt_axis * 50.0   # 50 mm upstream
+    # Pixel centres on the focal plane (z = 0 in lab frame)
+    focal_pts = (gx[:, :, None] * fast + gy[:, :, None] * slow).reshape(-1, 3)
 
-    # --- Inverse motor transform: move lab rays into sample frame ---
+    # --- Inverse motor transform ---
     T_inv = goniometer.transform_inv()
-    origins_s = apply_transform(T_inv, origins_lab)
-    base_dirs  = np.broadcast_to(opt_axis, (W * H, 3)).copy()
-    dirs_s     = apply_transform_dirs(T_inv, base_dirs)
+    # Focal-plane points in sample frame (computed once; shared across condenser rays)
+    focal_pts_s = apply_transform(T_inv, focal_pts)
 
     # Optical axis in sample frame — needed for NA cutoff.
     # The camera is FIXED in the lab; only the sample rotates.  So the lab
@@ -291,9 +289,19 @@ def render(scene, goniometer, n_cond=1, jpeg_quality=85):
         # Tilt the illumination direction slightly
         illum_dir = opt_axis + ox * fast + oy * slow
         illum_dir /= np.linalg.norm(illum_dir)
-        illum_dirs_s = apply_transform_dirs(T_inv,
-                           np.broadcast_to(illum_dir, (W * H, 3)).copy())
-        accum += _trace_rays(scene, origins_s, illum_dirs_s, na_obj,
+        illum_dir_s = T_inv[:3, :3] @ illum_dir
+        illum_dir_s /= np.linalg.norm(illum_dir_s) + 1e-30
+
+        # Origins: each condenser ray starts 50 mm upstream but is laterally
+        # shifted so it converges on its pixel centre at the focal plane.
+        # Without this shift, off-axis rays drift ~8 mm at the focal plane
+        # (50 mm × tan(9°)) and miss the loop entirely — the bug that caused
+        # n_cond > 1 to produce a washed-out near-white image.
+        t_up = 50.0 / max(abs(np.dot(illum_dir, opt_axis)), 1e-6)
+        origins_s_k = focal_pts_s - t_up * illum_dir_s
+
+        illum_dirs_s = np.broadcast_to(illum_dir_s, (W * H, 3)).copy()
+        accum += _trace_rays(scene, origins_s_k, illum_dirs_s, na_obj,
                              opt_axis_sample=opt_axis_s)
 
     img = (accum / n_cond).reshape(H, W, 3).astype(np.float32)
