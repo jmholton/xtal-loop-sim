@@ -117,12 +117,12 @@ def main():
     junc2 = stem2[0]   # exact junction point for strand 2
 
     # ------------------------------------------------------------------
-    # Three separate tube objects — hoop and each stem strand get their
-    # own CubicSpline through their own waypoints.  A single combined
-    # spline distorts the hoop because: (a) the hoop gets only a fraction
-    # of the total n_samples budget, leaving it under-sampled and faceted;
-    # (b) the helix's high local curvature leaks into the sparse hoop
-    # region through the global spline's second-derivative conditions.
+    # Three separate tube objects.  The stem is a twisted pair: two fibers
+    # that physically cross each other periodically, producing crossover
+    # shadows in the rendered image.  This requires two separate tube
+    # objects (stem_1, stem_2) — a single continuous path cannot model
+    # the crossing of one fiber over another.  The hoop gets its own tube
+    # so it has an independent CubicSpline and full n_samples budget.
     # ------------------------------------------------------------------
     hoop_pts  = np.array(hoop_waypoints, dtype=float)
     # Separate the hoop crossover endpoints in z by one fiber diameter so
