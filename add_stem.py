@@ -117,21 +117,26 @@ def main():
     junc2 = stem2[0]   # exact junction point for strand 2
 
     # ------------------------------------------------------------------
-    # Three separate tube objects — hoop and each stem strand get their
-    # own CubicSpline through their own waypoints.  Combining all waypoints
-    # into one spline changes the hoop's shape because the global fit is
-    # influenced by the neighboring (denser) stem waypoints.
-    #
-    # All three tubes use the same n_samples density (capsules per mm) so
-    # they are rendered identically by the tube primitive.
+    # Build a single continuous path: stem1 reversed (pin→junc1) + hoop
+    # interior + stem2 (junc2→pin).  CubicSpline with chord-length
+    # parameterization passes exactly through every waypoint; because t is
+    # proportional to physical arc length the dense stem points do not
+    # distort the sparser hoop region.
     # ------------------------------------------------------------------
     hoop_pts  = np.array(hoop_waypoints, dtype=float)
-    # Separate the hoop crossover endpoints in z by one fiber diameter so
-    # they meet the corresponding stem strands without a gap.
-    hoop_pts[0]  = junc1
+    hoop_pts[0]  = junc1   # align crossover endpoints with stem junctions
     hoop_pts[-1] = junc2
+
+    # Concatenate: avoid duplicating the junction points (stem ends = hoop ends)
+    full_path = np.vstack([
+        stem1[::-1],      # pin-end → junc1
+        hoop_pts[1:-1],   # interior hoop waypoints
+        stem2,            # junc2 → pin-end
+    ])
+
     hoop_arc  = _arc_length(hoop_pts)
-    stem_arc  = _arc_length(stem1)   # same for stem2
+    stem_arc  = _arc_length(stem1)        # same for stem2
+    total_arc = hoop_arc + 2 * stem_arc
 
     def n_for(arc):
         return max(50, int(arc * args.n_samples_per_mm) + 1)
@@ -146,33 +151,13 @@ def main():
         },
         'objects': [
             {
-                'name':     'hoop',
+                'name':     'loop_fiber',
                 'material': 'nylon',
                 'shape': {
                     'type':      'tube',
                     'diameter':  round(fd_mm, 6),
-                    'path':      hoop_pts.tolist(),
-                    'n_samples': n_for(hoop_arc),
-                },
-            },
-            {
-                'name':     'stem_1',
-                'material': 'nylon',
-                'shape': {
-                    'type':      'tube',
-                    'diameter':  round(fd_mm, 6),
-                    'path':      stem1.tolist(),
-                    'n_samples': n_for(stem_arc),
-                },
-            },
-            {
-                'name':     'stem_2',
-                'material': 'nylon',
-                'shape': {
-                    'type':      'tube',
-                    'diameter':  round(fd_mm, 6),
-                    'path':      stem2.tolist(),
-                    'n_samples': n_for(stem_arc),
+                    'path':      full_path.tolist(),
+                    'n_samples': n_for(total_arc),
                 },
             },
         ],
@@ -181,13 +166,13 @@ def main():
     with open(args.output, 'w') as f:
         yaml.dump(output, f, default_flow_style=None, sort_keys=False)
 
-    ns_hoop = n_for(hoop_arc)
-    ns_stem = n_for(stem_arc)
-    print(f"Hoop:   {args.hoop}  arc={hoop_arc:.3f} mm  n_samples={ns_hoop}", file=sys.stderr)
+    print(f"Hoop:   {args.hoop}  arc={hoop_arc:.3f} mm", file=sys.stderr)
     print(f"Stem:   length={stem_length} mm  pitch_ratio={args.pitch_ratio:.0f}"
-          f"  arc={stem_arc:.3f} mm  n_samples={ns_stem}", file=sys.stderr)
+          f"  arc={stem_arc:.3f} mm", file=sys.stderr)
     print(f"        axis=({stem_axis[0]:+.3f},{stem_axis[1]:+.3f},{stem_axis[2]:+.3f})",
           file=sys.stderr)
+    print(f"Total arc: {total_arc:.3f} mm  waypoints: {len(full_path)}"
+          f"  n_samples: {n_for(total_arc)}", file=sys.stderr)
     print(f"Motor:  tx={tx:+.5f} mm  ty={ty:+.5f} mm", file=sys.stderr)
     print(f"Loop  → {args.output}", file=sys.stderr)
     print(f"Next:   python3 generate_scene.py {args.output}", file=sys.stderr)
