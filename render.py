@@ -24,9 +24,12 @@ def parse_args():
     p = argparse.ArgumentParser(description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('scene', help='Scene YAML file to render')
-    p.add_argument('--tx',     type=float, default=None, help='X translation (mm), overrides YAML')
-    p.add_argument('--ty',     type=float, default=None, help='Y translation (mm), overrides YAML')
-    p.add_argument('--n-cond', type=int,   default=1,    help='Condenser rays (default 1)')
+    p.add_argument('--tx',   type=float, default=None, help='X translation (mm), overrides YAML')
+    p.add_argument('--ty',   type=float, default=None, help='Y translation (mm), overrides YAML')
+    p.add_argument('--rotx', type=float, default=None, help='Rotation about x-axis (degrees)')
+    p.add_argument('--roty', type=float, default=None, help='Rotation about y-axis (degrees)')
+    p.add_argument('--rotz', type=float, default=None, help='Rotation about z-axis (degrees)')
+    p.add_argument('--n-cond', type=int, default=1,    help='Condenser rays (default 1)')
     p.add_argument('--output', default=None,
                    help='Output JPEG path (default: <scene_basename>.jpg in same directory)')
     return p.parse_args()
@@ -45,15 +48,20 @@ def main():
     W = camera.get('width',  704)
     H = camera.get('height', 480)
 
-    tx = args.tx if args.tx is not None else float(motor.get('tx', 0.0))
-    ty = args.ty if args.ty is not None else float(motor.get('ty', 0.0))
+    tx   = args.tx   if args.tx   is not None else float(motor.get('tx',   0.0))
+    ty   = args.ty   if args.ty   is not None else float(motor.get('ty',   0.0))
+    rotx = args.rotx if args.rotx is not None else float(motor.get('rotx', 0.0))
+    roty = args.roty if args.roty is not None else float(motor.get('roty', 0.0))
+    rotz = args.rotz if args.rotz is not None else float(motor.get('rotz', 0.0))
 
     scene = load_scene(args.scene)
     gonio = Goniometer(geometry)
-    gonio.set(tx=tx, ty=ty)
+    gonio.set(tx=tx, ty=ty, rotx=rotx, roty=roty, rotz=rotz)
 
     print(f"Scene:  {args.scene}", file=sys.stderr)
-    print(f"Motor:  tx={tx:+.5f} mm  ty={ty:+.5f} mm", file=sys.stderr)
+    print(f"Motor:  tx={tx:+.5f} mm  ty={ty:+.5f} mm  "
+          f"rotx={rotx:.1f}°  roty={roty:.1f}°  rotz={rotz:.1f}°",
+          file=sys.stderr)
     print(f"Rendering {W}×{H}, n_cond={args.n_cond} ...", file=sys.stderr)
 
     img_arr, jpeg_bytes = render(scene, gonio, n_cond=args.n_cond)

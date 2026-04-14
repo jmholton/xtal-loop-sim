@@ -128,14 +128,20 @@ class SurfaceMesh:
 
         Returns
         -------
-        t_min  : (B,) nearest positive t (inf = no hit)
-        t_max  : (B,) farthest positive t (inf = no hit)
+        t_min  : (B,) nearest  positive t (inf  = no forward hit)
+        t_max  : (B,) farthest positive t (-inf = no forward hit)
         fi_min : (B,) face index for t_min
         fi_max : (B,) face index for t_max
+        t_back : (B,) closest  negative t (0    = no backward hit)
+        fi_bwd : (B,) face index for t_back
+
+        The backward hit allows callers to detect that a ray origin lies
+        *inside* a closed mesh (one forward crossing, one backward crossing).
         """
         v0 = self._v0    # (F, 3)
         e1 = self._e1    # (F, 3)
         e2 = self._e2    # (F, 3)
+        B  = len(o)
 
         # h[b,f] = cross(d[b], e2[f])
         h = np.cross(d[:, None, :], e2[None, :, :])          # (B, F, 3)
@@ -151,17 +157,27 @@ class SurfaceMesh:
         v = inv_a * (d[:, None, :] * q).sum(axis=-1)          # (B, F)
         t = inv_a * (e2[None, :, :] * q).sum(axis=-1)         # (B, F)
 
-        miss = parallel | (u < 0) | (u > 1) | (v < 0) | (u + v > 1) | (t < _EPS)
+        # Geometric miss: UV test and degenerate triangle (t-independent)
+        miss_geom = parallel | (u < 0) | (u > 1) | (v < 0) | (u + v > 1)
 
-        t_hit    = np.where(miss, _INF, t)                    # (B, F) entry
-        t_hit_r  = np.where(miss, -_INF, t)                   # (B, F) exit
+        # Forward hits: t > _EPS
+        t_fwd   = np.where(miss_geom | (t < _EPS),  _INF, t)    # (B, F)
+        t_fwd_r = np.where(miss_geom | (t < _EPS), -_INF, t)    # (B, F)
 
-        fi_min = t_hit.argmin(axis=1)                         # (B,)
-        fi_max = t_hit_r.argmax(axis=1)                       # (B,)
-        t_min  = t_hit[np.arange(len(o)), fi_min]             # (B,)
-        t_max  = t_hit_r[np.arange(len(o)), fi_max]           # (B,) or -inf
+        # Backward hit: t < -_EPS (closest to 0, stored as |t|)
+        t_bwd   = np.where(miss_geom | (t > -_EPS), _INF, -t)   # (B, F) positive mag
 
-        return t_min, t_max, fi_min, fi_max
+        bi = np.arange(B)
+        fi_min = t_fwd.argmin(axis=1)                            # (B,)
+        fi_max = t_fwd_r.argmax(axis=1)                          # (B,)
+        fi_bwd = t_bwd.argmin(axis=1)                            # (B,)
+
+        t_min  = t_fwd  [bi, fi_min]                             # (B,)
+        t_max  = t_fwd_r[bi, fi_max]                             # (B,) or -inf
+        has_bwd = t_bwd[bi, fi_bwd] < _INF
+        t_back  = np.where(has_bwd, -t_bwd[bi, fi_bwd], 0.0)    # (B,) negative or 0
+
+        return t_min, t_max, fi_min, fi_max, t_back, fi_bwd
 
     # ------------------------------------------------------------------
     # Public ray_intersect — AABB pre-filter + vectorized MT
@@ -211,47 +227,67 @@ class SurfaceMesh:
         # Process filtered rays in batches to limit (B, F, 3) memory
         _BATCH = 2048
         M = len(idx)
-        t_min_f  = np.full(M, _INF)
+        t_min_f  = np.full(M,  _INF)
         t_max_f  = np.full(M, -_INF)
         fi_min_f = np.zeros(M, dtype=int)
         fi_max_f = np.zeros(M, dtype=int)
+        t_back_f = np.zeros(M)          # closest backward t (≤ 0); 0 = none
+        fi_bwd_f = np.zeros(M, dtype=int)
 
         for s in range(0, M, _BATCH):
             e = min(s + _BATCH, M)
-            tm, tx, fm, fx = self._mt_batch(o_f[s:e], d_f[s:e])
+            tm, tx, fm, fx, tb, fb = self._mt_batch(o_f[s:e], d_f[s:e])
             t_min_f[s:e]  = tm
             t_max_f[s:e]  = tx
             fi_min_f[s:e] = fm
             fi_max_f[s:e] = fx
+            t_back_f[s:e] = tb
+            fi_bwd_f[s:e] = fb
 
-        has_entry = t_min_f < _INF
-        has_exit  = t_max_f > -_INF
+        has_fwd  = t_min_f < _INF
+        has_bwd  = t_back_f < 0.0
 
-        if not np.any(has_entry):
+        # "Inside" case: ray origin is inside the closed mesh.
+        # Signature: exactly one forward crossing (t_min == t_max) and a backward one.
+        # We treat the backward crossing as the entry (te < 0) so that
+        #   material_at_points_batch correctly flags the point as interior.
+        inside = has_fwd & has_bwd & (t_min_f >= t_max_f)
+
+        # Normal "outside → through" case: two distinct forward crossings
+        outside = has_fwd & ~inside
+
+        if not np.any(has_fwd | inside):
             return t_enter, t_exit, n_enter, n_exit
 
-        hit_local = np.where(has_entry)[0]
-        h_g       = idx[hit_local]
+        # ---- Build combined entry arrays ----
+        te_all = np.where(inside, t_back_f, t_min_f)   # (M,)  te < 0 when inside
+        tx_all = np.where(inside, t_min_f,  t_max_f)   # (M,)  tx = exit
 
-        t_enter[h_g] = t_min_f[hit_local]
-        fn_e = self._face_normals[fi_min_f[hit_local]]         # (H, 3)
-        cos_e = (d_f[hit_local] * fn_e).sum(axis=1)            # (H,)
-        n_enter[h_g] = np.where(cos_e[:, None] < 0, fn_e, -fn_e)
+        # For "outside" rays with single forward hit (grazing): tx = te
+        grazing = outside & (t_min_f >= t_max_f)
+        tx_all  = np.where(grazing, t_min_f, tx_all)
 
-        # Exit: those with a second (farthest) hit different from entry
-        has_both = has_entry & has_exit & (t_min_f < t_max_f)
-        both_local = np.where(has_both)[0]
-        b_g = idx[both_local]
-        t_exit[b_g]  = t_max_f[both_local]
-        fn_x = self._face_normals[fi_max_f[both_local]]
-        cos_x = (d_f[both_local] * fn_x).sum(axis=1)
-        n_exit[b_g]  = np.where(cos_x[:, None] > 0, fn_x, -fn_x)
+        valid = inside | outside
+        v_g   = idx[valid]
+        te_v  = te_all[valid]
+        tx_v  = tx_all[valid]
 
-        # Grazing rays (single hit): entry = exit
-        one_hit = has_entry & ~has_both
-        one_g   = idx[np.where(one_hit)[0]]
-        t_exit[one_g]  = t_enter[one_g]
-        n_exit[one_g]  = n_enter[one_g]
+        t_enter[v_g] = te_v
+        t_exit[v_g]  = tx_v
+
+        # ---- Entry normals ----
+        # Outside rays: entry face = fi_min; Inside rays: entry face = fi_bwd
+        fi_e = np.where(inside[valid], fi_bwd_f[valid], fi_min_f[valid])
+        fn_e = self._face_normals[fi_e]
+        cos_e = (d_f[valid] * fn_e).sum(axis=1)
+        n_enter[v_g] = np.where(cos_e[:, None] < 0, fn_e, -fn_e)
+
+        # ---- Exit normals ----
+        # All cases: exit face = fi_min (inside) or fi_max (outside/grazing)
+        fi_x = np.where(inside[valid], fi_min_f[valid], fi_max_f[valid])
+        fn_x = self._face_normals[fi_x]
+        cos_x = (d_f[valid] * fn_x).sum(axis=1)
+        n_exit[v_g] = np.where(cos_x[:, None] > 0, fn_x, -fn_x)
 
         return t_enter, t_exit, n_enter, n_exit
 

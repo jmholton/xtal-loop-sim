@@ -126,7 +126,8 @@ def _fresnel_T(n1, n2, cos_i):
 # Single-pass ray trace (one illumination direction per pixel)
 # ---------------------------------------------------------------------------
 
-def _trace_rays(scene, origins, dirs, na_obj, n_background=1.0):
+def _trace_rays(scene, origins, dirs, na_obj, n_background=1.0,
+                opt_axis_sample=None):
     """
     Trace N rays through the scene.
 
@@ -134,13 +135,22 @@ def _trace_rays(scene, origins, dirs, na_obj, n_background=1.0):
     iteration as rays exit the scene or undergo TIR.  This avoids re-testing
     background rays (which exit immediately) on every subsequent bounce.
 
+    opt_axis_sample : (3,) array — optical axis in the sample frame.
+        If None, falls back to scene.geometry['optical_axis'] (correct only
+        when there is no sample rotation).  Pass this explicitly whenever the
+        goniometer has non-zero rotation so the NA cutoff is evaluated in the
+        correct frame (camera fixed in lab; sample rotates under it).
+
     Returns (N,) float array: intensity in [0, 1].
     """
     N = len(origins)
     intensity = np.ones(N)
 
-    opt_axis = np.array(scene.geometry.get("optical_axis", [0, 0, -1]),
-                        dtype=float)
+    if opt_axis_sample is not None:
+        opt_axis = np.asarray(opt_axis_sample, dtype=float)
+    else:
+        opt_axis = np.array(scene.geometry.get("optical_axis", [0, 0, -1]),
+                            dtype=float)
     cos_na = np.cos(np.arcsin(np.clip(na_obj, 0.0, 1.0)))
 
     # Compressed active-ray state (shrinks each iteration)
@@ -258,6 +268,12 @@ def render(scene, goniometer, n_cond=1, jpeg_quality=85):
     base_dirs  = np.broadcast_to(opt_axis, (W * H, 3)).copy()
     dirs_s     = apply_transform_dirs(T_inv, base_dirs)
 
+    # Optical axis in sample frame — needed for NA cutoff.
+    # The camera is FIXED in the lab; only the sample rotates.  So the lab
+    # optical axis transforms into the sample frame via T_inv's rotation part.
+    opt_axis_s = T_inv[:3, :3] @ opt_axis
+    opt_axis_s /= np.linalg.norm(opt_axis_s) + 1e-30
+
     # --- Condenser offsets ---
     offsets = _condenser_offsets(n_cond, na_cond)   # (n_cond, 3)
 
@@ -269,7 +285,8 @@ def render(scene, goniometer, n_cond=1, jpeg_quality=85):
         illum_dir /= np.linalg.norm(illum_dir)
         illum_dirs_s = apply_transform_dirs(T_inv,
                            np.broadcast_to(illum_dir, (W * H, 3)).copy())
-        accum += _trace_rays(scene, origins_s, illum_dirs_s, na_obj)
+        accum += _trace_rays(scene, origins_s, illum_dirs_s, na_obj,
+                             opt_axis_sample=opt_axis_s)
 
     img = (accum / n_cond).reshape(H, W).astype(np.float32)
 
