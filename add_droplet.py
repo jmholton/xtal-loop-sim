@@ -79,6 +79,50 @@ def _cap_volume(h, R):
     return np.pi * h * (3 * R**2 + h**2) / 6.0
 
 
+def _loop_rim_radii(centroid_xy, poly_xy, fiber_radius, phi_angles):
+    """
+    For each azimuthal angle, ray-cast from centroid to the loop polygon
+    and return the effective rim radius (polygon distance minus fiber_radius).
+
+    centroid_xy : (2,) center point
+    poly_xy     : (N, 2) closed polygon vertices (fiber axis positions)
+    phi_angles  : (n_phi,) array of angles in radians
+    """
+    cx, cy = centroid_xy
+    poly = np.asarray(poly_xy, dtype=float)
+    # Ensure closed
+    if not np.allclose(poly[0], poly[-1]):
+        poly = np.vstack([poly, poly[0]])
+
+    n_phi  = len(phi_angles)
+    radii  = np.full(n_phi, np.inf)
+
+    for k, phi in enumerate(phi_angles):
+        dx, dy = np.cos(phi), np.sin(phi)
+        for i in range(len(poly) - 1):
+            ex = poly[i + 1, 0] - poly[i, 0]
+            ey = poly[i + 1, 1] - poly[i, 1]
+            denom = dx * ey - dy * ex
+            if abs(denom) < 1e-12:
+                continue
+            rx = poly[i, 0] - cx
+            ry = poly[i, 1] - cy
+            t  = (rx * ey - ry * ex) / denom
+            s  = (rx * dy - ry * dx) / denom
+            if t > 1e-9 and -1e-9 <= s <= 1.0 + 1e-9:
+                if t < radii[k]:
+                    radii[k] = t
+
+    # Fall back to a small positive value if no intersection found
+    miss = ~np.isfinite(radii)
+    if np.any(miss):
+        print(f"  WARNING: {miss.sum()} phi directions missed the loop polygon; "
+              "using fallback radius.", file=sys.stderr)
+        radii[miss] = fiber_radius * 2.0
+
+    return np.maximum(radii - fiber_radius, fiber_radius * 0.1)
+
+
 def _biconvex_lens_profile(R_loop, volume, n_z):
     """
     Return (r_profile, z_profile) for a symmetric biconvex lens.
@@ -124,26 +168,43 @@ def _biconvex_lens_profile(R_loop, volume, n_z):
 # Mesh revolution
 # ---------------------------------------------------------------------------
 
-def _revolve_biconvex(r_profile, z_profile, n_phi):
+def _revolve_biconvex(r_profile, z_profile, n_phi, R_phi=None, R_mean=None,
+                      phi_angles=None):
     """
     Revolve a biconvex-lens meridional profile around the Z-axis.
 
     profile index 0       → top apex    (r = 0, z = +h)
-    profile index n_z-1   → rim         (r = R_loop, z = 0)
+    profile index n_z-1   → rim         (r = R_mean, z = 0)
     profile index 2*n_z-2 → bottom apex (r = 0, z = -h)
+
+    R_phi  : (n_phi,) per-angle rim radii.  If given, each phi column is
+             scaled so the rim lands at R_phi[j] rather than R_mean, letting
+             the droplet follow a non-circular loop outline.
+    R_mean : scalar — the R_loop value used to build r_profile (the rim
+             value in the profile).  Required when R_phi is given.
 
     Returns (vertices, faces) for a closed surface mesh.
     """
     n_pts = len(r_profile)
-    phi     = np.linspace(0.0, 2.0 * np.pi, n_phi, endpoint=False)
+    if phi_angles is not None:
+        phi = np.asarray(phi_angles)
+        n_phi = len(phi)
+    else:
+        phi = np.linspace(0.0, 2.0 * np.pi, n_phi, endpoint=False)
     cos_phi = np.cos(phi)
     sin_phi = np.sin(phi)
+
+    # Per-column scale factor: 1 everywhere if R_phi not supplied
+    if R_phi is not None and R_mean is not None and R_mean > 0:
+        scale = R_phi / R_mean          # (n_phi,)
+    else:
+        scale = np.ones(n_phi)
 
     # Main body vertices: (n_pts, n_phi, 3)
     verts = np.zeros((n_pts, n_phi, 3))
     for i in range(n_pts):
-        verts[i, :, 0] = r_profile[i] * cos_phi
-        verts[i, :, 1] = r_profile[i] * sin_phi
+        verts[i, :, 0] = r_profile[i] * scale * cos_phi
+        verts[i, :, 1] = r_profile[i] * scale * sin_phi
         verts[i, :, 2] = z_profile[i]
     vertices = verts.reshape(-1, 3)
 
@@ -194,29 +255,51 @@ def main():
     hoop_waypoints = hoop_data['fiber']['waypoints']
     fiber_radius   = float(hoop_data['fiber'].get('diameter_mm', 0.0)) / 2.0
 
-    # Interior waypoints: skip first and last (attachment / closing points)
-    interior = np.array(hoop_waypoints[1:-1], dtype=float)
-    centroid  = interior.mean(axis=0)   # (3,)
+    # All unique waypoints (first == last for a closed loop; deduplicate)
+    all_pts  = np.array(hoop_waypoints, dtype=float)
+    if np.allclose(all_pts[0], all_pts[-1]):
+        unique_pts = all_pts[:-1]
+    else:
+        unique_pts = all_pts
 
-    # Effective loop radius: mean distance from centroid to interior waypoints,
-    # minus one fiber radius so the droplet rim sits at the fiber inner surface
-    # rather than the fiber axis.  This keeps the outer half of the fiber in air
-    # and preserves normal bright-field contrast.
-    dists  = np.linalg.norm(interior - centroid, axis=1)
-    R_loop = float(dists.mean()) - fiber_radius
+    # Centroid from all unique waypoints so the crossover pulls it toward
+    # the narrow end and the apex sits more centrally in the loop.
+    centroid = unique_pts.mean(axis=0)   # (3,)
+
+    # Build per-angle rim radii by ray-casting from centroid to the loop
+    # polygon (all waypoints including the crossover).  This lets the droplet
+    # reach all the way to the crossover rather than stopping at a circle.
+    poly_xy  = unique_pts[:, :2]   # project to z=0 plane
+    cx2, cy2 = centroid[0], centroid[1]
+
+    # Base uniform phi grid
+    phi_uniform = np.linspace(0.0, 2.0 * np.pi, args.n_phi, endpoint=False)
+
+    # Add exact angles toward every polygon vertex so the rim mesh reaches
+    # each corner (especially the crossover at [0,0]).
+    vertex_phis = np.arctan2(poly_xy[:, 1] - cy2, poly_xy[:, 0] - cx2) % (2 * np.pi)
+    phi_angles  = np.unique(np.concatenate([phi_uniform, vertex_phis]))
+
+    R_phi  = _loop_rim_radii(centroid[:2], poly_xy, fiber_radius, phi_angles)
+    R_mean = float(R_phi.mean())
 
     print(f"Hoop centroid: ({centroid[0]:+.4f}, {centroid[1]:+.4f}, "
           f"{centroid[2]:+.4f}) mm", file=sys.stderr)
-    print(f"R_loop (effective): {R_loop:.4f} mm", file=sys.stderr)
-    print(f"V_hemisphere: {(2/3)*np.pi*R_loop**3:.6f} mm³", file=sys.stderr)
+    print(f"R_loop (mean effective): {R_mean:.4f} mm  "
+          f"min={R_phi.min():.4f}  max={R_phi.max():.4f}", file=sys.stderr)
+    print(f"V_hemisphere (mean): {(2/3)*np.pi*R_mean**3:.6f} mm³", file=sys.stderr)
 
     # ------------------------------------------------------------------
     # Build biconvex lens mesh (symmetric about z=0, half-volume per side)
+    # h_opt is solved for R_mean; each phi column is then scaled by R_phi/R_mean
+    # so the rim follows the actual (non-circular) loop outline.
     # ------------------------------------------------------------------
     r_profile, z_profile, h_opt, rho = _biconvex_lens_profile(
-        R_loop, args.volume, args.n_z)
+        R_mean, args.volume, args.n_z)
 
-    vertices, faces = _revolve_biconvex(r_profile, z_profile, args.n_phi)
+    vertices, faces = _revolve_biconvex(
+        r_profile, z_profile, len(phi_angles),
+        R_phi=R_phi, R_mean=R_mean, phi_angles=phi_angles)
 
     # Translate to loop centroid (loop lies roughly in z=0 plane)
     vertices = vertices + centroid
@@ -246,7 +329,7 @@ def main():
         yaml.dump(output, f, default_flow_style=None, sort_keys=False)
 
     print(f"Droplet: h={h_opt:.4f} mm (each side)  rho={rho:.4f} mm  "
-          f"R_loop={R_loop:.4f} mm  vol={args.volume:.4f} mm³",
+          f"R_mean={R_mean:.4f} mm  vol={args.volume:.4f} mm³",
           file=sys.stderr)
     print(f"  Mesh: {len(vertices)} vertices, {len(faces)} faces",
           file=sys.stderr)
