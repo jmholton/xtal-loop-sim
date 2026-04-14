@@ -1,0 +1,28 @@
+objects:
+- name: crystal
+  material: crystal
+  lattice:
+    a_axis: [1.0, 0.0, 0.0]
+    b_axis: [0.0, 1.0, 0.0]
+    c_axis: [0.0, 0.0, 1.0]
+  shape:
+    type: intersection
+    children:
+    - type: half_space
+      normal: [1.0, 0.0, 0.0]
+      offset: -0.16583333
+    - type: half_space
+      normal: [-1.0, 0.0, 0.0]
+      offset: 0.24583333
+    - type: half_space
+      normal: [0.0, 1.0, 0.0]
+      offset: 0.01985
+    - type: half_space
+      normal: [0.0, -1.0, 0.0]
+      offset: 0.06015
+    - type: half_space
+      normal: [0.0, 0.0, 1.0]
+      offset: 0.01
+    - type: half_space
+      normal: [0.0, 0.0, -1.0]
+      offset: 0.01

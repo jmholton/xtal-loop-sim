@@ -31,6 +31,11 @@ materials:
     mu_optical: 0.0
     mu_xray:    0.03
     color:      [0.85, 0.92, 1.0]
+  crystal:
+    n:          1.52
+    mu_optical: 0.02
+    mu_xray:    2.1
+    color:      [0.7, 0.9, 1.0]
   air:
     n:          1.0
     mu_optical: 0.0
