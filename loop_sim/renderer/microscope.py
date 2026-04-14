@@ -35,6 +35,12 @@ from ..scene.materials   import AIR
 _INF = np.inf
 MAX_DEPTH = 12    # max number of refractions to follow per ray
 
+# Colour absorption scale (mm⁻¹).  Per-channel effective absorption coefficient:
+#   mu_c = mu_optical + _COLOR_MU * (1 - material.color[c])
+# This makes material colours visible at typical path lengths (10–100 µm).
+# colour[c]=1 → no extra absorption in channel c; colour[c]=0 → full _COLOR_MU.
+_COLOR_MU = 30.0
+
 
 # ---------------------------------------------------------------------------
 # Condenser sampling grid
@@ -144,7 +150,7 @@ def _trace_rays(scene, origins, dirs, na_obj, n_background=1.0,
     Returns (N,) float array: intensity in [0, 1].
     """
     N = len(origins)
-    intensity = np.ones(N)
+    intensity = np.ones((N, 3))   # RGB channels
 
     if opt_axis_sample is not None:
         opt_axis = np.asarray(opt_axis_sample, dtype=float)
@@ -185,9 +191,11 @@ def _trace_rays(scene, origins, dirs, na_obj, n_background=1.0,
         h_g   = gidx[hit]      # global indices of hit rays
         h_loc = np.where(hit)[0]
 
-        # Beer-Lambert
-        mu = np.array([cur_mat[i].mu_optical for i in h_g])
-        intensity[h_g] *= np.exp(-mu * t_next[hit])
+        # Per-channel Beer-Lambert: mu_c = mu_optical + _COLOR_MU*(1-color[c])
+        mu        = np.array([cur_mat[i].mu_optical for i in h_g])      # (n_hit,)
+        mat_color = np.array([cur_mat[i].color      for i in h_g])      # (n_hit, 3)
+        mu_per_ch = mu[:, None] + _COLOR_MU * (1.0 - mat_color)         # (n_hit, 3)
+        intensity[h_g] *= np.exp(-mu_per_ch * t_next[hit, None])
 
         # Advance origins to interface
         new_orig = o[h_g] + t_next[hit, None] * d[h_g]
@@ -197,7 +205,7 @@ def _trace_rays(scene, origins, dirs, na_obj, n_background=1.0,
         n2    = np.array([mat_out[j].n if mat_out[j] is not None
                           else n_background for j in h_loc])
         cos_i = np.abs(np.einsum("ij,ij->i", d[h_g], normals[hit]))
-        intensity[h_g] *= _fresnel_T(n1, n2, cos_i)
+        intensity[h_g] *= _fresnel_T(n1, n2, cos_i)[:, None]   # broadcast over RGB
 
         new_dirs = _snell_refract(d[h_g], normals[hit], n1, n2)
         tir = np.any(np.isnan(new_dirs), axis=1)
@@ -277,7 +285,7 @@ def render(scene, goniometer, n_cond=1, jpeg_quality=85):
     # --- Condenser offsets ---
     offsets = _condenser_offsets(n_cond, na_cond)   # (n_cond, 3)
 
-    accum = np.zeros(H * W)
+    accum = np.zeros((H * W, 3))
     for k in range(n_cond):
         ox, oy, oz = offsets[k]
         # Tilt the illumination direction slightly
@@ -288,11 +296,11 @@ def render(scene, goniometer, n_cond=1, jpeg_quality=85):
         accum += _trace_rays(scene, origins_s, illum_dirs_s, na_obj,
                              opt_axis_sample=opt_axis_s)
 
-    img = (accum / n_cond).reshape(H, W).astype(np.float32)
+    img = (accum / n_cond).reshape(H, W, 3).astype(np.float32)
 
-    # --- Encode JPEG ---
+    # --- Encode JPEG (RGB) ---
     img8 = (img * 255).clip(0, 255).astype(np.uint8)
-    pil  = Image.fromarray(img8, mode="L")
+    pil  = Image.fromarray(img8, mode="RGB")
     buf  = io.BytesIO()
     pil.save(buf, format="JPEG", quality=jpeg_quality)
     jpeg_bytes = buf.getvalue()

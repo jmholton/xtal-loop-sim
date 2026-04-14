@@ -183,7 +183,7 @@ def main():
         yaml.dump(output, f, default_flow_style=None, sort_keys=False)
 
     print(f"Crystal → {args.output}", file=sys.stderr)
-    print(f"Next:   python3 generate_scene.py loop.yaml droplet.yaml crystal.yaml",
+    print(f"Next:   python3 generate_scene.py loop.yaml crystal.yaml droplet.yaml",
           file=sys.stderr)
 
 
