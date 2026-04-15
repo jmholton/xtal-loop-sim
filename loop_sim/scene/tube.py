@@ -9,12 +9,19 @@ for scenes with many rays.
 
 Neville's algorithm builds an interpolating polynomial that passes through
 every supplied waypoint (unlike Bézier control points).
+
+GPU acceleration
+----------------
+Pass ``device='cuda'`` to use PyTorch on the GPU for the hot-path
+intersection computation.  The external interface is unchanged.
+Batch size is automatically increased to 32768 on CUDA (vs 8192 on CPU).
 """
 import numpy as np
 from scipy.interpolate import CubicSpline
 
 _INF = np.inf
-_BATCH = 8192   # rays processed per iteration in ray_intersect
+_BATCH_CPU  = 8192
+_BATCH_CUDA = 32768
 
 
 # ---------------------------------------------------------------------------
@@ -101,12 +108,15 @@ class Tube:
     n_samples : int
         Number of sample points along the interpolated curve (controls
         smoothness vs. speed).  Default: 50.
+    device : str
+        'cpu' (default, numpy) or 'cuda' (PyTorch GPU).
     """
 
-    def __init__(self, waypoints, diameter, n_samples=50):
+    def __init__(self, waypoints, diameter, n_samples=50, device='cpu'):
         self.waypoints = np.asarray(waypoints, dtype=float)
         self.radius    = float(diameter) / 2.0
         self.n_samples = int(n_samples)
+        self._device   = device
         self._build_chain()
 
     def _build_chain(self):
@@ -121,6 +131,20 @@ class Tube:
         # AABB for fast ray rejection (expanded by radius)
         self._bbox_lo = pts.min(axis=0) - self.radius   # (3,)
         self._bbox_hi = pts.max(axis=0) + self.radius   # (3,)
+
+        # Pre-convert geometry to CUDA tensors for the GPU path
+        if self._device != 'cpu':
+            import torch
+            dev = torch.device(self._device)
+            def _t(a):
+                return torch.from_numpy(np.ascontiguousarray(a)).float().to(dev)
+            ba   = pts[1:] - pts[:-1]              # (K, 3)
+            baba = (ba * ba).sum(1)                 # (K,)
+            self._p0_t   = _t(pts[:-1])
+            self._ba_t   = _t(ba)
+            self._baba_t = _t(baba)
+            self._ax_t   = _t(ba / (np.sqrt(baba)[:, None] + 1e-30))
+            self._pts_t  = _t(pts)
 
     # ------------------------------------------------------------------
     # Ray intersection — vectorized over (batch, K) capsules
@@ -140,20 +164,16 @@ class Tube:
         n_exit  = np.zeros((N, 3))
 
         # --- AABB slab test: filter rays that miss the bounding box ---
-        # Correctly handles rays parallel to each axis.
         lo = self._bbox_lo   # (3,)
         hi = self._bbox_hi   # (3,)
 
         parallel = np.abs(dirs) < 1e-12                                 # (N, 3)
         nonpar   = ~parallel
-        # Safe inverse for non-parallel axes
         safe_inv = np.where(nonpar, 1.0 / np.where(nonpar, dirs, 1.0), 0.0)
         t1 = (lo - origins) * safe_inv     # (N, 3) t at lo-plane
         t2 = (hi - origins) * safe_inv     # (N, 3) t at hi-plane
-        # For parallel axes: slab spans all t if origin is inside, none if outside
         t_near = np.where(nonpar, np.minimum(t1, t2), -_INF)           # (N, 3)
         t_far  = np.where(nonpar, np.maximum(t1, t2),  _INF)           # (N, 3)
-        # Parallel rays outside their slab → force rejection
         par_out = parallel & ((origins < lo) | (origins > hi))
         t_near  = np.where(par_out,  _INF, t_near)
         t_far   = np.where(par_out, -_INF, t_far)
@@ -175,6 +195,8 @@ class Tube:
         ne_f = np.zeros((M, 3))
         nx_f = np.zeros((M, 3))
 
+        _BATCH = _BATCH_CUDA if self._device != 'cpu' else _BATCH_CPU
+
         for start in range(0, M, _BATCH):
             end = min(start + _BATCH, M)
             te, tx, ne, nx = self._intersect_batch(o_f[start:end], d_f[start:end])
@@ -190,8 +212,136 @@ class Tube:
 
         return t_enter, t_exit, n_enter, n_exit
 
+    # ------------------------------------------------------------------
+    # GPU batch intersection
+    # ------------------------------------------------------------------
+
+    def _intersect_batch_cuda(self, o, d):
+        """
+        PyTorch/CUDA version of _intersect_batch.
+        Accepts and returns numpy arrays.
+        """
+        import torch
+        dev = self._p0_t.device
+        ot = torch.from_numpy(np.ascontiguousarray(o)).float().to(dev)   # (B, 3)
+        dt = torch.from_numpy(np.ascontiguousarray(d)).float().to(dev)   # (B, 3)
+
+        p0   = self._p0_t    # (K, 3)
+        ba   = self._ba_t    # (K, 3)
+        baba = self._baba_t  # (K,)
+        ax   = self._ax_t    # (K, 3)
+        pts  = self._pts_t   # (N_s, 3)
+        r    = self.radius
+        B    = len(o)
+        K    = len(p0)
+        N_s  = len(pts)
+        INF  = float('inf')
+
+        # oa[b, k] = o[b] - p0[k]  →  (B, K, 3)
+        oa = ot.unsqueeze(1) - p0.unsqueeze(0)
+
+        bard = dt @ ba.t()                              # (B, K)
+        baoa = (oa * ba.unsqueeze(0)).sum(-1)           # (B, K)
+        rdoa = (dt.unsqueeze(1) * oa).sum(-1)           # (B, K)
+        oaoa = (oa * oa).sum(-1)                        # (B, K)
+
+        baba_bk = baba.unsqueeze(0)   # (1, K)
+
+        # Cylinder barrel quadratic
+        a_ = baba_bk - bard ** 2
+        b_ = baba_bk * rdoa - baoa * bard
+        c_ = baba_bk * oaoa - baoa ** 2 - r * r * baba_bk
+        h_ = b_ * b_ - a_ * c_
+
+        small_a = a_.abs() < 1e-12
+        safe_a  = torch.where(small_a, torch.ones_like(a_), a_)
+        inv_a   = torch.where(small_a, torch.zeros_like(a_), 1.0 / safe_a)
+        v_cyl   = (h_ >= 0.0) & ~small_a
+
+        sq     = torch.where(v_cyl, torch.sqrt(h_.clamp(min=0.0)), torch.zeros_like(h_))
+        raw_te = (-b_ - sq) * inv_a
+        raw_tx = (-b_ + sq) * inv_a
+
+        # Clip to span: projection ye must lie in [0, baba]
+        ye    = baoa + raw_te * bard
+        yx    = baoa + raw_tx * bard
+        in_seg = baba_bk > 0
+        te_k  = torch.where(v_cyl & (ye >= 0.0) & (ye <= baba_bk) & in_seg,
+                             raw_te, torch.full_like(raw_te, INF))
+        tx_k  = torch.where(v_cyl & (yx >= 0.0) & (yx <= baba_bk) & in_seg,
+                             raw_tx, torch.full_like(raw_tx, INF))
+        te_k  = torch.where(te_k < tx_k, te_k, torch.full_like(te_k, INF))
+
+        # Sphere caps at every sample point  →  (B, N_s)
+        vc    = ot.unsqueeze(1) - pts.unsqueeze(0)           # (B, N_s, 3)
+        b_sp  = (vc * dt.unsqueeze(1)).sum(-1)               # (B, N_s)
+        c_sp  = (vc * vc).sum(-1) - r * r                    # (B, N_s)
+        h_sp  = b_sp * b_sp - c_sp
+        v_sp  = h_sp >= 0.0
+        sq_sp = torch.where(v_sp, torch.sqrt(h_sp.clamp(min=0.0)), torch.zeros_like(h_sp))
+        te_sp = torch.where(v_sp, -b_sp - sq_sp, torch.full_like(b_sp, INF))
+        tx_sp = torch.where(v_sp, -b_sp + sq_sp, torch.full_like(b_sp, INF))
+        te_sp = torch.where(te_sp < tx_sp, te_sp, torch.full_like(te_sp, INF))
+
+        # Best entry: cylinders (0..K-1) then spheres (K..K+N_s-1)
+        te_all = torch.cat([te_k, te_sp], dim=1)    # (B, K+N_s)
+        best_k = te_all.argmin(1)                    # (B,)
+        bi     = torch.arange(B, device=dev)
+        best_te = te_all[bi, best_k]                 # (B,)
+
+        # Best exit — prefer cylinder; fall back to sphere
+        tx_cyl_after = torch.where(tx_k  > best_te.unsqueeze(1),
+                                   tx_k,  torch.full_like(tx_k,  INF))
+        tx_sp_after  = torch.where(tx_sp > best_te.unsqueeze(1),
+                                   tx_sp, torch.full_like(tx_sp, INF))
+        exit_cyl_k   = tx_cyl_after.argmin(1)
+        exit_sp_k    = tx_sp_after.argmin(1)
+        best_tx_cyl  = tx_cyl_after[bi, exit_cyl_k]
+        best_tx_sp   = tx_sp_after [bi, exit_sp_k]
+        use_cyl_exit = best_tx_cyl < INF
+        best_tx      = torch.where(use_cyl_exit, best_tx_cyl, best_tx_sp)
+        exit_k       = torch.where(use_cyl_exit, exit_cyl_k, exit_sp_k + K)
+
+        # ------------------------------------------------------------------
+        # Normals — fully vectorized (compute for all B rays, zero misses)
+        # ------------------------------------------------------------------
+        hit_mask = best_te < INF    # (B,)
+
+        def _normals_for(t_vals, k_idx):
+            """Compute (B, 3) normals given t-values and segment indices."""
+            P   = ot + t_vals.unsqueeze(1) * dt         # (B, 3) hit points
+            is_cyl = k_idx < K                          # (B,) bool
+
+            # Cylinder normal (safe index into [0, K-1])
+            k_c   = k_idx.clamp(0, K - 1)
+            p0_k  = p0[k_c]                             # (B, 3)
+            ax_k  = ax[k_c]                             # (B, 3)
+            proj  = ((P - p0_k) * ax_k).sum(-1, keepdim=True)  # (B, 1)
+            C_pt  = p0_k + proj * ax_k                  # (B, 3) closest point on axis
+            rad_c = P - C_pt
+            n_cyl = rad_c / (rad_c.norm(dim=1, keepdim=True) + 1e-30)
+
+            # Sphere normal (safe index into [0, N_s-1])
+            k_s   = (k_idx - K).clamp(0, N_s - 1)
+            ctr   = pts[k_s]                            # (B, 3)
+            rad_s = P - ctr
+            n_sph = rad_s / (rad_s.norm(dim=1, keepdim=True) + 1e-30)
+
+            # Select and zero out misses
+            n = torch.where(is_cyl.unsqueeze(1), n_cyl, n_sph)
+            n = torch.where(hit_mask.unsqueeze(1), n, torch.zeros_like(n))
+            return n
+
+        ne_t = _normals_for(best_te, best_k)
+        nx_t = _normals_for(best_tx, exit_k)
+
+        return (best_te.cpu().numpy(), best_tx.cpu().numpy(),
+                ne_t.cpu().numpy(),   nx_t.cpu().numpy())
+
     def _intersect_batch(self, o, d):
         """Intersect a batch of B rays against the swept tube surface.
+
+        Dispatches to CUDA if device is set.
 
         The tube surface is the union of:
           • K cylinder barrels — one per spline span, clipped to their span.
@@ -205,6 +355,9 @@ class Tube:
         junction exit cutting off a longer cylinder path); sphere tx is the
         fallback for rays that enter and exit purely through an elbow cap.
         """
+        if self._device != 'cpu':
+            return self._intersect_batch_cuda(o, d)
+
         B    = len(o)
         r    = self.radius
         pts  = self._curve_pts      # (n_samples, 3)

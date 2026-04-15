@@ -8,11 +8,20 @@ normals.
 
 For large meshes (thousands of triangles) an optional uniform-grid spatial
 index reduces the per-ray triangle tests from O(T) to O(T/cell) on average.
+
+GPU acceleration
+----------------
+Pass ``device='cuda'`` to use PyTorch on the GPU for the hot-path
+Möller-Trumbore batch computation.  The external interface (numpy arrays
+in/out) is unchanged; conversion happens inside ``_mt_batch_cuda``.
+Batch size is automatically increased to 65536 on CUDA (vs 2048 on CPU).
 """
 import numpy as np
 
 _INF = np.inf
 _EPS = 1e-8
+_BATCH_CPU  = 2048
+_BATCH_CUDA = 32768
 
 
 class SurfaceMesh:
@@ -23,15 +32,19 @@ class SurfaceMesh:
     faces    : array-like, shape (F, 3) — integer indices into vertices
     use_grid : bool
         Build a uniform spatial grid for faster intersection.  Recommended
-        for meshes with > 500 triangles.
+        for meshes with > 500 triangles.  Ignored when device is CUDA
+        (the GPU batch handles all triangles at once).
+    device : str
+        'cpu' (default, numpy) or 'cuda' (PyTorch GPU).
     """
 
-    def __init__(self, vertices, faces, use_grid=True):
+    def __init__(self, vertices, faces, use_grid=True, device='cpu'):
         self.vertices = np.asarray(vertices, dtype=float)
         self.faces    = np.asarray(faces,    dtype=int)
+        self._device  = device
         self._precompute()
         self._grid = None
-        if use_grid and len(self.faces) > 200:
+        if device == 'cpu' and use_grid and len(self.faces) > 200:
             self._build_grid()
 
     def _precompute(self):
@@ -48,6 +61,17 @@ class SurfaceMesh:
         # AABB for fast pre-filter
         self._bbox_lo = self.vertices.min(axis=0)
         self._bbox_hi = self.vertices.max(axis=0)
+
+        # Pre-convert geometry to CUDA tensors for the GPU path
+        if self._device != 'cpu':
+            import torch
+            dev = torch.device(self._device)
+            def _t(a):
+                return torch.from_numpy(np.ascontiguousarray(a)).float().to(dev)
+            self._v0_t = _t(self._v0)
+            self._e1_t = _t(self._e1)
+            self._e2_t = _t(self._e2)
+            self._fn_t = _t(self._face_normals)
 
     def _build_grid(self, n_cells=20):
         """Build a uniform grid; store per-cell triangle lists."""
@@ -119,12 +143,72 @@ class SurfaceMesh:
         return t_hit[order], fi_hit[order]
 
     # ------------------------------------------------------------------
-    # Vectorized Möller-Trumbore: batch of rays vs all triangles
+    # GPU batch: Möller-Trumbore on CUDA via PyTorch
+    # ------------------------------------------------------------------
+
+    def _mt_batch_cuda(self, o, d):
+        """
+        PyTorch/CUDA Möller-Trumbore for B rays vs F triangles.
+        Accepts and returns numpy arrays; conversion happens internally.
+        Returns the same 6-tuple as the numpy _mt_batch.
+        """
+        import torch
+        dev = self._v0_t.device
+        ot = torch.from_numpy(np.ascontiguousarray(o)).float().to(dev)  # (B, 3)
+        dt = torch.from_numpy(np.ascontiguousarray(d)).float().to(dev)  # (B, 3)
+        v0, e1, e2 = self._v0_t, self._e1_t, self._e2_t
+        B, F = len(o), len(v0)
+        INF = float('inf')
+
+        # h[b,f] = cross(d[b], e2[f])  →  (B, F, 3)
+        h = torch.linalg.cross(
+            dt.unsqueeze(1).expand(-1, F, -1),
+            e2.unsqueeze(0).expand(B, -1, -1), dim=2)
+        a = (e1.unsqueeze(0) * h).sum(-1)          # (B, F)
+
+        par  = a.abs() < _EPS
+        safe = torch.where(par, torch.ones_like(a), a)
+        inv_a = torch.where(par, torch.zeros_like(a), 1.0 / safe)
+
+        s = ot.unsqueeze(1) - v0.unsqueeze(0)       # (B, F, 3)
+        u = inv_a * (s * h).sum(-1)                  # (B, F)
+
+        q = torch.linalg.cross(
+            s, e1.unsqueeze(0).expand(B, -1, -1), dim=2)   # (B, F, 3)
+        v = inv_a * (dt.unsqueeze(1) * q).sum(-1)   # (B, F)
+        t = inv_a * (e2.unsqueeze(0) * q).sum(-1)   # (B, F)
+
+        miss = par | (u < 0) | (u > 1) | (v < 0) | ((u + v) > 1)
+
+        # Forward hits: t > _EPS
+        t_fwd   = torch.where(miss | (t <  _EPS), torch.full_like(t,  INF), t)
+        t_fwd_r = torch.where(miss | (t <  _EPS), torch.full_like(t, -INF), t)
+        # Backward hit: t < -_EPS  (stored as positive magnitude)
+        t_bwd   = torch.where(miss | (t > -_EPS), torch.full_like(t,  INF), -t)
+
+        bi     = torch.arange(B, device=dev)
+        fi_min = t_fwd.argmin(1)
+        fi_max = t_fwd_r.argmax(1)
+        fi_bwd = t_bwd.argmin(1)
+
+        t_min   = t_fwd  [bi, fi_min]
+        t_max   = t_fwd_r[bi, fi_max]
+        has_bwd = t_bwd[bi, fi_bwd] < INF
+        t_back  = torch.where(has_bwd, -t_bwd[bi, fi_bwd],
+                              torch.zeros(B, device=dev))
+
+        return (t_min.cpu().numpy(),  t_max.cpu().numpy(),
+                fi_min.cpu().numpy(), fi_max.cpu().numpy(),
+                t_back.cpu().numpy(), fi_bwd.cpu().numpy())
+
+    # ------------------------------------------------------------------
+    # Vectorized Möller-Trumbore: batch of rays vs all triangles (CPU)
     # ------------------------------------------------------------------
 
     def _mt_batch(self, o, d):
         """
-        Vectorized Möller-Trumbore for B rays vs F triangles.
+        Möller-Trumbore for B rays vs F triangles.
+        Dispatches to CUDA implementation if device is set.
 
         Returns
         -------
@@ -134,10 +218,10 @@ class SurfaceMesh:
         fi_max : (B,) face index for t_max
         t_back : (B,) closest  negative t (0    = no backward hit)
         fi_bwd : (B,) face index for t_back
-
-        The backward hit allows callers to detect that a ray origin lies
-        *inside* a closed mesh (one forward crossing, one backward crossing).
         """
+        if self._device != 'cpu':
+            return self._mt_batch_cuda(o, d)
+
         v0 = self._v0    # (F, 3)
         e1 = self._e1    # (F, 3)
         e2 = self._e2    # (F, 3)
@@ -224,8 +308,8 @@ class SurfaceMesh:
         o_f = origins[idx]    # (M, 3)
         d_f = dirs[idx]       # (M, 3)
 
-        # Process filtered rays in batches to limit (B, F, 3) memory
-        _BATCH = 2048
+        # Batch size depends on device
+        _BATCH = _BATCH_CUDA if self._device != 'cpu' else _BATCH_CPU
         M = len(idx)
         t_min_f  = np.full(M,  _INF)
         t_max_f  = np.full(M, -_INF)
@@ -248,9 +332,6 @@ class SurfaceMesh:
         has_bwd  = t_back_f < 0.0
 
         # "Inside" case: ray origin is inside the closed mesh.
-        # Signature: exactly one forward crossing (t_min == t_max) and a backward one.
-        # We treat the backward crossing as the entry (te < 0) so that
-        #   material_at_points_batch correctly flags the point as interior.
         inside = has_fwd & has_bwd & (t_min_f >= t_max_f)
 
         # Normal "outside → through" case: two distinct forward crossings
@@ -276,14 +357,12 @@ class SurfaceMesh:
         t_exit[v_g]  = tx_v
 
         # ---- Entry normals ----
-        # Outside rays: entry face = fi_min; Inside rays: entry face = fi_bwd
         fi_e = np.where(inside[valid], fi_bwd_f[valid], fi_min_f[valid])
         fn_e = self._face_normals[fi_e]
         cos_e = (d_f[valid] * fn_e).sum(axis=1)
         n_enter[v_g] = np.where(cos_e[:, None] < 0, fn_e, -fn_e)
 
         # ---- Exit normals ----
-        # All cases: exit face = fi_min (inside) or fi_max (outside/grazing)
         fi_x = np.where(inside[valid], fi_min_f[valid], fi_max_f[valid])
         fn_x = self._face_normals[fi_x]
         cos_x = (d_f[valid] * fn_x).sum(axis=1)

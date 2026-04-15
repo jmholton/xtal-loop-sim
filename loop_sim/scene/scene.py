@@ -33,7 +33,7 @@ _INF = np.inf
 # YAML → shape builders
 # ---------------------------------------------------------------------------
 
-def _build_shape(spec):
+def _build_shape(spec, device='cpu'):
     """Recursively build a shape/CSG object from a YAML spec dict."""
     t = spec["type"]
 
@@ -74,11 +74,13 @@ def _build_shape(spec):
             waypoints=spec["path"],
             diameter=spec["diameter"],
             n_samples=spec.get("n_samples", 50),
+            device=device,
         )
     if t == "surface_mesh":
         return SurfaceMesh(
             vertices=np.array(spec["vertices"], dtype=float),
             faces=np.array(spec["faces"],    dtype=int),
+            device=device,
         )
     if t == "thin_shell":
         return ThinShell(
@@ -91,13 +93,13 @@ def _build_shape(spec):
             n_outline=spec.get("n_outline", 60),
         )
     if t == "intersection":
-        children = [_build_shape(c) for c in spec["children"]]
+        children = [_build_shape(c, device) for c in spec["children"]]
         return Intersection(*children)
     if t == "union":
-        children = [_build_shape(c) for c in spec["children"]]
+        children = [_build_shape(c, device) for c in spec["children"]]
         return Union(*children)
     if t == "difference":
-        children = [_build_shape(c) for c in spec["children"]]
+        children = [_build_shape(c, device) for c in spec["children"]]
         return Difference(children[0], children[1])
 
     raise ValueError(f"Unknown shape type: {t!r}")
@@ -312,8 +314,15 @@ class Scene:
 # YAML loader
 # ---------------------------------------------------------------------------
 
-def load(yaml_path):
-    """Load a scene YAML file and return a Scene."""
+def load(yaml_path, device='cpu'):
+    """Load a scene YAML file and return a Scene.
+
+    Parameters
+    ----------
+    yaml_path : str — path to the scene YAML file
+    device    : str — 'cpu' (default) or 'cuda' for GPU-accelerated
+                ray intersection in SurfaceMesh and Tube primitives.
+    """
     with open(yaml_path) as f:
         data = yaml.safe_load(f)
 
@@ -334,7 +343,7 @@ def load(yaml_path):
     for obj_spec in data.get("objects", []):
         mat_name = obj_spec["material"]
         mat = mat_lookup.get(mat_name, AIR)
-        shape = _build_shape(obj_spec["shape"])
+        shape = _build_shape(obj_spec["shape"], device=device)
         is_fiber = obj_spec["shape"]["type"] == "tube"
         # Preserve lattice metadata as attribute if present
         sobj = SceneObject(

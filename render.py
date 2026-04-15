@@ -30,6 +30,8 @@ def parse_args():
     p.add_argument('--roty', type=float, default=None, help='Rotation about y-axis (degrees)')
     p.add_argument('--rotz', type=float, default=None, help='Rotation about z-axis (degrees)')
     p.add_argument('--n-cond', type=int, default=1,    help='Condenser rays (default 1)')
+    p.add_argument('--device', default='cpu',
+                   help='Compute device: cpu (default) or cuda')
     p.add_argument('--output', default=None,
                    help='Output JPEG path (default: <scene_basename>.jpg in same directory)')
     return p.parse_args()
@@ -54,7 +56,7 @@ def main():
     roty = args.roty if args.roty is not None else float(motor.get('roty', 0.0))
     rotz = args.rotz if args.rotz is not None else float(motor.get('rotz', 0.0))
 
-    scene = load_scene(args.scene)
+    scene = load_scene(args.scene, device=args.device)
     gonio = Goniometer(geometry)
     gonio.set(tx=tx, ty=ty, rotx=rotx, roty=roty, rotz=rotz)
 
