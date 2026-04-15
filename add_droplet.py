@@ -47,6 +47,7 @@ sys.path.insert(0, '/home/jamesh/projects/loop_sim/claude')
 import numpy as np
 import yaml
 from scipy.optimize import brentq
+from loop_sim.scene.tube import neville_sample
 
 
 _DEFAULT_OUTPUT = os.path.join(os.path.dirname(__file__), 'droplet.yaml')
@@ -259,25 +260,34 @@ def main():
     all_pts  = np.array(hoop_waypoints, dtype=float)
     if np.allclose(all_pts[0], all_pts[-1]):
         unique_pts = all_pts[:-1]
+        closed_pts = all_pts           # already has repeated endpoint
     else:
         unique_pts = all_pts
+        closed_pts = np.vstack([all_pts, all_pts[0:1]])   # close the loop
 
     # Centroid from all unique waypoints so the crossover pulls it toward
     # the narrow end and the apex sits more centrally in the loop.
     centroid = unique_pts.mean(axis=0)   # (3,)
 
-    # Build per-angle rim radii by ray-casting from centroid to the loop
-    # polygon (all waypoints including the crossover).  This lets the droplet
-    # reach all the way to the crossover rather than stopping at a circle.
-    poly_xy  = unique_pts[:, :2]   # project to z=0 plane
-    cx2, cy2 = centroid[0], centroid[1]
+    # Dense-sample the hoop using the same CubicSpline as the tube renderer
+    # so the droplet rim follows the actual smooth fiber path, not just the
+    # straight-edge polygon between the sparse waypoints.  Between waypoints
+    # the fiber curves outward; using only the raw waypoints undershoots the
+    # rim radius and leaves a visible gap between the droplet edge and the fiber.
+    n_dense   = max(100, 10 * len(closed_pts))
+    dense_pts = neville_sample(closed_pts, n_dense)   # (n_dense, 3)
+    # Drop the last sample (= first, since the loop is closed) to get a proper
+    # open polygon that _loop_rim_radii will close automatically.
+    poly_xy   = dense_pts[:-1, :2]   # (n_dense-1, 2)
+    cx2, cy2  = centroid[0], centroid[1]
 
     # Base uniform phi grid
     phi_uniform = np.linspace(0.0, 2.0 * np.pi, args.n_phi, endpoint=False)
 
-    # Add exact angles toward every polygon vertex so the rim mesh reaches
-    # each corner (especially the crossover at [0,0]).
-    vertex_phis = np.arctan2(poly_xy[:, 1] - cy2, poly_xy[:, 0] - cx2) % (2 * np.pi)
+    # Add exact angles toward every original waypoint vertex so the rim mesh
+    # is guaranteed to reach each corner (especially the crossover at [0,0]).
+    vertex_phis = np.arctan2(unique_pts[:, 1] - cy2,
+                             unique_pts[:, 0] - cx2) % (2 * np.pi)
     phi_angles  = np.unique(np.concatenate([phi_uniform, vertex_phis]))
 
     R_phi  = _loop_rim_radii(centroid[:2], poly_xy, fiber_radius, phi_angles)

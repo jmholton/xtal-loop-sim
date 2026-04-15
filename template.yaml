@@ -15,10 +15,8 @@ camera:
   na_condenser: 0.17
 
 beam:
-  spacing: 0.001
-  profile:  gaussian
-  fwhm_x:   0.05
-  fwhm_y:   0.03
+  image:            beam.png      # PNG profile image (make_beam_image.py)
+  pinhole_diameter: 0.100         # mm — circular aperture applied at load time
 
 materials:
   nylon:
