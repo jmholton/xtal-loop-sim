@@ -147,7 +147,7 @@ def _trace_rays(scene, origins, dirs, na_obj, n_background=1.0,
         goniometer has non-zero rotation so the NA cutoff is evaluated in the
         correct frame (camera fixed in lab; sample rotates under it).
 
-    Returns (N,) float array: intensity in [0, 1].
+    Returns (N, 3) float32 array: RGB intensity in [0, 1].
     """
     N = len(origins)
     intensity = np.ones((N, 3))   # RGB channels
@@ -159,20 +159,32 @@ def _trace_rays(scene, origins, dirs, na_obj, n_background=1.0,
                             dtype=float)
     cos_na = np.cos(np.arcsin(np.clip(na_obj, 0.0, 1.0)))
 
+    # --- Material lookup tables (index 0 = background, 1..n = objects[i-1]) ---
+    # cur_mat_oi uses these indices; -1 maps to 0 via the (oi+1) shift below.
+    _bg   = scene.background
+    _objs = scene.objects
+    mat_n_tab   = np.array([n_background] +
+                            [o.material.n          for o in _objs])  # (K,)
+    mat_mu_tab  = np.array([_bg.mu_optical] +
+                            [o.material.mu_optical  for o in _objs])  # (K,)
+    mat_col_tab = np.array([list(_bg.color)] +
+                            [list(o.material.color) for o in _objs],
+                            dtype=float)                               # (K, 3)
+
     # Compressed active-ray state (shrinks each iteration)
-    gidx     = np.arange(N, dtype=np.intp)   # global indices of active rays
-    o        = origins.copy()
-    d        = dirs.copy()
-    cur_n    = np.full(N, n_background)
-    cur_mat  = [scene.background] * N         # indexed by global ray index
+    # cur_mat_oi[i]: 0 = background, k = objects[k-1]  (k = oi+1)
+    gidx        = np.arange(N, dtype=np.intp)
+    o           = origins.copy()
+    d           = dirs.copy()
+    cur_mat_oi  = np.zeros(N, dtype=np.intp)   # all rays start in background
 
     for _ in range(MAX_DEPTH):
         if len(gidx) == 0:
             break
 
         # Only test active rays
-        t_next, normals, mat_in, mat_out = scene.next_interface(
-            o[gidx], d[gidx], [cur_mat[i] for i in gidx], t_min=1e-6
+        t_next, normals, mat_out_oi = scene.next_interface(
+            o[gidx], d[gidx], t_min=1e-6
         )
 
         hit    = t_next < _INF
@@ -188,24 +200,25 @@ def _trace_rays(scene, origins, dirs, na_obj, n_background=1.0,
             gidx = np.empty(0, dtype=np.intp)
             break
 
-        h_g   = gidx[hit]      # global indices of hit rays
-        h_loc = np.where(hit)[0]
+        h_g  = gidx[hit]      # global indices of hit rays
+        oi_h = cur_mat_oi[h_g]  # current material table indices (K-indexed)
 
         # Per-channel Beer-Lambert: mu_c = mu_optical + _COLOR_MU*(1-color[c])
-        mu        = np.array([cur_mat[i].mu_optical for i in h_g])      # (n_hit,)
-        mat_color = np.array([cur_mat[i].color      for i in h_g])      # (n_hit, 3)
-        mu_per_ch = mu[:, None] + _COLOR_MU * (1.0 - mat_color)         # (n_hit, 3)
+        mu        = mat_mu_tab[oi_h]        # (n_hit,)
+        mat_color = mat_col_tab[oi_h]       # (n_hit, 3)
+        mu_per_ch = mu[:, None] + _COLOR_MU * (1.0 - mat_color)   # (n_hit, 3)
         intensity[h_g] *= np.exp(-mu_per_ch * t_next[hit, None])
 
         # Advance origins to interface
         new_orig = o[h_g] + t_next[hit, None] * d[h_g]
 
-        # Snell's law
-        n1    = cur_n[h_g]
-        n2    = np.array([mat_out[j].n if mat_out[j] is not None
-                          else n_background for j in h_loc])
+        # Snell's law — n2 from lookup table (mat_out_oi: -1=bg, oi=obj index)
+        n1 = mat_n_tab[oi_h]                         # (n_hit,)
+        new_oi_shifted = mat_out_oi[hit] + 1         # shift: -1→0, oi→oi+1
+        n2 = mat_n_tab[new_oi_shifted]               # (n_hit,)
+
         cos_i = np.abs(np.einsum("ij,ij->i", d[h_g], normals[hit]))
-        intensity[h_g] *= _fresnel_T(n1, n2, cos_i)[:, None]   # broadcast over RGB
+        intensity[h_g] *= _fresnel_T(n1, n2, cos_i)[:, None]
 
         new_dirs = _snell_refract(d[h_g], normals[hit], n1, n2)
         tir = np.any(np.isnan(new_dirs), axis=1)
@@ -214,11 +227,9 @@ def _trace_rays(scene, origins, dirs, na_obj, n_background=1.0,
         # Keep only successfully refracted rays
         ok   = ~tir
         ok_g = h_g[ok]
-        o[ok_g]       = new_orig[ok]
-        d[ok_g]       = new_dirs[ok]
-        cur_n[ok_g]   = n2[ok]
-        for j2, gi in enumerate(ok_g):
-            cur_mat[gi] = mat_out[h_loc[ok][j2]]
+        o[ok_g]          = new_orig[ok]
+        d[ok_g]          = new_dirs[ok]
+        cur_mat_oi[ok_g] = new_oi_shifted[ok]   # numpy array assign, no Python loop
 
         gidx = ok_g
 

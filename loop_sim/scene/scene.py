@@ -153,62 +153,58 @@ class Scene:
     # next_interface: closest t > t_min where material changes
     # ------------------------------------------------------------------
 
-    def next_interface(self, origins, dirs, current_materials, t_min=1e-6):
+    def next_interface(self, origins, dirs, t_min=1e-6):
         """
         For each ray: find the closest interface at t > t_min.
 
         Parameters
         ----------
-        origins           : (N, 3)
-        dirs              : (N, 3) unit vectors
-        current_materials : list/array of Material, length N
-        t_min             : float — ignore intersections closer than this
+        origins : (N, 3)
+        dirs    : (N, 3) unit vectors
+        t_min   : float — ignore intersections closer than this
 
         Returns
         -------
-        t      : (N,)   — distance to next interface (inf = no interface)
-        normal : (N, 3) — outward surface normal at the interface
-        mat_in : list[Material], length N — material before crossing
-        mat_out: list[Material], length N — material after crossing
+        t          : (N,)    — distance to next interface (inf = no interface)
+        normal     : (N, 3)  — outward surface normal at the interface
+        mat_out_oi : (N,) int — object index of material after crossing
+                                (-1 = background)
         """
         N = len(origins)
-        best_t  = np.full(N, _INF)
-        best_n  = np.zeros((N, 3))
-        best_entering = np.ones(N, dtype=bool)
-        best_obj_idx  = np.full(N, -1, dtype=int)
+        n_obj = len(self.objects)
+        best_t = np.full(N, _INF)
+        best_n = np.zeros((N, 3))
+        all_te = np.empty((N, n_obj))
+        all_tx = np.empty((N, n_obj))
 
         for oi, obj in enumerate(self.objects):
             te, tx, ne, nx = obj.shape.ray_intersect(origins, dirs)
+            all_te[:, oi] = te
+            all_tx[:, oi] = tx
 
             # Entry events at t > t_min
             valid_e = (te > t_min) & (te < tx) & (te < best_t)
-            best_t[valid_e]   = te[valid_e]
-            best_n[valid_e]   = ne[valid_e]
-            best_obj_idx[valid_e] = oi
-            best_entering[valid_e] = True
+            best_t[valid_e] = te[valid_e]
+            best_n[valid_e] = ne[valid_e]
 
             # Exit events at t > t_min
             valid_x = (tx > t_min) & (te < tx) & (tx < best_t)
-            best_t[valid_x]   = tx[valid_x]
-            best_n[valid_x]   = nx[valid_x]
-            best_obj_idx[valid_x] = oi
-            best_entering[valid_x] = False
+            best_t[valid_x] = tx[valid_x]
+            best_n[valid_x] = nx[valid_x]
 
-        # Build material lists — batch probe all hit points at once
-        mat_in  = list(current_materials)
-        mat_out = [self.background] * N
-
+        # Determine material just past hit point via a fresh containment probe.
+        # Fire a short +Z probe ray from a point just past the interface and
+        # check te < 0 < tx (origin is inside).  This is robust because it
+        # re-centres the containment question at the probe point, independent
+        # of the original ray's t-values.
         hit_mask = best_t < _INF
+        mat_out_oi = np.full(N, -1, dtype=np.intp)
         if np.any(hit_mask):
-            hit_idx   = np.where(hit_mask)[0]
             probe_pts = (origins[hit_mask]
-                         + best_t[hit_mask, None] * dirs[hit_mask]
-                         + dirs[hit_mask] * 1e-7)
-            probed = self._material_at_points_batch(probe_pts)
-            for j, i in enumerate(hit_idx):
-                mat_out[i] = probed[j]
+                         + best_t[hit_mask, None] * dirs[hit_mask])
+            mat_out_oi[hit_mask] = self._obj_index_at_points_batch(probe_pts)
 
-        return best_t, best_n, mat_in, mat_out
+        return best_t, best_n, mat_out_oi
 
     def _material_at_point(self, point):
         """Scalar version: material at a single 3-D point."""
@@ -220,17 +216,18 @@ class Scene:
                 return obj.material
         return self.background
 
-    def _material_at_points_batch(self, points):
+    def _obj_index_at_points_batch(self, points):
         """
-        Vectorized material probe: returns list[Material] of length len(points).
+        Vectorized containment probe: returns (M,) int array.
 
-        For each point, returns the highest-priority material whose shape
-        contains that point (te < 0 < tx for a probe ray along +Z).
+        For each point, returns the index into self.objects of the
+        highest-priority object containing the point (-1 = background).
+        Uses a probe ray along +Z: inside iff te < 0 < tx.
         """
         M = len(points)
         probe_d = np.zeros((M, 3))
-        probe_d[:, 2] = 1.0          # probe along +Z for all points
-        result_idx = np.full(M, -1, dtype=int)
+        probe_d[:, 2] = 1.0
+        result_idx = np.full(M, -1, dtype=np.intp)
 
         for oi, obj in enumerate(self.objects):
             te, tx, _, _ = obj.shape.ray_intersect(points, probe_d)
@@ -239,8 +236,18 @@ class Scene:
             if np.all(result_idx >= 0):
                 break
 
+        return result_idx
+
+    def _material_at_points_batch(self, points):
+        """
+        Vectorized material probe: returns list[Material] of length len(points).
+
+        For each point, returns the highest-priority material whose shape
+        contains that point (te < 0 < tx for a probe ray along +Z).
+        """
+        idx = self._obj_index_at_points_batch(points)
         return [self.objects[i].material if i >= 0 else self.background
-                for i in result_idx]
+                for i in idx]
 
     # ------------------------------------------------------------------
     # path_lengths: full traversal → {material: total_length} per ray

@@ -10,10 +10,10 @@ objects:
     children:
     - type: half_space
       normal: [1.0, 0.0, 0.0]
-      offset: -0.16583333
+      offset: -0.06583333
     - type: half_space
       normal: [-1.0, 0.0, 0.0]
-      offset: 0.24583333
+      offset: 0.04583333
     - type: half_space
       normal: [0.0, 1.0, 0.0]
       offset: 0.01985
