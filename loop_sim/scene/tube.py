@@ -475,6 +475,87 @@ class Tube:
         return best_te, best_tx, ne, nx
 
     # ------------------------------------------------------------------
+    # Float64 normal recomputation (GPU path post-process)
+    # ------------------------------------------------------------------
+
+    def recompute_normals_f64(self, origins, dirs, t_vals, hit_mask):
+        """
+        Recompute surface normals in float64 for GPU-rendered hits.
+
+        The CUDA path uses float32 throughout (~6nm coordinate ULP at t=50mm),
+        giving normal errors of ~0.1%.  Here we reuse the float64 origins/dirs
+        from the ray tracer plus the float64 _curve_pts to recover ~0.03% error
+        (limited only by the float32 t value precision).
+
+        Parameters
+        ----------
+        origins, dirs : (N, 3) float64
+        t_vals        : (N,)   float  — hit distances (float32 precision)
+        hit_mask      : (N,)   bool   — which entries to process
+
+        Returns
+        -------
+        normals : (N, 3) float64, zeros for non-hit rays
+        """
+        N = len(origins)
+        normals = np.zeros((N, 3), dtype=float)
+        if not np.any(hit_mask):
+            return normals
+
+        pts  = self._curve_pts                                  # (n_s, 3) f64
+        r    = self.radius
+        p0   = pts[:-1]                                         # (K, 3)
+        ba   = pts[1:] - p0                                     # (K, 3)
+        baba = (ba * ba).sum(1)                                 # (K,)
+        ax   = ba / (np.sqrt(baba)[:, None] + 1e-30)           # (K, 3)
+        K    = len(p0)
+
+        idx = np.where(hit_mask)[0]
+        o_h = np.asarray(origins[idx], dtype=float)            # (M, 3) f64
+        d_h = np.asarray(dirs[idx],    dtype=float)            # (M, 3) f64
+        t_h = np.asarray(t_vals[idx],  dtype=float)[:, None]  # (M, 1) f64
+        P_h = o_h + t_h * d_h                                  # (M, 3) f64 hit pts
+
+        # Distance from each hit point to each cylinder barrel (clamped proj)
+        oa      = P_h[:, None, :] - p0[None, :, :]            # (M, K, 3)
+        baoa    = np.einsum('mki,ki->mk', oa, ba)              # (M, K)
+        frac    = np.clip(baoa / (baba[None, :] + 1e-30),
+                          0.0, 1.0)                             # (M, K)
+        C       = p0[None, :, :] + frac[:, :, None] * ba[None, :, :]  # (M,K,3)
+        radv    = P_h[:, None, :] - C                          # (M, K, 3)
+        dist_c  = np.sqrt((radv * radv).sum(2))                # (M, K)
+
+        # Distance from each hit point to each sphere-cap centre
+        dp      = P_h[:, None, :] - pts[None, :, :]           # (M, n_s, 3)
+        dist_s  = np.sqrt((dp * dp).sum(2))                    # (M, n_s)
+
+        # Which primitive is this hit on?  Nearest surface wins.
+        M = len(idx)
+        mi = np.arange(M)
+        best_ck = np.abs(dist_c - r).argmin(1)                # (M,)
+        best_sk = np.abs(dist_s - r).argmin(1)                # (M,)
+        use_cyl = (np.abs(dist_c - r)[mi, best_ck] <=
+                   np.abs(dist_s - r)[mi, best_sk])            # (M,) bool
+
+        if np.any(use_cyl):
+            k_c  = best_ck[use_cyl]
+            P_c  = P_h[use_cyl]
+            proj = ((P_c - p0[k_c]) * ax[k_c]).sum(1)
+            C_t  = p0[k_c] + proj[:, None] * ax[k_c]
+            rad  = P_c - C_t
+            normals[idx[use_cyl]] = rad / (
+                np.linalg.norm(rad, axis=1, keepdims=True) + 1e-30)
+
+        if np.any(~use_cyl):
+            k_s  = best_sk[~use_cyl]
+            P_s  = P_h[~use_cyl]
+            rad  = P_s - pts[k_s]
+            normals[idx[~use_cyl]] = rad / (
+                np.linalg.norm(rad, axis=1, keepdims=True) + 1e-30)
+
+        return normals
+
+    # ------------------------------------------------------------------
     # Fiber axis helpers (for X-ray beam reporter)
     # ------------------------------------------------------------------
 

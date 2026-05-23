@@ -13,20 +13,29 @@ PyTorch+CUDA.
 ## GPU rendering (voltron)
 
 GPU-accelerated rendering requires CUDA — only available on voltron.
-Run GPU scripts via SSH:
+Submit via SLURM from the local machine (no SSH needed):
 
 ```bash
-ssh voltron "cd $PWD ; bash debug_optim.bash"
+sbatch run_gpu.slurm          # gpu partition, gres=gpu:1, no --time
+squeue --job <jobid>          # check status
 ```
 
-**Never** use `&&` in SSH commands to voltron: its login shell is tcsh, which
-does not parse `&&`.  Always write a bash script and invoke it with
+Do **not** set `--time` in SLURM job scripts — this queue has no time limits
+and the flag causes jobs to be cancelled prematurely.
+
+If you need an interactive SSH session (not SLURM): voltron's login shell is
+tcsh, which does not parse `&&`.  Always write a bash script and invoke it with
 `ssh voltron "cd $PWD ; bash script.bash"`.
 
 `--device cuda` enables the GPU path in `render.py` and `scene.load()`.
 `--device cpu` is the reference path (float64, no PyTorch required).
 
-Performance: CPU ~230 s/frame, GPU (TITAN V) ~3 s/frame at 704×480, n_cond=1.
+Performance (704×480, TITAN V on voltron):
+
+| n_cond | CPU    | GPU   | speedup |
+|--------|--------|-------|---------|
+| 1      | ~179 s | ~9 s  | 20×     |
+| 7      | ~1230 s| ~23 s | 53×     |
 
 ## Condenser sampling (n_cond)
 
@@ -96,23 +105,53 @@ index k = objects[k-1]).
 
 The GPU path uses float32.  At t ≈ 50 mm, float32 ULP ≈ 6 nm.
 
-**Do not** probe material-after-interface using `te ≤ best_t < tx` from the
-original ray's intersection values — nearby surfaces within float32 precision
-of each other will corrupt the active-object set and produce wrong materials.
+### Material-after-interface (mat_out_oi)
 
-**Do** use `_obj_index_at_points_batch(probe_pts)` (fires a fresh +Z probe
-ray from the hit point).  The +Z direction is independent of the original ray,
-so containment is re-evaluated in a fresh coordinate frame and is robust to
-float32 surface proximity.
+`next_interface()` determines which material a ray enters after crossing a
+surface using an **interval check** on the already-computed `all_te`/`all_tx`
+arrays:
+
+```python
+t_probe = best_t + 1e-4   # 100 nm >> 6 nm ULP → lands on correct side
+inside  = (te_m < t_probe) & (t_probe < tx_m)
+mat_out_oi = inside.argmax(axis=1) if inside.any(axis=1) else -1
+```
+
+The 100 nm offset is >> float32 ULP at t ≈ 50 mm, so it reliably lands past
+the interface in both entry and exit cases.  No extra CUDA round-trips needed.
+
+**Do not** revert to `_obj_index_at_points_batch` probe rays — that approach
+was the original broken path (fires a +Z probe from the float32 hit point;
+50% failure rate due to ULP ambiguity).
+
+### Tube normals
+
+Tube (`_intersect_batch_cuda`) returns float32 normals (~0.1% error at tube
+radius 10 µm).  `next_interface()` recomputes them in float64 via
+`Tube.recompute_normals_f64()` using the float64 origins/dirs from the ray
+tracer and the float64 `_curve_pts` stored in each Tube.  Residual error:
+~0.03% (limited by float32 t precision, 6 nm ULP).
+
+`SurfaceMesh` normals are already float64 (face normals looked up by face
+index after CUDA intersection).
 
 ## Comparison workflow
 
-After any change to the renderer or scene on voltron:
+After any change to the renderer or scene, submit to SLURM:
 
 ```bash
-ssh voltron "cd $PWD ; bash debug_optim.bash"   # renders scene_ref.jpg + scene_optim.jpg
-ssh voltron "cd $PWD ; bash check_diff.bash"     # 3-way: CPU vs GPU-original vs GPU-new
+sbatch run_gpu.slurm     # renders CPU+GPU at n_cond=1 and n_cond=7, PNG output
+cat slurm_<jobid>.log    # check timing and diff stats
 ```
 
-Acceptable: `pixels>10` count for GPU-new vs CPU-ref should be ≤ GPU-original
-vs CPU-ref (~36-40 K pixels for a 704×480 scene with float32 GPU).
+Acceptable thresholds (PNG, lossless, 704×480):
+
+| n_cond | pixels>10 | notes |
+|--------|-----------|-------|
+| 1      | ≤ ~35 K   | baseline; nearly all diff pixels are >60 (TIR/NA flip) |
+| 7      | ≤ ~60 K   | higher than n_cond=1 because 7 angles sample more edge cases |
+
+Almost all differing pixels are binary flips (TIR or NA cutoff crossing due to
+float32 geometry), not gradual noise.  The n_cond=7 count is ~1.6× the
+n_cond=1 count because independent condenser rays can each flip a different set
+of edge pixels.
