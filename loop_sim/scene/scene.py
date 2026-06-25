@@ -269,18 +269,24 @@ class Scene:
                 for i in idx]
 
     # ------------------------------------------------------------------
-    # path_lengths: full traversal → {material: total_length} per ray
+    # path traversal → ordered segments / per-material totals per ray
     # ------------------------------------------------------------------
 
-    def path_lengths(self, origins, dirs, t_max=200.0):
+    def _ray_segments(self, origins, dirs, t_max=200.0):
         """
-        Walk all interfaces along each ray and accumulate path lengths
-        per material.
+        Walk all interfaces along each ray and return the ORDERED list of
+        (Material, length_mm) segments per ray, front-to-back.
 
-        Returns: list of dicts, one per ray: {Material: float_mm}
+        Shared core for path_lengths() (which reduces the segments to a
+        per-material dict) and path_segments() (which exposes the order).
+        Order matters for X-ray Beer-Lambert attenuation, where a segment's
+        incident flux depends on the cumulative attenuation of everything in
+        front of it.
+
+        Returns: list (one per ray) of list[(Material, float_mm)].
         """
         N = len(origins)
-        results = [{} for _ in range(N)]
+        segments = [[] for _ in range(N)]
 
         # Collect all (t, obj_idx, is_entry) events per ray
         all_events = []   # list of (t_array, obj_idx, is_entry_bool)
@@ -289,6 +295,7 @@ class Scene:
             all_events.append((te, oi, True))
             all_events.append((tx, oi, False))
 
+        n_obj = len(self.objects)
         for i in range(N):
             # Build sorted event list for ray i
             evs = []
@@ -298,30 +305,53 @@ class Scene:
                     evs.append((t, oi, is_entry))
             evs.sort(key=lambda x: x[0])
 
-            # Walk events
+            # Walk events front-to-back
             active_objs = set()   # indices of objects currently containing the ray
-            prev_t = 0.0
-
-            def current_mat():
-                for oi2 in range(len(self.objects)):  # priority order
-                    if oi2 in active_objs:
-                        return self.objects[oi2].material
-                return self.background
-
+            prev_t   = 0.0
             prev_mat = self.background
             for t_ev, oi, is_entry in evs:
                 seg_len = t_ev - prev_t
                 if seg_len > 0.0:
-                    mat = prev_mat
-                    results[i][mat] = results[i].get(mat, 0.0) + seg_len
+                    segments[i].append((prev_mat, seg_len))
                 prev_t = t_ev
                 if is_entry:
                     active_objs.add(oi)
                 else:
                     active_objs.discard(oi)
-                prev_mat = current_mat()
+                # highest-priority active object's material, else background
+                prev_mat = self.background
+                for oi2 in range(n_obj):   # priority order
+                    if oi2 in active_objs:
+                        prev_mat = self.objects[oi2].material
+                        break
 
+        return segments
+
+    def path_lengths(self, origins, dirs, t_max=200.0):
+        """
+        Walk all interfaces along each ray and accumulate path lengths
+        per material.
+
+        Returns: list of dicts, one per ray: {Material: float_mm}
+        """
+        results = []
+        for segs in self._ray_segments(origins, dirs, t_max):
+            d = {}
+            for mat, length in segs:
+                d[mat] = d.get(mat, 0.0) + length
+            results.append(d)
         return results
+
+    def path_segments(self, origins, dirs, t_max=200.0):
+        """
+        Like path_lengths() but preserves front-to-back ORDER: returns, per
+        ray, a list of (Material, length_mm) segments in traversal order.
+
+        Needed for X-ray Beer-Lambert attenuation (see beam.py): each
+        segment's incident flux is the incident beam attenuated by every
+        segment ahead of it.
+        """
+        return self._ray_segments(origins, dirs, t_max)
 
     # ------------------------------------------------------------------
     # Fiber-axis data for beam reporter

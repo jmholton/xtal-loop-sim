@@ -80,7 +80,8 @@ absent, crossover shadows disappear, and the stem looks wrong.
 render.py                    CLI: loads scene, drives goniometer, calls render()
 loop_sim/
   scene/
-    scene.py                 YAML loader; Scene.next_interface(); path_lengths()
+    scene.py                 YAML loader; Scene.next_interface(); path_lengths();
+                             path_segments() (ordered front-to-back, for X-ray attenuation)
     primitives.py            HalfSpace, Sphere, Cylinder, Box, Capsule, Ellipsoid
     tube.py                  Neville-chain tube; CUDA hot path (_intersect_batch_cuda)
     surface_mesh.py          Möller-Trumbore mesh; CUDA hot path (_mt_batch_cuda)
@@ -90,11 +91,15 @@ loop_sim/
     goniometer.py            SE(3) from tx/ty/tz/rotx/roty/rotz/zoom
   renderer/
     microscope.py            Snell's law ray tracer; Beer-Lambert; NA cutoff (numpy reference)
-    beam.py                  X-ray grid probe → {material: volume_mm3}
+    beam.py                  X-ray grid probe → per-material volume + Beer-Lambert
+                             attenuation (absorbed_dose, transmitted_frac,
+                             beam_transmission); render_xray_numpy (radiograph, CPU ref)
     engine_torch.py          GPU-resident torch engine (TorchScene, render_torch);
-                             byte-identical to microscope.py in float64, ~6-8x faster
+                             byte-identical to microscope.py in float64, ~6-8x faster;
+                             render_xray_torch (straight-ray transmission map)
   server/
-    camera_server.py         AXIS HTTP server; renders via engine_torch on CUDA, else microscope
+    camera_server.py         AXIS HTTP server; renders via engine_torch on CUDA, else
+                             microscope; /beam (JSON) + /xray (radiograph PNG)
 ```
 
 ## Key API: next_interface()

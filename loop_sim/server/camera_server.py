@@ -16,7 +16,11 @@ GET/POST /motor
     Returns JSON with current motor state.
 
 GET /beam
-    Compute and return X-ray beam illuminated volumes as JSON.
+    Compute and return X-ray beam illuminated volumes + attenuation as JSON.
+
+GET /xray
+    Per-pixel X-ray transmission map (radiograph) as a grayscale PNG,
+    registered to the optical view (bright = transmitted, dark = absorbed).
 
 Usage
 -----
@@ -64,6 +68,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._handle_motor(params)
         elif path == "/beam":
             self._handle_beam()
+        elif path == "/xray":
+            self._handle_xray()
         else:
             self.send_error(404)
 
@@ -138,6 +144,15 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _handle_xray(self):
+        png = self.server._render_xray_png()
+        self.send_response(200)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Content-Length", str(len(png)))
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(png)
 
 
 class CameraServer(ThreadingHTTPServer):
@@ -219,6 +234,26 @@ class CameraServer(ThreadingHTTPServer):
             return self._render_now()
         return cached
 
+    def _render_xray_png(self):
+        """Render the X-ray transmission map (radiograph) as a grayscale PNG.
+
+        Bright = transmitted, dark = absorbed.  Uses the GPU-resident engine
+        when present, else the numpy reference (slow at full resolution).
+        Rendered on demand (not cached) — it's a manual snapshot endpoint.
+        """
+        import numpy as np
+        from PIL import Image
+        if self._tscene is not None:
+            from ..renderer.engine_torch import render_xray_torch
+            T = render_xray_torch(self._tscene, self._goniometer).clamp(0, 1).cpu().numpy()
+        else:
+            from ..renderer.beam import render_xray_numpy
+            T = render_xray_numpy(self._scene, self._goniometer)
+        img8 = (np.clip(T, 0.0, 1.0) * 255).astype(np.uint8)
+        buf = io.BytesIO()
+        Image.fromarray(img8, mode="L").save(buf, format="PNG")
+        return buf.getvalue()
+
     # ------------------------------------------------------------------
     # Background render thread
     # ------------------------------------------------------------------
@@ -258,6 +293,7 @@ class CameraServer(ThreadingHTTPServer):
         print(f"  Snap  : http://{host}:{port}/axis-cgi/jpg/image.cgi")
         print(f"  Motor : http://{host}:{port}/motor?tx=0.1&rotz=45&zoom=2")
         print(f"  Beam  : http://{host}:{port}/beam")
+        print(f"  Xray  : http://{host}:{port}/xray")
 
         if background:
             st = threading.Thread(target=self.serve_forever, daemon=True)

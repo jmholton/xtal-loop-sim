@@ -134,7 +134,8 @@ times faster, so the live `/motor` → frame latency drops accordingly.
 | `GET /axis-cgi/mjpg/video.cgi` | MJPEG stream |
 | `GET /axis-cgi/jpg/image.cgi` | Single JPEG snapshot |
 | `GET /motor?tx=0.05&roty=45` | Move motors, returns JSON state |
-| `GET /beam` | X-ray illuminated volumes (JSON) |
+| `GET /beam` | X-ray illuminated volumes + Beer-Lambert attenuation (JSON) |
+| `GET /xray` | X-ray transmission map / radiograph (grayscale PNG) |
 
 **Motor parameters:** `tx`, `ty`, `tz` (mm), `rotx`, `roty`, `rotz` (degrees),
 `zoom` (dimensionless; `zoom=2` halves pixel size).
@@ -142,11 +143,23 @@ times faster, so the live `/motor` → frame latency drops accordingly.
 **Beam response example:**
 ```json
 {
-  "crystal": {"volume_mm3": 0.00042, "weighted_volume": 0.00038},
-  "solvent":  {"volume_mm3": 0.00180, "weighted_volume": 0.00165},
-  "nylon":    {"volume_mm3": 0.00008, "weighted_volume": 0.00007}
+  "crystal": {"volume_mm3": 0.00042, "weighted_volume": 0.00038,
+              "absorbed_dose": 0.41, "transmitted_frac": 0.33},
+  "solvent": {"volume_mm3": 0.00180, "weighted_volume": 0.00165,
+              "absorbed_dose": 0.05, "transmitted_frac": 0.95},
+  "nylon":   {"volume_mm3": 0.00008, "weighted_volume": 0.00007,
+              "absorbed_dose": 0.01, "transmitted_frac": 0.99},
+  "beam_transmission": 0.27
 }
 ```
+
+`absorbed_dose` is the incident-weighted X-ray flux absorbed in each material
+(shadowing-aware: a material behind an absorber sees already-attenuated flux),
+`transmitted_frac` is the mean fraction of flux that survives passing through
+it, and the top-level `beam_transmission` is the fraction of the whole incident
+beam that exits the sample.  By energy book-keeping, Σ `absorbed_dose` +
+`beam_transmission` ≈ 1.  These are relative units — `mu_xray` values are
+illustrative, not absolute dosimetry.
 
 ---
 
