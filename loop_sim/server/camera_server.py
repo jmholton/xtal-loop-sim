@@ -33,7 +33,7 @@ import json
 import threading
 import time
 import urllib.parse
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from ..motors.goniometer import Goniometer
 from ..renderer.microscope import render as microscope_render
@@ -140,8 +140,11 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-class CameraServer(HTTPServer):
+class CameraServer(ThreadingHTTPServer):
     """
+    Threaded (one thread per connection) so a browser's idle preconnect socket
+    cannot starve the server, and /motor can be served while an MJPEG stream runs.
+
     Parameters
     ----------
     scene      : Scene
