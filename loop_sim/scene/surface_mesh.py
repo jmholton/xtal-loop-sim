@@ -67,7 +67,7 @@ class SurfaceMesh:
             import torch
             dev = torch.device(self._device)
             def _t(a):
-                return torch.from_numpy(np.ascontiguousarray(a)).float().to(dev)
+                return torch.from_numpy(np.ascontiguousarray(a)).double().to(dev)
             self._v0_t = _t(self._v0)
             self._e1_t = _t(self._e1)
             self._e2_t = _t(self._e2)
@@ -154,8 +154,8 @@ class SurfaceMesh:
         """
         import torch
         dev = self._v0_t.device
-        ot = torch.from_numpy(np.ascontiguousarray(o)).float().to(dev)  # (B, 3)
-        dt = torch.from_numpy(np.ascontiguousarray(d)).float().to(dev)  # (B, 3)
+        ot = torch.from_numpy(np.ascontiguousarray(o)).double().to(dev)  # (B, 3)
+        dt = torch.from_numpy(np.ascontiguousarray(d)).double().to(dev)  # (B, 3)
         v0, e1, e2 = self._v0_t, self._e1_t, self._e2_t
         B, F = len(o), len(v0)
         INF = float('inf')
@@ -195,7 +195,7 @@ class SurfaceMesh:
         t_max   = t_fwd_r[bi, fi_max]
         has_bwd = t_bwd[bi, fi_bwd] < INF
         t_back  = torch.where(has_bwd, -t_bwd[bi, fi_bwd],
-                              torch.zeros(B, device=dev))
+                              torch.zeros(B, device=dev, dtype=t_bwd.dtype))
 
         return (t_min.cpu().numpy(),  t_max.cpu().numpy(),
                 fi_min.cpu().numpy(), fi_max.cpu().numpy(),

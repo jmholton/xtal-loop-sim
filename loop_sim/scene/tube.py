@@ -137,7 +137,7 @@ class Tube:
             import torch
             dev = torch.device(self._device)
             def _t(a):
-                return torch.from_numpy(np.ascontiguousarray(a)).float().to(dev)
+                return torch.from_numpy(np.ascontiguousarray(a)).double().to(dev)
             ba   = pts[1:] - pts[:-1]              # (K, 3)
             baba = (ba * ba).sum(1)                 # (K,)
             self._p0_t   = _t(pts[:-1])
@@ -223,8 +223,8 @@ class Tube:
         """
         import torch
         dev = self._p0_t.device
-        ot = torch.from_numpy(np.ascontiguousarray(o)).float().to(dev)   # (B, 3)
-        dt = torch.from_numpy(np.ascontiguousarray(d)).float().to(dev)   # (B, 3)
+        ot = torch.from_numpy(np.ascontiguousarray(o)).double().to(dev)   # (B, 3)
+        dt = torch.from_numpy(np.ascontiguousarray(d)).double().to(dev)   # (B, 3)
 
         p0   = self._p0_t    # (K, 3)
         ba   = self._ba_t    # (K, 3)
