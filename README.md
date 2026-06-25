@@ -19,8 +19,8 @@ real beamline camera.
 # Render the default scene at rest position
 python3 render.py scene.yaml --n-cond 7
 
-# Rotate the loop 45° around the phi axis and render
-python3 render.py scene.yaml --roty 45 --n-cond 7
+# Rotate the sample 45° about the goniometer spindle and render
+python3 render.py scene.yaml --rotx 45 --n-cond 7
 
 # Translate the loop so the crystal is off-center
 python3 render.py scene.yaml --tx 0.05 --ty -0.02 --n-cond 7
@@ -28,6 +28,13 @@ python3 render.py scene.yaml --tx 0.05 --ty -0.02 --n-cond 7
 
 `--n-cond 7` uses one centre + six-point hex ring of condenser rays per pixel,
 giving smooth edge transitions.  Use `--n-cond 1` for a fast binary-NA preview.
+Add `--device cuda` to render on a CUDA GPU (the CPU path is the default
+reference; both produce the same image).
+
+Which motor is the spindle (φ) depends on the scene — it is whichever of
+`rotx`/`roty`/`rotz` matches the scene's rotation-axis config and the pin's
+mounting direction.  For the bundled `scene_files/` scenes the spindle is
+`rotx`; `roty`/`rotz` tilt the sample out of that plane.
 
 Output is written to `scene.jpg` (or `--output myfile.jpg`).
 
@@ -115,6 +122,11 @@ server = CameraServer(scene, host="0.0.0.0", port=8080, n_cond=7)
 server.start()   # blocks; Ctrl-C to stop
 ```
 
+When a CUDA GPU is present the server renders through the GPU-resident engine
+automatically (`engine="auto"`; pass `engine="numpy"` to force the CPU reference
+renderer).  The GPU output is byte-identical to the CPU reference and several
+times faster, so the live `/motor` → frame latency drops accordingly.
+
 ### HTTP endpoints
 
 | Endpoint | Description |
@@ -166,5 +178,5 @@ crystal colour to distinguish it visually in the rendered image.
 
 This project requires:
 ```
-/programs/pytorch/bin/python3
+/programs/pytorch/envs/pt/bin/python
 ```

@@ -37,6 +37,13 @@ Performance (704×480, TITAN V on voltron):
 | 1      | ~179 s | ~9 s  | 20×     |
 | 7      | ~1230 s| ~23 s | 53×     |
 
+Those are the legacy per-object CUDA path on voltron's TITAN V.  A newer
+**GPU-resident engine** (`loop_sim/renderer/engine_torch.py`) runs the whole
+trace on-device, is byte-identical to the numpy reference in float64, and is
+~6–8× faster again (≈160 ms/frame at 640×480, n_cond=1, on a desktop RTX 4080).
+`camera_server` uses it automatically when CUDA is present; `render.py --device
+cuda` still uses the legacy per-object path.
+
 ## Condenser sampling (n_cond)
 
 `--n-cond 7` (1 centre + 6-point hex ring) gives smooth edge transitions.
@@ -82,10 +89,12 @@ loop_sim/
   motors/
     goniometer.py            SE(3) from tx/ty/tz/rotx/roty/rotz/zoom
   renderer/
-    microscope.py            Snell's law ray tracer; Beer-Lambert; NA cutoff
+    microscope.py            Snell's law ray tracer; Beer-Lambert; NA cutoff (numpy reference)
     beam.py                  X-ray grid probe → {material: volume_mm3}
+    engine_torch.py          GPU-resident torch engine (TorchScene, render_torch);
+                             byte-identical to microscope.py in float64, ~6-8x faster
   server/
-    camera_server.py         AXIS-compatible HTTP: MJPEG, snapshot, /motor, /beam
+    camera_server.py         AXIS HTTP server; renders via engine_torch on CUDA, else microscope
 ```
 
 ## Key API: next_interface()
@@ -101,39 +110,30 @@ convention) and looks up n, mu, color via pre-built numpy tables
 (`mat_n_tab`, `mat_mu_tab`, `mat_col_tab`, index 0 = background,
 index k = objects[k-1]).
 
-## Float32 precision at surfaces (GPU path)
+## GPU intersection precision (float64)
 
-The GPU path uses float32.  At t ≈ 50 mm, float32 ULP ≈ 6 nm.
+The CUDA intersection path computes the cylinder/triangle quadratics in
+**float64** (`tube.py`, `surface_mesh.py`).  It used to use float32, which
+catastrophically cancelled in `c_ = baba*oaoa - baoa**2 - r²*baba`: with the ray
+launched 50 mm upstream, `oaoa ≈ 2500` swamped the r² signal of a ~7.5 µm fiber,
+so float32 produced off-surface hits and wrong normals → the "hairy/spikey"
+fiber artifact.  Doing the quadratic in float64 fixes it, and the GPU render is
+now **byte-identical** to the float64 CPU reference.  **Do not** down-cast the
+intersection inputs or geometry to float32.
 
 ### Material-after-interface (mat_out_oi)
 
-`next_interface()` determines which material a ray enters after crossing a
-surface using an **interval check** on the already-computed `all_te`/`all_tx`
-arrays:
+`next_interface()` picks the material a ray enters after a crossing with an
+interval check on the already-computed `all_te`/`all_tx`:
 
 ```python
-t_probe = best_t + 1e-4   # 100 nm >> 6 nm ULP → lands on correct side
+t_probe = best_t + 1e-4
 inside  = (te_m < t_probe) & (t_probe < tx_m)
-mat_out_oi = inside.argmax(axis=1) if inside.any(axis=1) else -1
+mat_out_oi = first object whose interval contains t_probe, else -1
 ```
 
-The 100 nm offset is >> float32 ULP at t ≈ 50 mm, so it reliably lands past
-the interface in both entry and exit cases.  No extra CUDA round-trips needed.
-
-**Do not** revert to `_obj_index_at_points_batch` probe rays — that approach
-was the original broken path (fires a +Z probe from the float32 hit point;
-50% failure rate due to ULP ambiguity).
-
-### Tube normals
-
-Tube (`_intersect_batch_cuda`) returns float32 normals (~0.1% error at tube
-radius 10 µm).  `next_interface()` recomputes them in float64 via
-`Tube.recompute_normals_f64()` using the float64 origins/dirs from the ray
-tracer and the float64 `_curve_pts` stored in each Tube.  Residual error:
-~0.03% (limited by float32 t precision, 6 nm ULP).
-
-`SurfaceMesh` normals are already float64 (face normals looked up by face
-index after CUDA intersection).
+**Do not** revert to `_obj_index_at_points_batch` probe rays — that was the
+original broken path (50% failure from probe-point ambiguity).
 
 ## Comparison workflow
 
