@@ -99,8 +99,55 @@ loop_sim/
                              render_xray_torch (straight-ray transmission map)
   server/
     camera_server.py         AXIS HTTP server; renders via engine_torch on CUDA, else
-                             microscope; /beam (JSON) + /xray (radiograph PNG)
+                             microscope; /beam (JSON) + /xray (radiograph PNG);
+                             control page (/), animated /move + /recenter (daemon
+                             animator thread interpolates the goniometer)
+    static/index.html        interactive control UI (crosshair, pan/rot/zoom, speed dial)
 ```
+
+## Server animation & concurrency
+
+`/move` and `/recenter` are **animated**: a daemon `_animator_loop` thread
+linearly interpolates the goniometer toward a target by wall-clock time, so the
+streamed sample glides instead of teleporting.  Non-obvious bits:
+
+- The live goniometer is shared mutable state, so it gets its **own**
+  `_gonio_lock` (separate from the JPEG-cache `_lock`).  Rendering never reads
+  the live goniometer directly — it takes a `_snapshot_gonio()` (a fresh
+  Goniometer at the locked-in pose) to avoid torn reads mid-interpolation.
+- During motion `_anim_active` forces **n_cond=1** preview; a final full-`n_cond`
+  frame is rendered on settle.  (n_cond=7 is far too slow for smooth motion.)
+- New moves **preempt** via an `_anim_gen` counter (the running animation checks
+  it each step and bails); relative/pan moves resolve against `_target_pose`
+  (the last *commanded* target, not the in-flight pose) so rapid clicks
+  accumulate.  `/motor` stays **instant** (cancels any animation) for AXIS
+  back-compat — the UI uses `/move`.
+- Speeds: translation crosses the field-of-view width in ~2 s (zoom-aware via
+  `eff_px`), rotation 360°/s (60 rpm), scaled by the `speed` dial.  The geometry
+  math (`resolve_target` / `move_duration` / `recenter_target`) is factored into
+  pure module-level functions (unit-tested in `tests/test_server_controls.py`).
+- **Click-to-recentre:** the browser sends the click as a **fraction** `fx,fy ∈
+  [0,1]` of the displayed image (taken from `cam.getBoundingClientRect()`); the
+  server scales by the true camera W/H.  Do **not** map clicks via
+  `<img>.naturalWidth` — it is unreliable/0 for an MJPEG stream and breaks when
+  the view is CSS-scaled.  Clicks are captured by a dedicated transparent
+  `.clicklayer` (the streaming `<img>` may not deliver clicks reliably).
+
+  **⚠ KNOWN BUG (unresolved, paused — see [[project_loop_sim_phase2]] for the resume
+  plan):** in the live browser, click-to-recentre lands ~100–200 px off, sometimes
+  in the wrong direction, **non-deterministically**.  What is RULED OUT:
+  `recenter_target` is proven correct — an arbitrary point and a rendered feature
+  centre to **0.0 px** through both the X-ray parallel projection AND the optical
+  renderer (with and without refraction), when the pose handed to it matches the
+  rendered pose; and `view ≈ img` (641×481 vs 640×480 is only the 1 px border).
+  Leading hypothesis: a **frame/pose mismatch** — the displayed MJPEG frame lags
+  the live goniometer pose (n_cond=7 render ~1 s + stream buffering), so
+  `_command_recenter` (which reads the LIVE pose) recenters against a pose that
+  doesn't match the frame the user clicked.  Offline tests can't catch this
+  because they pass a matching pose.  First thing to try next: render at
+  **n_cond=1** (minimal latency) and see if recentre becomes accurate → confirms
+  the lag race.  A `#dbg` readout in `static/index.html` reports `view/img` sizes
+  and the per-click `fx,fy` (debug scaffolding — remove once fixed).
 
 ## Key API: next_interface()
 

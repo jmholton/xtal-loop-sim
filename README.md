@@ -127,18 +127,35 @@ automatically (`engine="auto"`; pass `engine="numpy"` to force the CPU reference
 renderer).  The GPU output is byte-identical to the CPU reference and several
 times faster, so the live `/motor` → frame latency drops accordingly.
 
+### Interactive control page
+
+Open **`http://<host>:<port>/`** in a browser for a live control panel: the
+MJPEG view with a centre crosshair, pan / rotate-x / zoom buttons, an editable
+angle box, a speed dial, and **click-in-image-to-recentre**.  Moves are
+**animated** — the sample interpolates linearly to the target instead of
+teleporting (≈2 s to cross the screen, 60 rpm for rotx, scaled by the speed
+dial), so the motion looks like a real stage slewing.
+
 ### HTTP endpoints
 
 | Endpoint | Description |
 |---|---|
+| `GET /` | Interactive control page (HTML) |
 | `GET /axis-cgi/mjpg/video.cgi` | MJPEG stream |
 | `GET /axis-cgi/jpg/image.cgi` | Single JPEG snapshot |
-| `GET /motor?tx=0.05&roty=45` | Move motors, returns JSON state |
+| `GET /motor?tx=0.05&roty=45` | Set motors instantly, returns JSON state |
+| `GET /move?drotx=90&speed=2` | **Animated** move; returns target JSON state |
+| `GET /recenter?px=400&py=300` | Animated move bringing a pixel to the centre |
 | `GET /beam` | X-ray illuminated volumes + Beer-Lambert attenuation (JSON) |
 | `GET /xray` | X-ray transmission map / radiograph (grayscale PNG) |
 
 **Motor parameters:** `tx`, `ty`, `tz` (mm), `rotx`, `roty`, `rotz` (degrees),
 `zoom` (dimensionless; `zoom=2` halves pixel size).
+
+**`/move` parameters:** any absolute motor key, relative deltas (`dtx`, `drotx`,
+`dzoom`, …), screen-fraction pan (`panx`, `pany`; ±1 = one field of view), and
+`speed` (`>1` faster, `<1` slow-motion).  Unlike `/motor`, `/move` animates the
+transition; `/motor` stays instant for AXIS back-compatibility.
 
 **Beam response example:**
 ```json

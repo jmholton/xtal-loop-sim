@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>loop-sim camera</title>
+<style>
+  :root { --bg:#15171c; --panel:#1e2128; --ink:#e6e8ec; --accent:#5bb0ff; --line:#3a3f4b; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  .wrap { display:flex; flex-wrap:wrap; gap:18px; padding:18px; align-items:flex-start; }
+  h1 { font-size:14px; font-weight:600; letter-spacing:.04em; opacity:.75; margin:0 0 10px; }
+
+  /* live view + crosshair */
+  /* inline-block so the box shrink-wraps the <img> exactly — the crosshair
+     (50%) and click layer (inset:0) then coincide with the real image. */
+  .view { position:relative; display:inline-block; line-height:0; background:#000;
+          border:1px solid var(--line); border-radius:6px; overflow:hidden; cursor:crosshair; }
+  #cam { display:block; max-width:80vw; height:auto; }
+  .cross { position:absolute; inset:0; pointer-events:none; }
+  .cross::before, .cross::after { content:""; position:absolute; background:rgba(120,200,255,.7); }
+  .cross::before { left:50%; top:0; bottom:0; width:1px; transform:translateX(-.5px); }
+  .cross::after  { top:50%; left:0; right:0; height:1px; transform:translateY(-.5px); }
+  .cross .dot { position:absolute; left:50%; top:50%; width:9px; height:9px; margin:-5px 0 0 -5px;
+                border:1px solid rgba(120,200,255,.9); border-radius:50%; }
+  /* transparent top layer that reliably captures clicks over the stream */
+  .clicklayer { position:absolute; inset:0; cursor:crosshair; }
+  .clickmark { position:absolute; width:16px; height:16px; margin:-8px 0 0 -8px;
+               border:2px solid var(--accent); border-radius:50%; pointer-events:none; opacity:0; }
+  .clickmark.flash { animation: clickpulse .5s ease-out; }
+  @keyframes clickpulse { from {opacity:1; transform:scale(.4)} to {opacity:0; transform:scale(1.7)} }
+
+  /* controls */
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px;
+           padding:14px 16px; min-width:230px; }
+  .panel h2 { font-size:11px; text-transform:uppercase; letter-spacing:.08em;
+              opacity:.55; margin:0 0 10px; font-weight:600; }
+  .grp { margin-bottom:16px; }
+  button { background:#2a2e38; color:var(--ink); border:1px solid var(--line);
+           border-radius:6px; padding:8px 10px; font:inherit; cursor:pointer; min-width:38px; }
+  button:hover { border-color:var(--accent); }
+  button:active { background:#333a47; }
+  .pad { display:grid; grid-template-columns:repeat(3,40px); grid-template-rows:repeat(3,38px);
+         gap:6px; justify-content:start; }
+  .pad .sp { visibility:hidden; }
+  .row { display:flex; align-items:center; gap:8px; margin:6px 0; }
+  .row label { width:48px; opacity:.7; font-size:12px; }
+  input[type=number] { width:84px; background:#11131a; color:var(--ink);
+           border:1px solid var(--line); border-radius:6px; padding:6px 8px; font:inherit; }
+  input[type=range] { width:150px; accent-color:var(--accent); }
+  .val { font-variant-numeric: tabular-nums; opacity:.85; }
+  .hint { font-size:11px; opacity:.5; margin-top:10px; line-height:1.5; }
+  #state { font-size:11px; opacity:.7; white-space:pre; margin-top:8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div>
+    <h1>LOOP-SIM &nbsp;·&nbsp; live view</h1>
+    <div class="view" id="view">
+      <img id="cam" src="/axis-cgi/mjpg/video.cgi" alt="camera">
+      <div class="cross"><div class="dot"></div></div>
+      <div class="clickmark" id="clickmark"></div>
+      <div class="clicklayer" id="clicklayer"></div>
+    </div>
+    <div class="hint">Click anywhere in the image to bring that point to the centre.</div>
+  </div>
+
+  <div class="panel">
+    <h2>Translate</h2>
+    <div class="grp pad">
+      <div class="sp"></div><button data-pan="0,-1" title="up">&#9650;</button><div class="sp"></div>
+      <button data-pan="-1,0" title="left">&#9664;</button>
+      <button id="recenter" title="recenter to origin">&#9678;</button>
+      <button data-pan="1,0" title="right">&#9654;</button>
+      <div class="sp"></div><button data-pan="0,1" title="down">&#9660;</button><div class="sp"></div>
+    </div>
+
+    <h2>Rotate &amp; zoom</h2>
+    <div class="grp">
+      <div class="row">
+        <label>rot&thinsp;x</label>
+        <button data-drotx="-1">&minus;</button>
+        <input id="rotx" type="number" step="1" value="0"> &deg;
+        <button data-drotx="1">+</button>
+      </div>
+      <div class="row">
+        <label>zoom</label>
+        <button data-dzoom="-1">&minus;</button>
+        <input id="zoom" type="number" step="0.1" min="0.1" value="1.0">&times;
+        <button data-dzoom="1">+</button>
+      </div>
+    </div>
+
+    <h2>Speed</h2>
+    <div class="grp">
+      <div class="row">
+        <input id="speed" type="range" min="-1.3" max="0.7" step="0.01" value="0">
+        <span class="val" id="speedval">1.0&times;</span>
+      </div>
+      <div class="hint">slow-motion &nbsp;&larr;&nbsp; 1&times; &nbsp;&rarr;&nbsp; fast</div>
+    </div>
+
+    <div id="state"></div>
+    <div id="dbg" class="hint" style="white-space:pre"></div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const cam = $("cam"), layer = $("clicklayer"), mark = $("clickmark");
+
+// step sizes
+const PAN_FRAC = 0.25;   // quarter of the field of view per arrow click
+const ROT_STEP = 15;     // degrees per rotx click
+const ZOOM_FAC = 1.25;   // zoom multiply/divide per click
+
+// speed dial: slider is log10(speed), so 0 → 1x, -1 → 0.1x (slow-mo), +0.7 → ~5x
+function speed() { return Math.pow(10, parseFloat($("speed").value)); }
+function fmtSpeed() { const s = speed(); $("speedval").textContent =
+    (s >= 1 ? s.toFixed(1) : s.toFixed(2)) + "×"; }
+$("speed").addEventListener("input", fmtSpeed);
+
+// fire an animated move; the server replies with the (target) motor state
+async function move(params) {
+  params.speed = speed();
+  const q = new URLSearchParams(params).toString();
+  try { applyState(await (await fetch("/move?" + q)).json()); } catch (e) {}
+}
+
+// translate pad
+document.querySelectorAll("[data-pan]").forEach(b => b.addEventListener("click", () => {
+  const [fx, fy] = b.dataset.pan.split(",").map(Number);
+  move({ panx: fx * PAN_FRAC, pany: fy * PAN_FRAC });
+}));
+// rotx -/+
+document.querySelectorAll("[data-drotx]").forEach(b => b.addEventListener("click", () =>
+  move({ drotx: Number(b.dataset.drotx) * ROT_STEP })));
+// zoom -/+ (multiplicative, sent as an absolute target)
+document.querySelectorAll("[data-dzoom]").forEach(b => b.addEventListener("click", () => {
+  const cur = parseFloat($("zoom").value) || 1.0;
+  const dir = Number(b.dataset.dzoom);
+  move({ zoom: dir > 0 ? cur * ZOOM_FAC : cur / ZOOM_FAC });
+}));
+
+// editable angle / zoom boxes → absolute animated move on Enter or blur
+function bindBox(id, key) {
+  const el = $(id);
+  const commit = () => move({ [key]: parseFloat(el.value) || 0 });
+  el.addEventListener("keydown", e => { if (e.key === "Enter") { commit(); el.blur(); } });
+  el.addEventListener("change", commit);
+}
+bindBox("rotx", "rotx");
+bindBox("zoom", "zoom");
+
+// recenter button → animate back to tx=ty=0 (origin)
+$("recenter").addEventListener("click", () => move({ tx: 0, ty: 0 }));
+
+// click in the image → move that pixel to the centre.
+// The click is taken as a FRACTION of the displayed image (the server scales it
+// by the true camera resolution — no dependence on the unreliable MJPEG
+// naturalWidth or the CSS-displayed size).  A dedicated transparent top layer
+// captures the click reliably, and a ring flashes where you clicked.
+layer.addEventListener("click", async e => {
+  const r  = cam.getBoundingClientRect();      // the real image rect (authoritative)
+  const lx = e.clientX - r.left, ly = e.clientY - r.top;
+  const fx = lx / r.width, fy = ly / r.height;
+  if (fx < 0 || fx > 1 || fy < 0 || fy > 1) return;     // outside the image
+  // visual confirmation at the click point
+  mark.style.left = lx + "px"; mark.style.top = ly + "px";
+  mark.classList.remove("flash"); void mark.offsetWidth; mark.classList.add("flash");
+  showSizes(`click @ img-frac (${fx.toFixed(3)}, ${fy.toFixed(3)})  px(${lx.toFixed(0)},${ly.toFixed(0)}) of ${r.width.toFixed(0)}×${r.height.toFixed(0)}`);
+  const q = new URLSearchParams({ fx: fx.toFixed(4), fy: fy.toFixed(4), speed: speed() });
+  try { applyState(await (await fetch("/recenter?" + q)).json()); } catch (e) {}
+});
+
+// debug: is the view box exactly the image box?  (crosshair + clicks assume so)
+function showSizes(extra) {
+  const v = $("view").getBoundingClientRect(), c = cam.getBoundingClientRect();
+  const mismatch = Math.abs(v.width - c.width) > 1 || Math.abs(v.height - c.height) > 1;
+  $("dbg").textContent =
+    `view ${v.width.toFixed(0)}×${v.height.toFixed(0)}   img ${c.width.toFixed(0)}×${c.height.toFixed(0)}   `
+    + (mismatch ? "⚠ view≠img" : "✓ view=img")
+    + (extra ? "\n" + extra : "");
+}
+window.addEventListener("resize", () => showSizes());
+cam.addEventListener("load", () => showSizes());
+showSizes();
+
+// keep the boxes / readout in sync with the server (skip a box being edited)
+function applyState(s) {
+  if (!s) return;
+  if (document.activeElement !== $("rotx")) $("rotx").value = (+s.rotx).toFixed(1);
+  if (document.activeElement !== $("zoom")) $("zoom").value = (+s.zoom).toFixed(2);
+  $("state").textContent =
+    `tx ${(+s.tx).toFixed(3)}  ty ${(+s.ty).toFixed(3)}  tz ${(+s.tz).toFixed(3)}\n` +
+    `rotx ${(+s.rotx).toFixed(1)}  roty ${(+s.roty).toFixed(1)}  rotz ${(+s.rotz).toFixed(1)}  zoom ${(+s.zoom).toFixed(2)}`;
+}
+async function poll() {
+  try { applyState(await (await fetch("/motor")).json()); } catch (e) {}
+}
+fmtSpeed();
+poll();
+setInterval(poll, 600);
+</script>
+</body>
+</html>
