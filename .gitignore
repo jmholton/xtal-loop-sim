@@ -16,6 +16,9 @@ loop.yaml
 # Claude internal state
 .claude/
 
+# Benchmark output (bench_frame.py)
+bench_results/
+
 # Misc
 __pycache__/
 *.pyc
