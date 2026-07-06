@@ -112,9 +112,16 @@ linearly interpolates the goniometer toward a target by wall-clock time, so the
 streamed sample glides instead of teleporting.  Non-obvious bits:
 
 - The live goniometer is shared mutable state, so it gets its **own**
-  `_gonio_lock` (separate from the JPEG-cache `_lock`).  Rendering never reads
-  the live goniometer directly — it takes a `_snapshot_gonio()` (a fresh
-  Goniometer at the locked-in pose) to avoid torn reads mid-interpolation.
+  `_gonio_lock` (separate from the JPEG frame slot's `_frame_cv`).  Rendering
+  never reads the live goniometer directly — it takes a `_snapshot_gonio()` (a
+  fresh Goniometer at the locked-in pose) to avoid torn reads mid-interpolation.
+- Frame production is **single-flight**: `_bg_render_loop` is the sole caller
+  of `_render_now` while serving.  `_invalidate` sets a dirty flag and notifies
+  `_frame_cv`; the loop claims (clears) the flag *before* rendering, so
+  mid-render invalidations coalesce into at most one re-render.  Each published
+  frame bumps `_frame_gen`; MJPEG/snapshot handlers are pure consumers (wait
+  for a newer generation, send newest-only, clamp to `fps_limit`, resend the
+  cached frame after ~1 s idle as a keepalive).
 - During motion `_anim_active` forces **n_cond=1** preview; a final full-`n_cond`
   frame is rendered on settle.  (n_cond=7 is far too slow for smooth motion.)
 - New moves **preempt** via an `_anim_gen` counter (the running animation checks

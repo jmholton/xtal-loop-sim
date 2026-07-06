@@ -211,6 +211,15 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(jpeg)
 
     def _handle_mjpeg(self):
+        """Pure consumer of the background producer's published frames.
+
+        Waits on _frame_cv for a frame generation newer than the last one
+        sent (newest-only — never a backlog), clamps to the fps_limit
+        ceiling, and resends the cached frame after ~1 s idle so browsers /
+        AXIS clients don't time out.  Socket writes happen outside the lock,
+        so a slow client never blocks the producer or other clients.
+        """
+        srv = self.server
         self.send_response(200)
         self.send_header(
             "Content-Type",
@@ -218,9 +227,29 @@ class _Handler(BaseHTTPRequestHandler):
         )
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
+        keepalive = 1.0     # idle resend period (s)
+        last_gen  = 0
+        last_send = 0.0
         try:
             while True:
-                jpeg = self.server._get_jpeg()
+                # Wait for a frame newer than the last one sent (or keepalive).
+                with srv._frame_cv:
+                    deadline = time.monotonic() + keepalive
+                    while srv._frame_gen == last_gen:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0.0:
+                            break             # idle: resend the cached frame
+                        srv._frame_cv.wait(remaining)
+                # Clamp to the fps_limit ceiling.
+                delay = last_send + srv._frame_interval - time.monotonic()
+                if delay > 0.0:
+                    time.sleep(delay)
+                # Send the newest published frame.
+                with srv._frame_cv:
+                    jpeg = srv._jpeg_cache
+                    gen  = srv._frame_gen
+                if jpeg is None:
+                    continue                  # nothing rendered yet
                 frame = (
                     _MJPEG_BOUNDARY + b"\r\n"
                     + b"Content-Type: image/jpeg\r\n"
@@ -231,7 +260,8 @@ class _Handler(BaseHTTPRequestHandler):
                 )
                 self.wfile.write(frame)
                 self.wfile.flush()
-                time.sleep(self.server._frame_interval)
+                last_gen  = gen
+                last_send = time.monotonic()
         except (BrokenPipeError, ConnectionResetError):
             pass
 
@@ -348,9 +378,15 @@ class CameraServer(ThreadingHTTPServer):
         # False: every served frame is the exact full-quality render.
         self._preview_mode   = bool(preview_mode)
         self._frame_interval = 1.0 / fps_limit
+        # Frame slot: the latest published JPEG plus a generation counter,
+        # swapped atomically under _frame_cv.  The background render loop is
+        # the single producer (single-flight); MJPEG/snapshot handlers are
+        # pure consumers that wait on _frame_cv for a newer generation.
         self._jpeg_cache     = None
         self._cache_dirty    = True
-        self._lock           = threading.Lock()
+        self._frame_gen      = 0     # bumped on every published frame
+        self._render_count   = 0     # diagnostics: total _render_now calls
+        self._frame_cv       = threading.Condition()
         self._bg_thread      = None
 
         # Animation: a daemon thread linearly interpolates the goniometer toward
@@ -389,8 +425,9 @@ class CameraServer(ThreadingHTTPServer):
     # ------------------------------------------------------------------
 
     def _invalidate(self):
-        with self._lock:
+        with self._frame_cv:
             self._cache_dirty = True
+            self._frame_cv.notify_all()   # wake the producer (and any waiters)
 
     def _snapshot_gonio(self):
         """A thread-safe, fresh Goniometer at the live pose.
@@ -402,7 +439,8 @@ class CameraServer(ThreadingHTTPServer):
             state = self._goniometer.get()
         return Goniometer(self._scene.geometry).set(**state)
 
-    def _render_now(self):
+    def _render_frame(self):
+        """Render + JPEG-encode the current pose (no cache bookkeeping)."""
         gono   = self._snapshot_gonio()
         # Fast preview while a move is animating; full quality once it settles.
         preview = self._anim_active and self._preview_mode
@@ -420,18 +458,47 @@ class CameraServer(ThreadingHTTPServer):
         else:
             _, jpeg = microscope_render(self._scene, gono, n_cond=n_cond,
                                         jpeg_quality=self._jpeg_quality)
-        with self._lock:
-            self._jpeg_cache  = jpeg
+        return jpeg
+
+    def _render_now(self):
+        """Render the current pose and publish it as the next frame generation.
+
+        The dirty flag is claimed (cleared) BEFORE the pose snapshot, so an
+        invalidation that lands mid-render leaves it set again and the
+        producer loop re-renders the newest pose — a burst of invalidations
+        coalesces into at most one extra render, never a queue.
+        """
+        with self._frame_cv:
             self._cache_dirty = False
+        jpeg = self._render_frame()
+        with self._frame_cv:
+            self._render_count += 1
+            self._jpeg_cache    = jpeg
+            self._frame_gen    += 1
+            self._frame_cv.notify_all()   # wake stream/snapshot consumers
         return jpeg
 
     def _get_jpeg(self):
-        with self._lock:
-            dirty = self._cache_dirty
-            cached = self._jpeg_cache
-        if dirty or cached is None:
-            return self._render_now()
-        return cached
+        """Serve the cached frame, waiting (bounded) for the producer if stale.
+
+        Consumers never render while the background producer runs.  Before
+        start() there is no producer thread, so (and only then) render
+        synchronously — tests drive the server that way.
+        """
+        with self._frame_cv:
+            if not self._cache_dirty and self._jpeg_cache is not None:
+                return self._jpeg_cache
+            if self._bg_thread is not None:
+                gen0     = self._frame_gen
+                deadline = time.monotonic() + 5.0
+                while self._frame_gen == gen0:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0.0:
+                        break
+                    self._frame_cv.wait(remaining)
+                if self._jpeg_cache is not None:
+                    return self._jpeg_cache
+        return self._render_now()
 
     def _render_xray_png(self):
         """Render the X-ray transmission map (radiograph) as a grayscale PNG.
@@ -458,13 +525,17 @@ class CameraServer(ThreadingHTTPServer):
     # ------------------------------------------------------------------
 
     def _bg_render_loop(self):
-        """Continuously re-render when the cache is dirty."""
+        """Single-flight producer: wait for an invalidation, render, publish.
+
+        Sole caller of _render_now while serving — MJPEG/snapshot handlers
+        only consume published frames, so N clients cost one GPU render per
+        dirty state instead of N+1.
+        """
         while True:
-            with self._lock:
-                dirty = self._cache_dirty
-            if dirty:
-                self._render_now()
-            time.sleep(0.05)
+            with self._frame_cv:
+                while not self._cache_dirty:
+                    self._frame_cv.wait()
+            self._render_now()
 
     # ------------------------------------------------------------------
     # Static files
@@ -580,9 +651,12 @@ class CameraServer(ThreadingHTTPServer):
         background=False → blocks (use Ctrl-C to stop).
         """
         # Kick off background render + animator threads
+        # Assign _bg_thread BEFORE starting the thread: this closes the startup
+        # window where a concurrent _get_jpeg could see _bg_thread is None and
+        # render synchronously instead of deferring to the owner.
         t = threading.Thread(target=self._bg_render_loop, daemon=True)
-        t.start()
         self._bg_thread = t
+        t.start()
 
         at = threading.Thread(target=self._animator_loop, daemon=True)
         at.start()
