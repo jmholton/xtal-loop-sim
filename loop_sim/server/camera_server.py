@@ -367,7 +367,7 @@ class CameraServer(ThreadingHTTPServer):
 
     def __init__(self, scene, host="0.0.0.0", port=8080,
                  n_cond=7, fps_limit=5.0, engine="auto", jpeg_quality=85,
-                 preview_mode=True, compile_preview=True):
+                 preview_mode=True, compile_preview=True, settle_delay=0.5):
         super().__init__((host, port), _Handler)
         self._scene          = scene
         self._goniometer     = Goniometer(scene.geometry)
@@ -383,6 +383,15 @@ class CameraServer(ThreadingHTTPServer):
         # threaded) compilation. Settle frames / /xray / offline stay eager+exact.
         self._compile_preview = bool(compile_preview)
         self._compiled_ok     = False   # flipped True once warmup compiles cleanly
+        # "Moving" is what selects the fast preview path. Animated /move sets
+        # _anim_active; instant pose sets (/motor -- how AXIS-style consumers
+        # such as MxCuBE/EPICS drive the goniometer) instead stamp
+        # _last_pose_change, and any render within settle_delay seconds of the
+        # last stamp counts as moving. Once the pose goes quiet the producer
+        # loop forces one exact full-quality re-render (see _bg_render_loop).
+        self._settle_delay      = float(settle_delay)
+        self._last_pose_change  = float("-inf")   # -inf: boot renders are exact
+        self._last_render_preview = False         # written only by the producer
         self._frame_interval = 1.0 / fps_limit
         # Frame slot: the latest published JPEG plus a generation counter,
         # swapped atomically under _frame_cv.  The background render loop is
@@ -448,8 +457,13 @@ class CameraServer(ThreadingHTTPServer):
     def _render_frame(self):
         """Render + JPEG-encode the current pose (no cache bookkeeping)."""
         gono   = self._snapshot_gonio()
-        # Fast preview while a move is animating; full quality once it settles.
-        preview = self._anim_active and self._preview_mode
+        # Fast preview while the pose is moving (an animated /move, or an
+        # instant /motor set within the last settle_delay seconds); full
+        # quality once it settles.
+        moving = self._anim_active or (
+            time.monotonic() - self._last_pose_change < self._settle_delay)
+        preview = moving and self._preview_mode
+        self._last_render_preview = preview
         n_cond = 1 if preview else self._n_cond
         if self._tscene is not None:
             import torch
@@ -553,6 +567,19 @@ class CameraServer(ThreadingHTTPServer):
                 while not self._cache_dirty:
                     self._frame_cv.wait()
             self._render_now()
+            # A /motor-driven preview settles here: once the pose has been
+            # quiet for settle_delay, force one exact full-quality re-render.
+            # (The animated /move path does its own settle in _run_animation;
+            # this covers instant pose sets, which never set _anim_active.)
+            if self._last_render_preview and not self._anim_active:
+                with self._frame_cv:
+                    while not self._cache_dirty:
+                        remaining = (self._last_pose_change
+                                     + self._settle_delay - time.monotonic())
+                        if remaining <= 0.0:
+                            self._cache_dirty = True   # exact settle render
+                            break
+                        self._frame_cv.wait(remaining)
 
     # ------------------------------------------------------------------
     # Static files
@@ -576,6 +603,7 @@ class CameraServer(ThreadingHTTPServer):
                 self._goniometer.set(**updates)
                 self._target_pose = self._goniometer.get()
         self._anim_active = False
+        self._last_pose_change = time.monotonic()
         self._invalidate()
 
     def _command_move(self, params, speed):
@@ -758,6 +786,10 @@ def main(argv=None):
                     help="on (default): run PREVIEW frames through torch.compile "
                          "(CUDA engine + preview-mode only) for a fusion speedup; "
                          "settle frames stay exact/eager. off: eager previews")
+    ap.add_argument("--settle-delay", type=float, default=0.5,
+                    help="seconds after the last instant pose set (/motor) "
+                         "before rendering the exact full-quality frame "
+                         "(default: %(default)s)")
     args = ap.parse_args(argv)
 
     scene = load(args.scene)
@@ -765,7 +797,8 @@ def main(argv=None):
                           n_cond=args.n_cond, fps_limit=args.fps_limit,
                           engine=args.engine, jpeg_quality=args.jpeg_quality,
                           preview_mode=args.preview_mode == "on",
-                          compile_preview=args.compile_preview == "on")
+                          compile_preview=args.compile_preview == "on",
+                          settle_delay=args.settle_delay)
     server.start()
 
 
