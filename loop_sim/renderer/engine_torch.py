@@ -917,6 +917,12 @@ def render_torch(tscene, goniometer, n_cond=1, tile_size=250_000):
     o_t = torch.as_tensor(o_all, device=dev, dtype=dt)
     d_t = torch.as_tensor(d_all, device=dev, dtype=dt)
     M = n_cond * WH
+    # Never split one condenser sample across tiles: at 640x480 this traces
+    # n_cond=1 in a single pass (2 -> 1 tiles) and aligns n_cond=7 to seven
+    # sample-sized tiles (9 -> 7). Byte-exact -- per-ray results are tile-
+    # independent -- and peak memory grows only ~25% (measured, well clear of
+    # the WSL2 VRAM spill cliff).
+    tile_size = max(tile_size, WH)
     out = torch.empty((M, 3), device=dev, dtype=dt)
     for s in range(0, M, tile_size):
         e = min(s + tile_size, M)
