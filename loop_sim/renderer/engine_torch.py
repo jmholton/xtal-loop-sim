@@ -456,8 +456,11 @@ class TTube:
         ne = torch.zeros((N, 3), device=o.device, dtype=self.dt)
         nx = torch.zeros((N, 3), device=o.device, dtype=self.dt)
         surv = _aabb_survivors(o, d, self._bbox_lo, self._bbox_hi)
-        if bool(surv.any()):
-            idx = surv.nonzero(as_tuple=False).squeeze(1)
+        # nonzero is the single host sync here (numel on the materialized index
+        # tensor is a free shape read; the old bool(surv.any()) pre-check was a
+        # second, redundant sync).
+        idx = surv.nonzero(as_tuple=False).squeeze(1)
+        if idx.numel():
             kte, ktx, kne, knx = self._kernel(o[idx], d[idx])
             te[idx] = kte
             tx[idx] = ktx
@@ -779,44 +782,55 @@ class TorchScene:
         # Compaction (mirrors numpy _trace_rays): each depth processes only the
         # still-active rays. The active set collapses by depth ~2-3, so depths
         # 1.. are cheap -- ~10x less work than masking the full frame every depth.
+        # All per-depth math is where-masked over the whole active set (pure
+        # elementwise -> bit-exact for every kept lane), so the ONLY host sync
+        # per depth is the single keep-compaction at the bottom; the CPU queues
+        # a whole depth's kernels without stalling on bool(any())/mask indexing.
         for _ in range(max_depth):
             if gidx.numel() == 0:
                 break
             og, dg = o[gidx], d[gidx]
             t_next, normals, mat_out = self.next_interface(og, dg, t_min=1e-6)
             hit = t_next < INF
-            no_hit = ~hit
 
             # NA cutoff for rays that exited the scene (using their exit direction)
-            if bool(no_hit.any()):
-                cos_exit = (dg * opt_axis).sum(-1)
-                intensity[gidx[no_hit & (cos_exit < cos_na)]] = 0.0
-            if not bool(hit.any()):
-                break
+            cos_exit = (dg * opt_axis).sum(-1)
+            na_cut = (~hit) & (cos_exit < cos_na)
 
-            gh = gidx[hit]
-            cur_h = cur_mat[gh]
+            cur_g = cur_mat[gidx]
+            inten_g = intensity[gidx]
             # Beer-Lambert over the segment just travelled (current material)
-            mu_per_ch = self.mat_mu[cur_h].unsqueeze(1) + color_mu * (1.0 - self.mat_col[cur_h])
-            intensity[gh] = intensity[gh] * torch.exp(-mu_per_ch * t_next[hit].unsqueeze(1))
+            mu_per_ch = self.mat_mu[cur_g].unsqueeze(1) + color_mu * (1.0 - self.mat_col[cur_g])
+            new_int = inten_g * torch.exp(-mu_per_ch * t_next.unsqueeze(1))
 
-            new_orig = og[hit] + t_next[hit].unsqueeze(1) * dg[hit]
-            n1 = self.mat_n[cur_h]
-            nos = (mat_out[hit] + 1).clamp(0, self.K - 1)
+            new_orig = og + t_next.unsqueeze(1) * dg
+            n1 = self.mat_n[cur_g]
+            nos = (mat_out + 1).clamp(0, self.K - 1)
             n2 = self.mat_n[nos]
-            cos_i = (dg[hit] * normals[hit]).sum(-1).abs()
-            intensity[gh] = intensity[gh] * _fresnel_T_t(n1, n2, cos_i).unsqueeze(1)
+            cos_i = (dg * normals).sum(-1).abs()
+            new_int = new_int * _fresnel_T_t(n1, n2, cos_i).unsqueeze(1)
 
-            new_dirs = _snell_refract_t(dg[hit], normals[hit], n1, n2)
+            new_dirs = _snell_refract_t(dg, normals, n1, n2)
             tir = torch.isnan(new_dirs).any(dim=1)
-            intensity[gh[tir]] = 0.0
 
-            ok = ~tir
-            ok_g = gh[ok]
-            o[ok_g] = new_orig[ok]
-            d[ok_g] = new_dirs[ok]
-            cur_mat[ok_g] = nos[ok]
-            gidx = ok_g
+            # One indexed intensity write per depth: hit lanes take the
+            # Beer-Lambert*Fresnel product, killed lanes (NA cutoff / TIR) take
+            # exact zeros, exited-and-collected lanes write back their old bits.
+            # (no-hit lanes' new_int may hold inf/nan garbage -- never selected.)
+            out_int = torch.where(hit.unsqueeze(1), new_int, inten_g)
+            kill = na_cut | (hit & tir)
+            out_int = torch.where(kill.unsqueeze(1), torch.zeros_like(out_int), out_int)
+            intensity[gidx] = out_int
+
+            # Single compaction (the depth's one host sync): survivors are
+            # hit & ~TIR, so new_dirs NaN rows never enter surviving state; an
+            # all-dead depth compacts to zero and exits at the next loop top.
+            kidx = (hit & ~tir).nonzero(as_tuple=False).squeeze(1)
+            gk = gidx[kidx]
+            o[gk] = new_orig[kidx]
+            d[gk] = new_dirs[kidx]
+            cur_mat[gk] = nos[kidx]
+            gidx = gk
 
         return intensity
 
