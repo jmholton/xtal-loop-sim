@@ -87,7 +87,7 @@ class TSphere:
         self.radius = float(radius)
         self.dev, self.dt = dev, dt
 
-    def ray_intersect(self, o, d):
+    def ray_intersect(self, o, d, compiled=False):
         oc = o - self.centre
         a = (d * d).sum(-1)
         b = 2.0 * (oc * d).sum(-1)
@@ -117,7 +117,7 @@ class THalfSpace:
         self.offset = float(offset)
         self.dev, self.dt = dev, dt
 
-    def ray_intersect(self, o, d):
+    def ray_intersect(self, o, d, compiled=False):
         n = self.normal
         denom = (d * n).sum(-1)
         num = self.offset - (o * n).sum(-1)
@@ -163,7 +163,7 @@ class TInfiniteCylinder:
         self.radius = float(radius)
         self.dev, self.dt = dev, dt
 
-    def ray_intersect(self, o, d):
+    def ray_intersect(self, o, d, compiled=False):
         a = self.axis
         oc = o - self.centre
         d_a = (d * a).sum(-1, keepdim=True)
@@ -204,7 +204,7 @@ class TEllipsoid:
         self.radii = _t(radii, dev, dt)
         self.dev, self.dt = dev, dt
 
-    def ray_intersect(self, o, d):
+    def ray_intersect(self, o, d, compiled=False):
         r = self.radii
         oc = (o - self.centre) / r
         ds = d / r
@@ -239,7 +239,7 @@ class TBox:
         self.hi = _t(hi, dev, dt)
         self.dev, self.dt = dev, dt
 
-    def ray_intersect(self, o, d):
+    def ray_intersect(self, o, d, compiled=False):
         big = abs(d) > 1e-15
         safe_d = torch.where(big, d, torch.ones_like(d))
         inf = torch.full_like(d, float("inf"))
@@ -278,7 +278,7 @@ class TCapsule:
         self._len = float(torch.linalg.vector_norm(seg).item())
         self.dev, self.dt = dev, dt
 
-    def ray_intersect(self, o, d):
+    def ray_intersect(self, o, d, compiled=False):
         p0, p1, r, L = self.p0, self.p1, self.radius, self._len
         ax = (p1 - p0) / (L + 1e-30)
         ba = p1 - p0
@@ -353,10 +353,10 @@ class TIntersection:
     def __init__(self, children):
         self.children = list(children)
 
-    def ray_intersect(self, o, d):
-        te, tx, ne, nx = self.children[0].ray_intersect(o, d)
+    def ray_intersect(self, o, d, compiled=False):
+        te, tx, ne, nx = self.children[0].ray_intersect(o, d, compiled=compiled)
         for c in self.children[1:]:
-            te2, tx2, ne2, nx2 = c.ray_intersect(o, d)
+            te2, tx2, ne2, nx2 = c.ray_intersect(o, d, compiled=compiled)
             use_e = te2 > te
             te = torch.where(use_e, te2, te)
             ne = torch.where(use_e.unsqueeze(1), ne2, ne)
@@ -374,10 +374,10 @@ class TUnion:
     def __init__(self, children):
         self.children = list(children)
 
-    def ray_intersect(self, o, d):
-        te, tx, ne, nx = self.children[0].ray_intersect(o, d)
+    def ray_intersect(self, o, d, compiled=False):
+        te, tx, ne, nx = self.children[0].ray_intersect(o, d, compiled=compiled)
         for c in self.children[1:]:
-            te2, tx2, ne2, nx2 = c.ray_intersect(o, d)
+            te2, tx2, ne2, nx2 = c.ray_intersect(o, d, compiled=compiled)
             miss_a = te >= tx
             miss_b = te2 >= tx2
             use_b_entry = (te2 < te) & (~miss_b)
@@ -398,9 +398,9 @@ class TDifference:
     def __init__(self, A, B):
         self.A, self.B = A, B
 
-    def ray_intersect(self, o, d):
-        te_a, tx_a, ne_a, nx_a = self.A.ray_intersect(o, d)
-        te_b, tx_b, ne_b, nx_b = self.B.ray_intersect(o, d)
+    def ray_intersect(self, o, d, compiled=False):
+        te_a, tx_a, ne_a, nx_a = self.A.ray_intersect(o, d, compiled=compiled)
+        te_b, tx_b, ne_b, nx_b = self.B.ray_intersect(o, d, compiled=compiled)
         te, tx, ne, nx = te_a.clone(), tx_a.clone(), ne_a.clone(), nx_a.clone()
         inf = torch.full_like(te, float("inf"))
         miss_a = te_a >= tx_a
@@ -446,10 +446,33 @@ class TTube:
         self._ax = _t(ba / (np.sqrt(baba)[:, None] + 1e-30), dev, f64)
         self._bbox_lo = _t(pts.min(0) - self.r, dev, f64)
         self._bbox_hi = _t(pts.max(0) + self.r, dev, f64)
+        self._kernel_c = None   # lazy torch.compile handle (preview path only)
 
-    def ray_intersect(self, o, d):
+    def _compiled_kernel(self):
+        """Dynamic-batch torch.compile of the heavy tube _kernel (CUDA only).
+
+        The AABB cull's survivor count is data-dependent, so the tube math
+        cannot live inside the outer compiled next_interface graph without
+        specializing on the per-pose survivor count (a recompile per distinct
+        count until dynamo's cache cap, then permanent eager -- the fusion
+        loss behind slow /motor-driven previews). Compiling the kernel on its
+        own with dynamic=True over the survivor dim compiles ONCE and reuses.
+        """
+        if self._kernel_c is None:
+            self._kernel_c = torch.compile(self._kernel, mode="default",
+                                           dynamic=True)
+        return self._kernel_c
+
+    @torch._dynamo.disable
+    def ray_intersect(self, o, d, compiled=False):
         # AABB cull: run the heavy (B,K,3) kernel only on bbox survivors.
         # Byte-identical (culled rays geometrically miss -> inf either way).
+        # dynamo-disabled: the compiled next_interface graph breaks cleanly
+        # here, so the data-dependent survivor count never specializes the
+        # outer graph; on the preview path the tube math is fused by the
+        # separately-compiled kernel below. `compiled` is threaded explicitly
+        # through the call chain (no shared mutable state), so eager callers
+        # (settle, /xray, parity tests) provably run the eager kernel.
         N = o.shape[0]
         te = torch.full((N,), float("inf"), device=o.device, dtype=self.dt)
         tx = torch.full((N,), float("inf"), device=o.device, dtype=self.dt)
@@ -461,7 +484,15 @@ class TTube:
         # second, redundant sync).
         idx = surv.nonzero(as_tuple=False).squeeze(1)
         if idx.numel():
-            kte, ktx, kne, knx = self._kernel(o[idx], d[idx])
+            o_s, d_s = o[idx], d[idx]
+            if compiled and self.dev.type == "cuda":
+                # Metadata hint: treat the survivor dim as dynamic so the very
+                # first compile is already batch-size-agnostic.
+                torch._dynamo.maybe_mark_dynamic(o_s, 0)
+                torch._dynamo.maybe_mark_dynamic(d_s, 0)
+                kte, ktx, kne, knx = self._compiled_kernel()(o_s, d_s)
+            else:
+                kte, ktx, kne, knx = self._kernel(o_s, d_s)
             te[idx] = kte
             tx[idx] = ktx
             ne[idx] = kne
@@ -591,7 +622,7 @@ class TSurfaceMesh:
         t_back = torch.where(has_bwd, -t_bwd[bi, fi_bwd], torch.zeros_like(t_min))
         return t_min, t_max, fi_min, fi_max, t_back, fi_bwd
 
-    def ray_intersect(self, o, d):
+    def ray_intersect(self, o, d, compiled=False):
         f64 = torch.float64
         of, df = o.to(f64), d.to(f64)
         INF = float("inf")
@@ -641,7 +672,7 @@ class TNull:
     def __init__(self, dev, dt):
         self.dev, self.dt = dev, dt
 
-    def ray_intersect(self, o, d):
+    def ray_intersect(self, o, d, compiled=False):
         inf = torch.full(o.shape[:1], float("inf"), device=o.device, dtype=o.dtype)
         zeros = torch.zeros_like(o)
         return inf, inf, zeros, zeros
@@ -737,8 +768,13 @@ class TorchScene:
                 self.next_interface, mode="default", dynamic=True)
         return self._compiled_ni
 
-    def next_interface(self, o, d, t_min=1e-6):
-        """Returns (best_t (N,), best_n (N,3), mat_out_oi (N,) long; -1 = background)."""
+    def next_interface(self, o, d, t_min=1e-6, compiled=False):
+        """Returns (best_t (N,), best_n (N,3), mat_out_oi (N,) long; -1 = background).
+
+        `compiled` is forwarded to every shape's ray_intersect: only TTube acts
+        on it (its heavy kernel gets a separately-compiled dynamic-batch
+        variant on the preview path); everything else ignores it, so eager
+        callers stay byte-exact by construction."""
         N = o.shape[0]
         dev, dt = o.device, o.dtype
         INF = float("inf")
@@ -746,7 +782,7 @@ class TorchScene:
         best_n = torch.zeros((N, 3), device=dev, dtype=dt)
         te_list, tx_list = [], []
         for oi, shape in enumerate(self.shapes):
-            te, tx, ne, nx = shape.ray_intersect(o, d)
+            te, tx, ne, nx = shape.ray_intersect(o, d, compiled=compiled)
             te_list.append(te)
             tx_list.append(tx)
             # entry, then exit using the entry-updated best_t (matches numpy order)
@@ -789,7 +825,10 @@ class TorchScene:
             max_depth = MAX_DEPTH
         if color_mu is None:
             color_mu = _COLOR_MU
-        next_interface = self._compiled_next_interface() if compiled else self.next_interface
+        ni_fn = self._compiled_next_interface() if compiled else self.next_interface
+
+        def next_interface(og, dg, t_min=1e-6):
+            return ni_fn(og, dg, t_min=t_min, compiled=compiled)
 
         N = o.shape[0]
         dev, dt = o.device, o.dtype
