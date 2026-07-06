@@ -113,6 +113,19 @@ The server exposes an AXIS-compatible HTTP interface so it can replace a real
 beamline camera in any software that speaks AXIS (MxCuBE, EPICS areaDetector,
 browser, VLC, etc.).
 
+```bash
+python -m loop_sim.server.camera_server --scene scene.yaml --port 8080
+```
+
+Useful flags: `--n-cond` (condenser rays for settled frames, default 7),
+`--fps-limit` (MJPEG stream cap, default 5), `--engine {auto,torch,numpy}`,
+`--preview-mode {on,off}` (on = fast approximate frames while a move animates,
+refining to the exact frame on settle; off = every frame exact full quality),
+and `--compile-preview {on,off}` (on = preview frames render through a
+`torch.compile`d trace for ~10+ fps motion; compiles once at startup, ~20 s).
+
+Or from Python:
+
 ```python
 from loop_sim.scene.scene       import load
 from loop_sim.server.camera_server import CameraServer
@@ -124,8 +137,12 @@ server.start()   # blocks; Ctrl-C to stop
 
 When a CUDA GPU is present the server renders through the GPU-resident engine
 automatically (`engine="auto"`; pass `engine="numpy"` to force the CPU reference
-renderer).  The GPU output is byte-identical to the CPU reference and several
-times faster, so the live `/motor` → frame latency drops accordingly.
+renderer).  Settled frames are byte-identical to the CPU reference; during
+animated moves the server streams fast preview frames (n_cond=1, optionally
+`torch.compile`d) and renders one exact full-quality frame when the move
+settles.  Frame production is single-flight: one background thread renders,
+MJPEG clients consume the newest frame (idle streams re-send the last frame
+about once a second as a keepalive).
 
 ### Interactive control page
 
