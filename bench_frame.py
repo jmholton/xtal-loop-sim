@@ -163,6 +163,9 @@ def main():
                     help="bench the torch.compile()d preview path (CUDA only): "
                          "warms up (first call compiles ~30-60 s) then times "
                          "render_torch(compiled=True)")
+    ap.add_argument("--fp32", action="store_true",
+                    help="bench a float32 TorchScene (the preview-scene dtype; "
+                         "tube/mesh intersection math stays float64 internally)")
     args = ap.parse_args()
 
     if args.quick:
@@ -175,7 +178,8 @@ def main():
     if args.compiled and not compiled:
         print("WARNING: --compiled ignored (compilation is CUDA-only here).")
     scene = load(args.scene, device="cpu")
-    tscene = TorchScene(scene, dev, torch.float64)
+    dt = torch.float32 if args.fp32 else torch.float64
+    tscene = TorchScene(scene, dev, dt)
 
     results = []
     for n_cond in [int(x) for x in args.n_cond.split(",")]:
