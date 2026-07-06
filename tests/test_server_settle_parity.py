@@ -70,3 +70,18 @@ def test_animating_preview_uses_n_cond_1(server):
     server._anim_active = True
     served = server._render_now()
     assert served == _reference_jpeg(server._scene, {}, n_cond=1)
+
+
+@cuda_only
+def test_preview_mode_off_is_always_exact():
+    """--preview-mode off: even mid-animation, the served frame is the exact
+    full-n_cond render (pure-exact streaming)."""
+    scene = load(HAMPTON, device="cpu")
+    srv = CameraServer(scene, host="127.0.0.1", port=0, engine="auto",
+                       preview_mode=False)
+    try:
+        srv._anim_active = True
+        served = srv._render_now()
+        assert served == _reference_jpeg(scene, {}, n_cond=srv._n_cond)
+    finally:
+        srv.server_close()

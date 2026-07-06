@@ -37,6 +37,13 @@ GET /recenter?px=COL&py=ROW
 
 Usage
 -----
+Command line (preferred):
+
+    python -m loop_sim.server.camera_server --scene scene_files/hampton_300um.yaml
+    python -m loop_sim.server.camera_server --preview-mode off   # every frame exact
+
+Or from Python:
+
     from loop_sim.server.camera_server import CameraServer
     from loop_sim.scene.scene import load
     from loop_sim.motors.goniometer import Goniometer
@@ -329,12 +336,17 @@ class CameraServer(ThreadingHTTPServer):
     """
 
     def __init__(self, scene, host="0.0.0.0", port=8080,
-                 n_cond=7, fps_limit=5.0, engine="auto", jpeg_quality=85):
+                 n_cond=7, fps_limit=5.0, engine="auto", jpeg_quality=85,
+                 preview_mode=True):
         super().__init__((host, port), _Handler)
         self._scene          = scene
         self._goniometer     = Goniometer(scene.geometry)
         self._n_cond         = n_cond
         self._jpeg_quality   = jpeg_quality
+        # preview_mode=True (default): fast approximate frames while a move
+        # animates, refining to the exact full-quality frame on settle.
+        # False: every served frame is the exact full-quality render.
+        self._preview_mode   = bool(preview_mode)
         self._frame_interval = 1.0 / fps_limit
         self._jpeg_cache     = None
         self._cache_dirty    = True
@@ -393,7 +405,8 @@ class CameraServer(ThreadingHTTPServer):
     def _render_now(self):
         gono   = self._snapshot_gonio()
         # Fast preview while a move is animating; full quality once it settles.
-        n_cond = 1 if self._anim_active else self._n_cond
+        preview = self._anim_active and self._preview_mode
+        n_cond = 1 if preview else self._n_cond
         if self._tscene is not None:
             import torch
             from PIL import Image
@@ -405,7 +418,8 @@ class CameraServer(ThreadingHTTPServer):
                 buf, format="JPEG", quality=self._jpeg_quality)
             jpeg = buf.getvalue()
         else:
-            _, jpeg = microscope_render(self._scene, gono, n_cond=n_cond)
+            _, jpeg = microscope_render(self._scene, gono, n_cond=n_cond,
+                                        jpeg_quality=self._jpeg_quality)
         with self._lock:
             self._jpeg_cache  = jpeg
             self._cache_dirty = False
@@ -593,3 +607,40 @@ class CameraServer(ThreadingHTTPServer):
             except KeyboardInterrupt:
                 print("\nStopping server.")
                 self.server_close()
+
+
+def main(argv=None):
+    """CLI entry point: python -m loop_sim.server.camera_server [options]."""
+    import argparse
+
+    from ..scene.scene import load
+
+    ap = argparse.ArgumentParser(
+        prog="python -m loop_sim.server.camera_server",
+        description="AXIS-compatible camera server for the loop simulator.")
+    ap.add_argument("--scene", default="scene_files/hampton_300um.yaml",
+                    help="scene YAML to serve (default: %(default)s)")
+    ap.add_argument("--host", default="0.0.0.0")
+    ap.add_argument("--port", type=int, default=8080)
+    ap.add_argument("--n-cond", type=int, default=7,
+                    help="condenser rays for settled frames (default: %(default)s)")
+    ap.add_argument("--fps-limit", type=float, default=5.0,
+                    help="max MJPEG stream frame rate (default: %(default)s)")
+    ap.add_argument("--engine", choices=["auto", "torch", "numpy"], default="auto")
+    ap.add_argument("--jpeg-quality", type=int, default=85)
+    ap.add_argument("--preview-mode", choices=["on", "off"], default="on",
+                    help="on (default): fast approximate frames while a move "
+                         "animates, exact frame on settle; off: every served "
+                         "frame is the exact full-quality render")
+    args = ap.parse_args(argv)
+
+    scene = load(args.scene)
+    server = CameraServer(scene, host=args.host, port=args.port,
+                          n_cond=args.n_cond, fps_limit=args.fps_limit,
+                          engine=args.engine, jpeg_quality=args.jpeg_quality,
+                          preview_mode=args.preview_mode == "on")
+    server.start()
+
+
+if __name__ == "__main__":
+    main()
