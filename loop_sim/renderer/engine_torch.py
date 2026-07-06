@@ -624,10 +624,32 @@ class TSurfaceMesh:
 
 
 # ---------------------------------------------------------------------------
+# TNull: inert stand-in for provably-hitless shapes (e.g. a radius-0 Sphere,
+# the default hampton scene's placeholder "solvent" object).
+#
+# A zero-radius sphere can never yield an interface: disc = 4[(oc.d)^2 -
+# (d.d)(oc.oc)] <= 0 by Cauchy-Schwarz, so entry == exit at best and the
+# strict te < tx tests in next_interface (and the material-interval probe)
+# reject it identically in numpy and torch. Substituting it out at build time
+# removes its kernels from every depth iteration while keeping the object
+# index (and so the material tables) aligned -- byte-exact by construction.
+# ---------------------------------------------------------------------------
+class TNull:
+    def __init__(self, dev, dt):
+        self.dev, self.dt = dev, dt
+
+    def ray_intersect(self, o, d):
+        inf = torch.full(o.shape[:1], float("inf"), device=o.device, dtype=o.dtype)
+        zeros = torch.zeros_like(o)
+        return inf, inf, zeros, zeros
+
+
+# ---------------------------------------------------------------------------
 # Builder: numpy shape -> torch shape
 # ---------------------------------------------------------------------------
 _PRIMITIVE_BUILDERS = {
-    "Sphere": lambda s, dev, dt: TSphere(s.centre, s.radius, dev, dt),
+    "Sphere": lambda s, dev, dt: (TSphere(s.centre, s.radius, dev, dt)
+                                  if s.radius > 0 else TNull(dev, dt)),
     "HalfSpace": lambda s, dev, dt: THalfSpace(s.normal, s.offset, dev, dt),
     "InfiniteCylinder": lambda s, dev, dt: TInfiniteCylinder(s.centre, s.axis, s.radius, dev, dt),
     "Ellipsoid": lambda s, dev, dt: TEllipsoid(s.centre, s.radii, dev, dt),
