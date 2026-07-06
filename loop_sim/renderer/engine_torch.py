@@ -868,6 +868,7 @@ class TorchScene:
 # Returns an (H, W, 3) torch tensor in [0, 1]; condenser rays still looped here
 # (batched into one resident trace in 2f).
 # ---------------------------------------------------------------------------
+@torch.inference_mode()
 def render_torch(tscene, goniometer, n_cond=1, tile_size=250_000):
     from .microscope import _condenser_offsets
     from ..motors.goniometer import apply_transform
@@ -937,6 +938,7 @@ def render_torch(tscene, goniometer, n_cond=1, tile_size=250_000):
 # view (same focal-point grid as render_torch). Returns an (H, W) torch tensor
 # of transmission T = exp(-Σ mu_xray·L) in [0, 1] (1 = transmitted, 0 = absorbed).
 # ---------------------------------------------------------------------------
+@torch.inference_mode()
 def render_xray_torch(tscene, goniometer, tile_size=250_000):
     from ..motors.goniometer import apply_transform, apply_transform_dirs
 
