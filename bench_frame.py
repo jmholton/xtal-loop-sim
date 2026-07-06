@@ -88,11 +88,11 @@ def encode_jpeg(img, quality=85):
     return buf.getvalue()
 
 
-def op_count_one_frame(tscene, gono, n_cond):
+def op_count_one_frame(tscene, gono, n_cond, compiled=False):
     """Torch op invocations for one frame (dispatch-boundness proxy)."""
     from torch.profiler import profile, ProfilerActivity
     with profile(activities=[ProfilerActivity.CPU]) as prof:
-        render_torch(tscene, gono, n_cond=n_cond)
+        render_torch(tscene, gono, n_cond=n_cond, compiled=compiled)
         if tscene.dev.type == "cuda":
             torch.cuda.synchronize()
     ka = prof.key_averages()
@@ -100,13 +100,14 @@ def op_count_one_frame(tscene, gono, n_cond):
         sum(evt.self_cpu_time_total for evt in ka) / 1000.0)
 
 
-def bench_config(tscene, pose, n_cond, frames, warmup):
+def bench_config(tscene, pose, n_cond, frames, warmup, compiled=False):
     gono = Goniometer(tscene.scene.geometry).set(**POSES[pose])
     cuda = tscene.dev.type == "cuda"
     if cuda:
         torch.cuda.reset_peak_memory_stats()
+    # First compiled call triggers a ~30-60 s compilation; warm up until stable.
     for _ in range(warmup):
-        img = render_torch(tscene, gono, n_cond=n_cond)
+        img = render_torch(tscene, gono, n_cond=n_cond, compiled=compiled)
     if cuda:
         torch.cuda.synchronize()
 
@@ -114,7 +115,7 @@ def bench_config(tscene, pose, n_cond, frames, warmup):
     with GpuSampler() as smp:
         for _ in range(frames):
             t0 = time.perf_counter()
-            img = render_torch(tscene, gono, n_cond=n_cond)
+            img = render_torch(tscene, gono, n_cond=n_cond, compiled=compiled)
             if cuda:
                 torch.cuda.synchronize()
             times.append((time.perf_counter() - t0) * 1000.0)
@@ -123,12 +124,13 @@ def bench_config(tscene, pose, n_cond, frames, warmup):
     encode_jpeg(img)
     encode_ms = (time.perf_counter() - t0) * 1000.0
 
-    ops, self_cpu_ms = op_count_one_frame(tscene, gono, n_cond)
+    ops, self_cpu_ms = op_count_one_frame(tscene, gono, n_cond, compiled=compiled)
     med = statistics.median(times)
     q = statistics.quantiles(times, n=10) if len(times) >= 10 else [min(times)] * 9
     return {
         "pose": pose,
         "n_cond": n_cond,
+        "compiled": compiled,
         "frames": frames,
         "median_ms": round(med, 2),
         "p10_ms": round(q[0], 2),
@@ -157,6 +159,10 @@ def main():
     ap.add_argument("--label", default="run")
     ap.add_argument("--quick", action="store_true",
                     help="id pose only, 10 frames, n_cond=1")
+    ap.add_argument("--compiled", action="store_true",
+                    help="bench the torch.compile()d preview path (CUDA only): "
+                         "warms up (first call compiles ~30-60 s) then times "
+                         "render_torch(compiled=True)")
     args = ap.parse_args()
 
     if args.quick:
@@ -165,6 +171,9 @@ def main():
     dev = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     if dev.type != "cuda":
         print("WARNING: CUDA unavailable — timings will not match the GPU baseline.")
+    compiled = args.compiled and dev.type == "cuda"
+    if args.compiled and not compiled:
+        print("WARNING: --compiled ignored (compilation is CUDA-only here).")
     scene = load(args.scene, device="cpu")
     tscene = TorchScene(scene, dev, torch.float64)
 
@@ -172,12 +181,21 @@ def main():
     for n_cond in [int(x) for x in args.n_cond.split(",")]:
         frames = args.frames or (30 if n_cond == 1 else 8)
         for pose in args.poses.split(","):
-            r = bench_config(tscene, pose, n_cond, frames, args.warmup)
+            r = bench_config(tscene, pose, n_cond, frames, args.warmup, compiled=compiled)
             results.append(r)
-            print(f"n_cond={n_cond} pose={pose:<7} median={r['median_ms']:8.2f} ms "
+            tag = "C" if compiled else " "
+            print(f"[{tag}] n_cond={n_cond} pose={pose:<7} median={r['median_ms']:8.2f} ms "
                   f"({r['fps']:5.2f} fps)  p90={r['p90_ms']:8.2f}  "
                   f"encode={r['encode_ms']:5.2f} ms  ops={r['ops_per_frame']:5d}  "
                   f"util={r['gpu_util_mean']}%  peak={r['torch_peak_alloc_mb']} MB")
+
+    if compiled:
+        try:
+            import torch._dynamo as _dyn
+            stats = dict(_dyn.utils.counters.get("stats", {}))
+            print(f"dynamo stats (recompile watch): {stats}")
+        except Exception:
+            pass
 
     sha = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=REPO_ROOT,
                          capture_output=True, text=True).stdout.strip() or "nogit"
@@ -188,6 +206,7 @@ def main():
         "torch": torch.__version__,
         "device": torch.cuda.get_device_name(0) if dev.type == "cuda" else "cpu",
         "scene": os.path.basename(args.scene),
+        "compiled": compiled,
         "results": results,
     }
     outdir = os.path.join(REPO_ROOT, "bench_results")

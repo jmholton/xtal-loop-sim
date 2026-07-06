@@ -705,6 +705,8 @@ class TorchScene:
     def __init__(self, scene, dev, dt):
         self.dev, self.dt = dev, dt
         self.scene = scene
+        # Lazily-built torch.compile handle for the preview hot path (CUDA only).
+        self._compiled_ni = None
         self.shapes = [build_torch_shape(ob.shape, dev, dt) for ob in scene.objects]
         self.n_obj = len(self.shapes)
         # Material lookup tables, K = 1 + n_obj (index 0 = background).
@@ -717,6 +719,23 @@ class TorchScene:
         # X-ray linear attenuation coefficient (mm⁻¹) per material, same index
         # convention (0 = background). Used by trace_xray / render_xray_torch.
         self.mat_muxray = _t([bg.mu_xray] + [o.material.mu_xray for o in objs], dev, dt)
+
+    def _compiled_next_interface(self):
+        """Lazily build a torch.compile()d next_interface for the PREVIEW path.
+
+        Compiled only on CUDA (Inductor's CPU backend historically miscompiled
+        the mesh/CSG path here), with mode="default" — reduce-overhead's implicit
+        CUDA-graph capture is not thread-safe in the single-flight server ("already
+        recording to mempool"/CUBLAS crashes). dynamic=True keeps the symbolic
+        batch dim from recompiling as depth-compaction shrinks the active set.
+        On CPU (or first-build failure upstream) callers fall back to eager.
+        """
+        if self.dev.type != "cuda":
+            return self.next_interface
+        if self._compiled_ni is None:
+            self._compiled_ni = torch.compile(
+                self.next_interface, mode="default", dynamic=True)
+        return self._compiled_ni
 
     def next_interface(self, o, d, t_min=1e-6):
         """Returns (best_t (N,), best_n (N,3), mat_out_oi (N,) long; -1 = background)."""
@@ -753,19 +772,24 @@ class TorchScene:
         mat_out_oi = torch.where(hit_mask & has_any, am, neg1)
         return best_t, best_n, mat_out_oi
 
-    def trace_rays(self, o, d, na_obj, opt_axis_sample, max_depth=None, color_mu=None):
+    def trace_rays(self, o, d, na_obj, opt_axis_sample, max_depth=None, color_mu=None,
+                   compiled=False):
         """Masked-active-ray port of microscope._trace_rays. Returns (N,3) RGB in [0,1].
 
         Uses a boolean `alive` mask instead of compaction (semantically identical
         since next_interface is per-ray independent; enables fixed shapes for
         CUDA-graph capture in 2g). The NA cutoff is applied to a ray at the depth
         it exits, exactly as numpy does.
+
+        `compiled=True` routes the per-depth interface query through the
+        torch.compile()d next_interface (preview-only fusion win); eager otherwise.
         """
         from .microscope import MAX_DEPTH, _COLOR_MU
         if max_depth is None:
             max_depth = MAX_DEPTH
         if color_mu is None:
             color_mu = _COLOR_MU
+        next_interface = self._compiled_next_interface() if compiled else self.next_interface
 
         N = o.shape[0]
         dev, dt = o.device, o.dtype
@@ -790,7 +814,7 @@ class TorchScene:
             if gidx.numel() == 0:
                 break
             og, dg = o[gidx], d[gidx]
-            t_next, normals, mat_out = self.next_interface(og, dg, t_min=1e-6)
+            t_next, normals, mat_out = next_interface(og, dg, t_min=1e-6)
             hit = t_next < INF
 
             # NA cutoff for rays that exited the scene (using their exit direction)
@@ -883,7 +907,7 @@ class TorchScene:
 # (batched into one resident trace in 2f).
 # ---------------------------------------------------------------------------
 @torch.inference_mode()
-def render_torch(tscene, goniometer, n_cond=1, tile_size=250_000):
+def render_torch(tscene, goniometer, n_cond=1, tile_size=250_000, compiled=False):
     from .microscope import _condenser_offsets
     from ..motors.goniometer import apply_transform
 
@@ -941,7 +965,8 @@ def render_torch(tscene, goniometer, n_cond=1, tile_size=250_000):
     out = torch.empty((M, 3), device=dev, dtype=dt)
     for s in range(0, M, tile_size):
         e = min(s + tile_size, M)
-        out[s:e] = tscene.trace_rays(o_t[s:e], d_t[s:e], na_obj, opt_axis_s)
+        out[s:e] = tscene.trace_rays(o_t[s:e], d_t[s:e], na_obj, opt_axis_s,
+                                     compiled=compiled)
     # average over the condenser dimension
     return out.reshape(n_cond, WH, 3).mean(dim=0).reshape(H, W, 3)
 

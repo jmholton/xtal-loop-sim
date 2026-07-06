@@ -367,7 +367,7 @@ class CameraServer(ThreadingHTTPServer):
 
     def __init__(self, scene, host="0.0.0.0", port=8080,
                  n_cond=7, fps_limit=5.0, engine="auto", jpeg_quality=85,
-                 preview_mode=True):
+                 preview_mode=True, compile_preview=True):
         super().__init__((host, port), _Handler)
         self._scene          = scene
         self._goniometer     = Goniometer(scene.geometry)
@@ -377,6 +377,12 @@ class CameraServer(ThreadingHTTPServer):
         # animates, refining to the exact full-quality frame on settle.
         # False: every served frame is the exact full-quality render.
         self._preview_mode   = bool(preview_mode)
+        # compile_preview=True (default): run the PREVIEW hot trace through
+        # torch.compile for a fusion win. Effective only on the CUDA engine with
+        # preview_mode on, and only after start() warms the first (single-
+        # threaded) compilation. Settle frames / /xray / offline stay eager+exact.
+        self._compile_preview = bool(compile_preview)
+        self._compiled_ok     = False   # flipped True once warmup compiles cleanly
         self._frame_interval = 1.0 / fps_limit
         # Frame slot: the latest published JPEG plus a generation counter,
         # swapped atomically under _frame_cv.  The background render loop is
@@ -449,7 +455,18 @@ class CameraServer(ThreadingHTTPServer):
             import torch
             from PIL import Image
             from ..renderer.engine_torch import render_torch
-            img = render_torch(self._tscene, gono, n_cond=n_cond)
+            # Compiled ONLY for previews and ONLY once warmup succeeded. Settle
+            # frames (and /xray, elsewhere) always take the exact eager path.
+            use_compiled = preview and self._compiled_ok
+            if use_compiled:
+                try:
+                    img = render_torch(self._tscene, gono, n_cond=n_cond, compiled=True)
+                except Exception as exc:      # once-and-done fallback to eager
+                    self._compiled_ok = False
+                    print(f"[compile-preview] runtime failure, reverting to eager: {exc}")
+                    img = render_torch(self._tscene, gono, n_cond=n_cond, compiled=False)
+            else:
+                img = render_torch(self._tscene, gono, n_cond=n_cond, compiled=False)
             img8 = (img * 255).clamp(0, 255).to(torch.uint8).cpu().numpy()
             buf = io.BytesIO()
             Image.fromarray(img8, mode="RGB").save(
@@ -643,6 +660,33 @@ class CameraServer(ThreadingHTTPServer):
     def goniometer(self):
         return self._goniometer
 
+    def _warmup_compiled_preview(self):
+        """Trigger the first (single-threaded) compilation BEFORE any worker
+        thread exists.
+
+        Concurrent first-compilation from request threads crashed dynamo in a
+        prior experiment, so this must run while the server is still single-
+        threaded (start(), pre-threads). Any failure degrades to eager: the
+        server still serves, just without the fusion win. No-op unless the CUDA
+        engine is live and preview compilation is both requested and reachable
+        (preview_mode on).
+        """
+        if not (self._compile_preview and self._preview_mode
+                and self._tscene is not None and self._tscene.dev.type == "cuda"):
+            return
+        try:
+            import torch
+            from ..renderer.engine_torch import render_torch
+            gono = self._snapshot_gonio()
+            for _ in range(2):     # preview-shaped: n_cond=1, compiled
+                render_torch(self._tscene, gono, n_cond=1, compiled=True)
+            torch.cuda.synchronize()
+            self._compiled_ok = True
+            print("[compile-preview] warmup ok — preview frames use torch.compile")
+        except Exception as exc:
+            self._compiled_ok = False
+            print(f"[compile-preview] warmup failed, using eager preview: {exc}")
+
     def start(self, background=False):
         """
         Start serving.
@@ -650,6 +694,10 @@ class CameraServer(ThreadingHTTPServer):
         background=True → runs in a daemon thread and returns immediately.
         background=False → blocks (use Ctrl-C to stop).
         """
+        # Single-threaded first compilation of the preview path (if enabled)
+        # BEFORE any thread is spawned — concurrent first-compile crashes dynamo.
+        self._warmup_compiled_preview()
+
         # Kick off background render + animator threads
         # Assign _bg_thread BEFORE starting the thread: this closes the startup
         # window where a concurrent _get_jpeg could see _bg_thread is None and
@@ -706,13 +754,18 @@ def main(argv=None):
                     help="on (default): fast approximate frames while a move "
                          "animates, exact frame on settle; off: every served "
                          "frame is the exact full-quality render")
+    ap.add_argument("--compile-preview", choices=["on", "off"], default="on",
+                    help="on (default): run PREVIEW frames through torch.compile "
+                         "(CUDA engine + preview-mode only) for a fusion speedup; "
+                         "settle frames stay exact/eager. off: eager previews")
     args = ap.parse_args(argv)
 
     scene = load(args.scene)
     server = CameraServer(scene, host=args.host, port=args.port,
                           n_cond=args.n_cond, fps_limit=args.fps_limit,
                           engine=args.engine, jpeg_quality=args.jpeg_quality,
-                          preview_mode=args.preview_mode == "on")
+                          preview_mode=args.preview_mode == "on",
+                          compile_preview=args.compile_preview == "on")
     server.start()
 
 
