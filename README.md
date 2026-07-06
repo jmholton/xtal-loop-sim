@@ -121,8 +121,13 @@ Useful flags: `--n-cond` (condenser rays for settled frames, default 7),
 `--fps-limit` (MJPEG stream cap, default 5), `--engine {auto,torch,numpy}`,
 `--preview-mode {on,off}` (on = fast approximate frames while a move animates,
 refining to the exact frame on settle; off = every frame exact full quality),
-and `--compile-preview {on,off}` (on = preview frames render through a
-`torch.compile`d trace for ~10+ fps motion; compiles once at startup, ~20 s).
+`--compile-preview {on,off}` (on = preview frames render through a
+`torch.compile`d trace for ~10+ fps motion; compiles once at startup, ~20 s),
+and `--settle-delay` (seconds of pose quiet after an instant `/motor` set
+before the exact full-quality frame renders, default 0.5).  Instant `/motor`
+sets — how AXIS-style consumers such as MxCuBE/EPICS drive the goniometer —
+count as motion too: streams of `/motor` updates get fast preview frames, and
+one exact frame renders automatically once the pose settles.
 
 Or from Python:
 

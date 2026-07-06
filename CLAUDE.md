@@ -46,15 +46,23 @@ cuda` still uses the legacy per-object path.
 2026-07-06 optimization pass (RTX 4080 SUPER, 640×480, hampton, all byte-exact
 unless noted): eager engine n_cond=1 ≈ 154 ms / n_cond=7 ≈ 988 ms (was 180 /
 1193).  The server additionally has a **flag-gated compiled preview path**
-(`--compile-preview`, default on): animated-move frames route `next_interface`
-through `torch.compile(mode="default", dynamic=True)` — live soak measures
-**~35 ms median preview render, >25 fps to two MJPEG clients**; settled frames,
-`/xray`, and offline renders stay bitwise-exact eager.  Compilation happens
-once, single-threaded, in `start()` before any worker thread (never use
-`mode="reduce-overhead"` here — its CUDA-graph capture is not thread-safe in
-this threaded server; a first animation after boot shows a few one-time ~1 s
-dynamo recompile hitches, which self-limit).  Benchmark with `bench_frame.py`
-(`--compiled` for the preview path); phase-gate the live server with
+(`--compile-preview`, default on): moving-pose frames route `next_interface`
+through `torch.compile(mode="default", dynamic=True)`, and the heavy tube
+`_kernel` is compiled SEPARATELY with a dynamic survivor dim (the AABB cull's
+data-dependent `nonzero` would otherwise re-specialize per pose — the
+compiled/eager choice is threaded explicitly through the call chain, never
+shared mutable state).  "Moving" = an animated `/move` OR any instant `/motor`
+set within `--settle-delay` (0.5 s) — the AXIS-consumer path; one exact frame
+auto-renders on pose quiet.  Measured: **~25 fps to two MJPEG clients during
+animated motion (median render ~36-41 ms); worst-case 10 Hz `/motor` stream
+with the loop centered ≈ 9.8 fps**; settled frames, `/xray`, and offline
+renders stay bitwise-exact eager.  Compilation happens once, single-threaded,
+in `start()` before any worker thread (never use `mode="reduce-overhead"`
+here — its CUDA-graph capture is not thread-safe in this threaded server).
+**fp32 preview was tried and REJECTED** (commit fb38fdb: ~2× SLOWER compiled —
+the f32↔f64 casts at the deliberately-float64 tube-kernel boundary outweigh
+the bandwidth saving; do not re-propose).  Benchmark with `bench_frame.py`
+(`--compiled`, `--fp32`); phase-gate the live server with
 `investigation/soak_server.py`.
 
 ## Condenser sampling (n_cond)
