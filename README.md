@@ -4,6 +4,9 @@ Bright-field microscope simulator for protein crystals mounted in nylon cryo-loo
 Useful for beamline alignment algorithm development, AI training data generation,
 and dose estimation.
 
+Maintainers: project status, open issues, and design rationale are in
+[`docs/HANDOFF.md`](docs/HANDOFF.md).
+
 **Physics model:** Snell's law refraction at every material interface + Beer-Lambert
 absorption + Köhler condenser illumination (soft NA edges via multi-ray sampling).
 X-ray beam volumes are computed separately by grid ray-casting.
