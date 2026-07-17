@@ -8,6 +8,30 @@
 
 ## Decisions
 
+### 2026-07-17 — TITAN V measured: 10 fps confirmed (11.9 fps), gated on the software stack
+- **Finding:** the 10 fps target reproduces on a real voltron TITAN V — **compiled preview
+  11.9 fps median / 10.1 fps p90 (GO)**, eager fallback 6.3 fps — measured by
+  `acceptance_voltron.py`. The GPU and its VRAM were never the bottleneck; the beamline's
+  default *software* stack is. This **supersedes the predictions** in the 2026-07-14 analysis
+  entry below on two points: the mesh scene does **not** hard-OOM (it fits torch 2.6 at
+  ~11.1 GB — a knife's-edge fit, ~tens of MB free after the CUDA context; it OOMs torch
+  2.0.1), and the 2016 Xeon does **not** drag the compiled path (compile fuses ~8k launches
+  into ~8 graphs → GPU-bound → the CPU stops mattering; the eager path stays CPU-bound at
+  6.3 fps).
+- **Why the stack is load-bearing:** `torch.compile` (the whole 10 fps lever) needs torch ≥
+  2.x AND a modern C compiler at runtime. Voltron's defaults block both — the pt env ships
+  torch 2.0.1 (an Inductor `pkg_resources` failure) and the system gcc is 4.8.5 (too old for
+  Inductor's `stdatomic.h` codegen). torch 2.6 + devtoolset-7 clears both. The exact,
+  reproducible recipe is in RUNBOOK "Deploy on the TITAN V".
+- **What breaks if you ignore it:** `camera_server` catches any compile failure and silently
+  runs eager (6.3 fps) — the server looks healthy and just misses 10 fps. Treat a working
+  compile as a deployment precondition, not a given: make the fallback loud, and verify with
+  `acceptance_voltron.py` (its verdict is GO only when compile actually engaged and beat
+  eager).
+- **VRAM note:** mesh scenes are a knife's-edge fit on 12 GB even on torch 2.6. The
+  byte-exact sub-frame-tiling fix (or the `TSurfaceMesh` AABB cull) is the safety margin —
+  see HANDOFF risk A.
+
 ### 2026-07-06 — 10 fps interactive via a flag-gated `torch.compile` preview path
 - **Decision:** motion/preview frames route `next_interface` (and the tube `_kernel`,
   compiled *separately* with a dynamic survivor batch) through `torch.compile`; settled

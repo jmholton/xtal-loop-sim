@@ -128,10 +128,52 @@ commits ahead of `master` and not pushed to GitHub — James owns that decision 
 HANDOFF "Current state"). Work from `master`/this branch; the GitHub default `main` is a
 stale divergent "Initial commit".
 
-**Before running on the beamline's TITAN V**, read DECISIONS.md "deploy target is a
-TITAN V" — the 10 fps result was measured only on an RTX 4080 SUPER, and there are named
-risks (VRAM headroom on the mesh scene; `torch.compile` failing silently). Nothing here
-is certified on that hardware.
+### Deploy on the TITAN V (voltron)
+
+The 10 fps interactive path is **measured on the real TITAN V — 11.9 fps** — but only with
+the stack below. The beamline's default environment (the pt env's torch 2.0.1, system gcc
+4.8.5) cannot run `torch.compile` and silently falls back to eager at ~6.3 fps. Build a
+dedicated environment once. Voltron's login shell is **tcsh** (`setenv`, not `export`); call
+the venv's python by full path because venv `activate` is a bash script:
+
+```tcsh
+# 1) a torch-2.6 venv (the pt env's torch 2.0.1 has an Inductor pkg_resources bug)
+/programs/pytorch/envs/pt/bin/python3.10 -m venv ~/projects/loopsim-torch26
+~/projects/loopsim-torch26/bin/python -m pip install --upgrade pip
+~/projects/loopsim-torch26/bin/python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cu118
+# pillow 12 has no glibc-2.17 wheel (RHEL7) and won't build on the old gcc -> pin 10.4.0
+~/projects/loopsim-torch26/bin/python -m pip install numpy scipy "pillow==10.4.0" pyyaml
+
+# 2) point Inductor at a modern compiler (system gcc 4.8.5 is too old -> stdatomic.h error).
+#    devtoolset-7 (gcc 7.3.1) is enough; set these before launching, in the same shell:
+setenv CC  /opt/rh/devtoolset-7/root/usr/bin/gcc
+setenv CXX /opt/rh/devtoolset-7/root/usr/bin/g++
+
+# 3) confirm the whole stack (voltron is a shared 8-GPU node; the harness auto-picks a free GPU)
+cd ~/projects/loop_sim_MINE/xtal-loop-sim        # the repo's location on voltron
+~/projects/loopsim-torch26/bin/python acceptance_voltron.py
+```
+
+`acceptance_voltron.py` prints a GO/NO-GO and writes `acceptance_report.json`; a GO means
+compile actually engaged and beat eager. Then launch the camera server from the same venv,
+with `CC`/`CXX` still set and a free GPU pinned:
+
+```tcsh
+setenv CUDA_VISIBLE_DEVICES 6      # a free card (check nvidia-smi first)
+~/projects/loopsim-torch26/bin/python -m loop_sim.server.camera_server --scene scene_files/hampton_300um.yaml --port 8080
+```
+
+Operational notes:
+
+- **~1–2 min compile warmup** at server start — Inductor compiles the preview kernels once.
+- **Mesh scenes (`mitegen_200um`) are a knife's-edge VRAM fit** on the 12 GB card — fine on a
+  free GPU with torch 2.6, but see HANDOFF risk A / DECISIONS.md for the tiling safety fix.
+- **Pin `CUDA_VISIBLE_DEVICES` to a free GPU** — a busy card OOMs the mesh scene on arrival.
+- If a run fails at *import* with `GLIBCXX...not found` (not a compile error), wrap the
+  command in `scl enable devtoolset-7 "<command>"` so the runtime libraries match.
+
+This whole recipe is the current cost of the 10 fps path on RHEL7; a lighter stack silently
+gets you 6.3 fps. DECISIONS.md "TITAN V measured" records why each step is load-bearing.
 
 ## Rollback
 

@@ -26,7 +26,7 @@ generation, and dose estimation. James Holton wrote it; Jacob's contribution was
 the GPU path **correct** (it was producing a "hairy" artifact on the loop fiber) and
 **fast enough to drive as a live camera** (10 image files/s).
 
-## Current state (2026-07-15)
+## Current state (2026-07-17)
 
 - **Branch `performance-correctness-optimizations`, HEAD `edefca0`, tree clean, ~20
   commits ahead of `master`, NOT pushed to GitHub.** James owns the push/merge decision.
@@ -36,12 +36,15 @@ the GPU path **correct** (it was producing a "hairy" artifact on the loop fiber)
   fixed — the CUDA intersection quadratic now runs in float64, and the GPU render is
   **byte-identical to the float64 CPU reference**. See DECISIONS.md §"float64 GPU
   intersection" for the root cause.
-- **Performance: 10 fps interactive goal MET — but only measured on Jacob's RTX 4080
-  SUPER, never on the beamline's TITAN V.** A GPU-resident torch engine
-  (`loop_sim/renderer/engine_torch.py`) runs the whole trace on-device; the live server
-  reaches ~25 fps during animated motion and ~9.8 fps on the worst-case 10 Hz `/motor`
-  stream, via a flag-gated `torch.compile` preview path. Settled/offline/`/xray` frames
-  stay bit-exact f64.
+- **Performance: 10 fps interactive goal MET — and now confirmed on the beamline's TITAN V
+  (11.9 fps).** A GPU-resident torch engine (`loop_sim/renderer/engine_torch.py`) runs the
+  whole trace on-device; on the 4080 the live server reaches ~25 fps during animated motion
+  and ~9.8 fps on the worst-case 10 Hz `/motor` stream, via a flag-gated `torch.compile`
+  preview path. `acceptance_voltron.py` measured the deployed path on a real TITAN V at
+  **11.9 fps median / 10.1 fps p90 (GO)** — but only with the full software stack (torch 2.6
+  + a modern compiler for `torch.compile`); the beamline's default stack falls back to eager
+  at 6.3 fps. Settled/offline/`/xray` frames stay bit-exact f64. See RUNBOOK "Deploy on the
+  TITAN V" for the exact recipe and DECISIONS.md.
 - **Verify: `pytest tests/` = 62 tests, green** on the local torch env (needs a
   torch+CUDA interpreter; GPU-gated parity tests skip on a CPU-only box).
 - **Paused with clear open items** (see below) — nothing half-broken; the engine works.
@@ -60,14 +63,14 @@ For a stranger picking this up cold:
    (pipeline, CLI, live server, endpoints).
 3. Decide the **push/MR** for branch `performance-correctness-optimizations` (James) — the
    work is durable only on this local tree + the gateway mirror until then.
-4. The single most important open question is **beamline (TITAN V) readiness** — see
-   Hazards below; the 10 fps result is unproven on the target and has zero margin.
+4. **Beamline (TITAN V) readiness is now measured** — the 10 fps result reproduces on the
+   real card (11.9 fps) *when the software stack is right* (RUNBOOK "Deploy on the TITAN V").
+   The remaining work is packaging that stack, not proving the hardware.
 
 The highest-value open engineering items, in rough priority:
-- **De-risk the TITAN V deployment** (the three risks in Hazards). Cheapest first: the OOM
-  canary (`torch.cuda.set_per_process_memory_fraction(12/16)` caps the 4080 to Titan-V's
-  12 GB *today* and turns "mitegen will probably OOM" into a hard fact), and make the
-  silent `torch.compile` fallback loud.
+- **Package the TITAN V deployment** (the recipe is measured; see RUNBOOK "Deploy on the
+  TITAN V"): a torch-2.6 env + a modern compiler for `torch.compile`, plus making the
+  silent-fallback-to-eager failure loud so a mis-set stack can't quietly miss 10 fps.
 - **Wire `render.py --device cuda` to the resident engine** — it still uses the legacy
   per-object CUDA path; only `camera_server` uses `engine_torch`. Unifying them removes a
   confusing second GPU path.
@@ -79,33 +82,40 @@ The highest-value open engineering items, in rough priority:
 
 ## Hazards & gotchas
 
-**Deployment risk — the beamline runs on a TITAN V, and the 10 fps result was only ever
-measured on an RTX 4080 SUPER.** GPU *speed* is NOT the risk (the frame is CPU-dispatch-
-bound, ~73–85% self-CPU; FP64 throughput is a red herring). The three real risks:
+**Deployment reality — the 10 fps target reproduces on the TITAN V (11.9 fps), but only with
+the full software stack; the hardware was never the bottleneck, the beamline's default
+software stack is.** Measured on a real voltron TITAN V (2026-07-17, `acceptance_voltron.py`,
+torch 2.6, devtoolset-7): compiled preview **11.9 fps median / 10.1 fps p90 (GO)**, eager
+fallback **6.3 fps**. The three things that decide whether you get 11.9 or 6.3:
 
-- **A — 12 GB VRAM cliff (most likely hard failure).** `TSurfaceMesh` has no AABB cull, so
-  a mesh scene (`mitegen_200um`, n_cond=1) brute-forces Möller-Trumbore and measured
-  **10.5 GB allocated / 11.2 GB reserved** on the 4080. The TITAN V has **12 GB** → almost
-  no headroom → it will OOM the moment anything else touches the GPU. **Fix (verified
-  byte-exact): sub-frame tiling** — `render_torch(..., tile_size=32768)` drops mitegen to
-  ~1.2 GB (`engine_torch.py:1003` `tile_size = max(tile_size, WH)` is a *perf* clamp, not a
-  correctness one — its own comment says per-ray results are tile-independent). The real
-  fix is giving `TSurfaceMesh` the `_aabb_survivors` cull `TTube` already has
-  (`engine_torch.py:59`).
-- **B — silent `torch.compile` fallback (owns the entire 10 fps result).** compiled ≈ 11
-  fps vs eager ≈ 6.8 fps = a 32% miss without compile. `camera_server.py`
+- **A — the mesh scene's VRAM is a knife's-edge fit, not a hard OOM.** `TSurfaceMesh` has no
+  AABB cull, so `mitegen_200um` (n_cond=1) brute-forces Möller-Trumbore to **~11.1 GB
+  reserved**. On the TITAN V's 12 GB that *fits on torch 2.6* (its allocator packs it in),
+  but with only ~tens of MB free once the CUDA context is counted — and it **OOMs on torch
+  2.0.1** (worse fragmentation). So: fine on a free card with a modern torch, but one
+  concurrent allocation or a busier card from the edge. **Fix (verified byte-exact):
+  sub-frame tiling** — `render_torch(..., tile_size=32768)` drops mitegen to ~1.2 GB
+  (`engine_torch.py:1003` `tile_size = max(tile_size, WH)` is a *perf* clamp, not correctness
+  — per-ray results are tile-independent). The durable fix is giving `TSurfaceMesh` the
+  `_aabb_survivors` cull `TTube` already has (`engine_torch.py:59`). Tube scenes like hampton
+  are unaffected (~250 MB).
+- **B — `torch.compile` silently falls back to eager, and on the beamline it WILL fail
+  without help.** compiled ≈ 11.9 fps vs eager ≈ 6.3 fps. `camera_server.py`
   `_warmup_compiled_preview` (≈line 714) and the runtime path (≈line 478) catch **any**
-  exception and degrade to eager while the server keeps booting and streaming — so on a
-  Volta (sm_70) box where compile fails, the beamline silently gets a server that runs but
-  misses 10 fps. **Make this loud** (fail hard, or a prominent persistent warning), and
-  **pin torch in `requirements.txt`** (`torch==2.6.0+cu124`) — it is currently not listed
-  there at all, and CUDA 13 / PyTorch 2.11 both drop Volta. (Partial de-risk: Triton 3.2
-  *did* compile an f64 kernel targeting sm_70, so Volta codegen is not fundamentally
-  broken — but that's codegen, not proof of the fused-graph perf.)
-- **C — voltron's CPU is unknown.** The frame is 73–85% self-CPU, so the host CPU matters
-  more than the GPU. Per-launch cost on Jacob's WSL2 box is ~8.25 µs; native Linux is
-  typically 3–5 µs, so loop-sim **may be faster** on voltron — but nobody has the numbers.
-  See Open questions.
+  exception and degrade to eager while the server keeps booting and streaming — so a stack
+  that can't compile silently misses 10 fps. On voltron, compile fails out of the box two
+  ways: the pt env's **torch 2.0.1** has an Inductor `pkg_resources` bug, and even on torch
+  2.6 the **system gcc 4.8.5** is too old for Inductor's codegen (`stdatomic.h`). Both are
+  cleared by the RUNBOOK recipe (torch 2.6 + devtoolset-7). **Make the fallback loud** (fail
+  hard, or a persistent warning) so a mis-set stack can't hide, and **pin torch** — it is not
+  listed in `requirements.txt` at all (the CUDA build is site-specific: cu124 on the dev box,
+  cu118 on voltron).
+- **C — voltron's CPU is a 2× Xeon E5-2650 v4 (2016), and it does NOT tank the compiled
+  path.** The eager path is dispatch-bound, so the slow CPU shows there (6.3 fps); but the
+  compiled path fuses ~8k kernel launches into ~8 graphs, becoming GPU-bound — so the weak
+  CPU stops mattering and voltron's compiled 11.9 fps matches the dev box. (This was an open
+  worry that the old CPU would drag the frame to ~5–6 fps; measurement refuted it — but
+  *only* because compile works, which loops back to risk B.)
 
 **Other traps:**
 - **`--device cuda` only does something on scenes with `Tube` or `SurfaceMesh` objects.**
@@ -127,18 +137,18 @@ bound, ~73–85% self-CPU; FP64 throughput is a red herring). The three real ris
 
 ## Open questions
 
-- **Ask the beamline for voltron's `lscpu` + `nvidia-smi -q`** (a text paste). The frame is
-  CPU-bound; this is the cheapest way to firm up risk C. (Per policy, the beamline relays
-  it — never fetched directly.)
 - **Push/merge decision for `performance-correctness-optimizations`** — owner: James. Until
   pushed, the branch lives only on this tree + the gateway mirror.
-- **The perf-validation tooling lives in the push-excluded `investigation/` dir** (e.g.
-  `soak_server.py`, the profiling experiments). If the team wants to re-validate perf or
-  build the planned Titan-V acceptance harness, those need moving into the repo (e.g. a
-  `tools/` dir). `bench_frame.py` (repo root, `--compiled`/`--fp32`) IS shipped.
-- **The planned TITAN V profiling suite is designed but unwritten** (zero code). Its intent:
-  a self-contained `acceptance_voltron.py` the beamline runs to produce one JSON that makes
-  the perf prediction falsifiable. Design captured in DECISIONS.md §"TITAN V deployment".
+- **Package the TITAN V software stack.** The 11.9 fps result needs torch 2.6 + a modern
+  compiler at runtime (RUNBOOK "Deploy on the TITAN V"), assembled by hand in a venv. A
+  reproducible env (a pinned recipe, or a launch wrapper that sets `CC`/`CXX`) would make
+  deployment turnkey instead of a five-step manual setup.
+- **Make the silent compile-fallback loud** (risk B) and **declare torch 2.6** as required —
+  a mis-set stack currently misses 10 fps with no signal.
+- **The perf-validation tooling in `investigation/` is push-excluded** (`soak_server.py`,
+  profiling experiments); `bench_frame.py` and `acceptance_voltron.py` (repo root) ARE
+  shipped. `acceptance_voltron.py` is the one-command GO/NO-GO check — run it on the target
+  GPU and read the printed verdict + `acceptance_report.json`.
 
 ## Decisions
 
@@ -162,8 +172,10 @@ those numbers don't have to be re-derived.
   — the pipeline that builds a scene from a real loop image (README).
 - `scene_files/` — complete example scenes (`hampton_300um.yaml` tube-based;
   `mitegen_200um.yaml` mesh-based). `template.yaml` — camera/material properties.
-- `bench_frame.py` — warm-frame benchmark (`--compiled`, `--fp32`). `run_gpu.slurm` — voltron
-  GPU job (no `--time`!). `tests/` — 62 tests (the verify command).
+- `bench_frame.py` — warm-frame benchmark (`--compiled`, `--fp32`). `acceptance_voltron.py`
+  — self-contained TITAN V acceptance test (fps + VRAM + compile check → GO/NO-GO +
+  `acceptance_report.json`; auto-picks a free GPU). `run_gpu.slurm` — voltron GPU job (no
+  `--time`!). `tests/` — 62 tests (the verify command).
 - `README.md` — user guide (repo root). `CLAUDE.md` — deep engineering notes (repo root:
   architecture, precision, concurrency, the recentre bug). `docs/` — the handoff docs
   (this file + `RUNBOOK.md`, `DECISIONS.md`, `DATA.md`). `investigation/` — **not
@@ -171,6 +183,16 @@ those numbers don't have to be re-derived.
 
 ## Work log (append-only)
 
+- **2026-07-17** — TITAN V acceptance measured. Added `acceptance_voltron.py` (`df33635`), a
+  self-contained one-command GO/NO-GO harness (fps + VRAM + compile check), and ran it on a
+  real voltron TITAN V. Result: compiled preview **11.9 fps median / 10.1 fps p90 (GO)**,
+  eager 6.3 fps; mesh scene fits torch 2.6 at ~11.1 GB (knife's edge), OOMs torch 2.0.1. The
+  10 fps goal reproduces on the target **with** the stack in RUNBOOK "Deploy on the TITAN V"
+  (torch 2.6 + devtoolset-7); the beamline's default stack (torch 2.0.1, gcc 4.8.5) can't
+  compile and silently falls back to 6.3 fps. Resolved the "voltron CPU unknown" question
+  (2× Xeon E5-2650 v4) and corrected two earlier predictions (mesh isn't a hard OOM; the old
+  CPU doesn't tank the compiled path). **Next:** package the stack + make the silent fallback
+  loud; James's call on pushing the branch.
 - **2026-07-16** — RUNBOOK.md written (env from nothing → run → verify → voltron/SLURM →
   rollback), completing the doc set. Verify command re-run on this tree: **62 passed in
   67 s** (RTX 4080 SUPER). **Next:** de-risk the TITAN V deployment (risks A/B/C above);
