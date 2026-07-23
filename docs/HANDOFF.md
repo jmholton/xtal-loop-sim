@@ -3,9 +3,6 @@ project: loop-sim (xtal-loop-sim) — bright-field microscope + X-ray simulator 
 status: paused
 last_verified: 2026-07-16        # `pytest tests/` = 62 passed on this tree (branch performance-correctness-optimizations)
 verify: python -m pytest tests/ -q        # 62 tests; "python" = the torch-enabled project interpreter (see docs/RUNBOOK.md "Environment")
-contacts:
-  - James Holton — original author & physics owner — owns the optical + X-ray model, the beamline deployment on voltron (TITAN V), and the GitHub repo jmholton/xtal-loop-sim
-  - Jacob Doughty — departing contractor — authored the float64 GPU correctness fix, the GPU-resident torch engine, and the 10 fps optimization (all on branch performance-correctness-optimizations)
 ---
 
 # HANDOFF — loop-sim (xtal-loop-sim)
