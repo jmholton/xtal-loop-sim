@@ -67,12 +67,62 @@ Notes that save time:
 - **`scene.yaml` / `loop.yaml` are gitignored and not shipped.** A fresh clone has no
   `scene.yaml`, so the README's `render.py scene.yaml` quick-start needs one built first
   (README "Full pipeline") — or just render a complete bundled scene from `scene_files/`.
-- **Only tube/mesh scenes have a CUDA path.** `hampton_300um.yaml` (tubes) exercises it;
-  `mitegen_200um.yaml` is primitives/CSG only, so `--device cuda` is a no-op there and CPU
-  and GPU output is byte-identical by construction — not evidence the GPU path ran.
+- **Only tube/mesh scenes have a CUDA path.** `hampton_300um.yaml` (tubes) exercises it.
+  `mitegen_200um.yaml` is subtler than this runbook previously claimed: its `micromount` is
+  a `ThinShell` wrapping an internal `SurfaceMesh`, so the **torch engine** does run the
+  mesh path on it, but `render.py`'s legacy path never hands the shell a device, so there
+  `--device cuda` really is a no-op and CPU/GPU agreement is byte-identical by construction
+  rather than evidence the GPU ran. See docs/HANDOFF.md "Other traps".
 - `render.py` inserts `/home/jamesh/projects/loop_sim/claude` on `sys.path`; harmless when
   absent. Run from the repo root.
 - Which motor is the spindle is scene-dependent: `rotx` for the bundled scenes.
+
+### Frame libraries (pre-computed rotation sweeps)
+
+A frame library is a full 360° spindle sweep rendered once and replayed, so the camera
+responds instantly and nothing is rendered at request time. Libraries are **tracked in
+git** — they are part of the deliverable, not build output — and live in
+`frame_library/<scene_stem>/` alongside a `manifest.json`.
+
+```bash
+# build (or refresh) one scene, and every bundled scene
+$PY -m loop_sim.library --scene scene_files/hampton_300um.yaml
+$PY -m loop_sim.library --all
+$PY -m loop_sim.library --scene <s>.yaml --force        # rebuild regardless
+```
+
+Useful flags: `--step` (degrees between frames, default 1.0 → 360 frames), `--margin`
+(render this much larger than the camera so panning is a crop, default 1.5), `--axis`
+(spindle motor, default `rotx`), `--n-cond`, `--quality`.
+
+Re-running is a **no-op when the library is current** — the manifest stores a SHA-256 of
+the scene YAML, so an edited or newly added scene rebuilds automatically on first use.
+From Python, `ensure_library(scene_path)` does the same thing and returns the manifest;
+`frame_for_angle(manifest, deg)` picks the frame and `crop_window(manifest, tx_mm, ty_mm)`
+gives the pan crop box.
+
+Notes:
+
+- **Panning is free, rotation is not.** Lateral translation is an exact image shift under
+  this orthographic camera (measured max pixel difference 0.000000), so `tx`/`ty` are
+  served by cropping inside the rendered margin. `crop_window()` raises if you ask to pan
+  beyond it — rebuild with a larger `--margin` rather than clamping. `zoom` and `tz` are
+  **not** covered and still need a live render.
+- **Cost:** ~1.1 s/frame for `hampton_300um` at the default margin on an RTX 4080 SUPER,
+  so a 360-frame sweep is a few minutes and lands around 6 MB of JPEG.
+- **Droplet scenes will fail to build** with an explicit out-of-memory error until
+  `TSurfaceMesh` gets its AABB cull (docs/HANDOFF.md risk A). The builder raises rather
+  than quietly dropping resolution — a library rendered at a degraded setting is
+  indistinguishable from a good one once it is on disk.
+- **Mesh-bearing scenes cannot afford the default pan margin yet — same root cause.** The
+  margin multiplies pixel count by `margin²`, and mesh memory scales with tile rays, so
+  `mitegen_200um` at `--margin 1.5` needs ~2.25× its already-large working set. On a 16 GB
+  card that lands at ~15.4/16.4 GB, which under WSL2 **spills to system RAM instead of
+  raising OOM** and the build crawls rather than failing (see "Dev-environment caveat"
+  below). Build mesh scenes with **`--margin 1.0`** until the AABB cull lands — the library
+  is then rotation-only, with no free panning. Tube scenes take the default 1.5 fine.
+  `frame_library/*/manifest.json` records the margin actually used, and `crop_window()`
+  raises on any pan request a margin-1.0 library cannot serve.
 
 ### On voltron (the beamline GPU node)
 

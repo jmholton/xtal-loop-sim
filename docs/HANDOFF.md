@@ -1,7 +1,7 @@
 ---
 project: loop-sim (xtal-loop-sim) — bright-field microscope + X-ray simulator for protein crystals in cryo-loops
-status: paused
-last_verified: 2026-07-16        # `pytest tests/` = 62 passed on this tree (branch performance-correctness-optimizations)
+status: active — performance goals met; scene fidelity is the open front
+last_verified: 2026-07-28        # `pytest tests/` = 62 passed in 58 s on this tree (branch performance-correctness-optimizations, RTX 4080 SUPER)
 verify: python -m pytest tests/ -q        # 62 tests; "python" = the torch-enabled project interpreter (see docs/RUNBOOK.md "Environment")
 ---
 
@@ -23,12 +23,23 @@ generation, and dose estimation. James Holton wrote it; Jacob's contribution was
 the GPU path **correct** (it was producing a "hairy" artifact on the loop fiber) and
 **fast enough to drive as a live camera** (10 image files/s).
 
-## Current state (2026-07-17)
+## Current state (2026-07-28)
 
-- **Branch `performance-correctness-optimizations`, HEAD `edefca0`, tree clean, ~20
-  commits ahead of `master`, NOT pushed to GitHub.** James owns the push/merge decision.
-  (`master` itself is 22 commits ahead of the stale GitHub default `main`, which is a
-  divergent "Initial commit" — always work from `master`/this branch, never `main`.)
+- **Branch `performance-correctness-optimizations`, 24 commits ahead of `master`, NOT
+  pushed to GitHub.** James owns the push/merge decision. (`master` itself is 22 commits
+  ahead of the stale GitHub default `main`, which is a divergent "Initial commit" — always
+  work from `master`/this branch, never `main`.)
+- **Delivery shifted from live rendering to a pre-computed rotation sweep.** The camera is
+  orthographic, so lateral translation is an *exact* image shift (measured: max pixel
+  difference 0.000000) — panning is a crop, not a render, and rotation is the only motor
+  that changes image content. `loop_sim/library/` renders one 360° sweep per scene into
+  the tracked `frame_library/` directory and replays it. See DECISIONS.md and RUNBOOK
+  "Frame libraries".
+- **Scene fidelity was audited for the first time, and it is the weak half of the
+  project.** The imaging chain is dimensionally correct (a 700.0 µm pin measures 703.0 µm
+  in the image), but the bundled benchmark scene contains no droplet and no crystal, and
+  droplets render opaque for a non-physical reason. See "Scene fidelity" below — this is
+  now the highest-value open work, ahead of any further performance tuning.
 - **Correctness: DONE + committed.** The float32 "hairy/spikey fiber" GPU artifact is
   fixed — the CUDA intersection quadratic now runs in float64, and the GPU render is
   **byte-identical to the float64 CPU reference**. See DECISIONS.md §"float64 GPU
@@ -63,21 +74,78 @@ For a stranger picking this up cold:
 4. **Beamline (TITAN V) readiness is now measured** — the 10 fps result reproduces on the
    real card (11.9 fps) *when the software stack is right* (RUNBOOK "Deploy on the TITAN V").
    The remaining work is packaging that stack, not proving the hardware.
+5. **Know which half of the project you are in.** The *renderer* is well verified — 62 tests,
+   GPU byte-identical to the CPU reference, and a dimensional check against physics. The
+   *scenes* are not: they were never validated until 2026-07-28 and two known-wrong ones
+   ship. Speed work is essentially done; fidelity work has barely started. If you are
+   deciding where to spend a week, spend it on "Scene fidelity" under Hazards.
+6. **For the AXIS-camera use case, look at `frame_library/` before touching the renderer.**
+   Delivery has shifted to pre-computed rotation sweeps replayed at request time, which
+   sidesteps the frame-rate problem rather than fighting it (RUNBOOK "Frame libraries").
 
 The highest-value open engineering items, in rough priority:
+- **Scene fidelity** — the physics is validated but the scenes are not (see "Scene
+  fidelity" under Hazards). Settle the camera calibration, decide what the bundled
+  `hampton_300um` loop is meant to be, and work out why droplets render opaque. This
+  outranks further performance work: the frame rate is already met, the pictures are not
+  yet known to be right.
+- **Give `TSurfaceMesh` the AABB cull that `TTube` has** — now blocking, not cosmetic. It
+  is what stands between the project and rendering *any* scene with a solvent droplet at
+  full resolution (risk A below).
 - **Package the TITAN V deployment** (the recipe is measured; see RUNBOOK "Deploy on the
   TITAN V"): a torch-2.6 env + a modern compiler for `torch.compile`, plus making the
   silent-fallback-to-eager failure loud so a mis-set stack can't quietly miss 10 fps.
 - **Wire `render.py --device cuda` to the resident engine** — it still uses the legacy
   per-object CUDA path; only `camera_server` uses `engine_torch`. Unifying them removes a
   confusing second GPU path.
-- **Give `TSurfaceMesh` the AABB cull that `TTube` has** — fixes both the mesh OOM risk and
-  its ~1.9 s render (mesh scenes only, e.g. `mitegen_200um`).
 - **Click-to-recentre bug** (paused) — lands ~100–200 px off, non-deterministically;
   leading hypothesis is a frame/pose lag race. Full resume plan in `../CLAUDE.md` §"Click-to-
   recentre" and DECISIONS.md.
 
 ## Hazards & gotchas
+
+**Scene fidelity — the renderer is validated, the scenes are not.** Until 2026-07-28 all
+verification was self-consistency (GPU render vs CPU render of the same scene), which
+cannot detect a wrong *scene*. What is now measured:
+
+- **The physics and imaging chain are sound.** The pin's ground-truth diameter is 700.0 µm
+  and it measures **703.0 µm** in the rendered image at four independent columns — 0.4%,
+  the half-pixel edge threshold. Camera model, pixel size, projection and the goniometer
+  transform are all correct. This check is architecture-independent (it compares against
+  physics, not against another render on the same box) and is the cheapest guard worth
+  promoting into the test suite.
+- **`scene_files/hampton_300um.yaml` is not a realistic sample.** Its `solvent` is a sphere
+  of `radius: 0.0` — there is no droplet; there is no crystal; and its `loop_fiber`
+  waypoints span **69 × 200 µm** despite the `300um` name. Every parity test, every
+  benchmark and the 11.9 fps acceptance number are measured on this scene. It is a fine
+  *performance* baseline and a misleading *fidelity* one. **Two scenes, two jobs:** keep
+  this one for speed, and generate a second for picture quality —
+  `python -m crystal_harvester.cli --loop-type hampton --loop-size 300 --crystal hexagonal
+  -o scene_files/hampton_300um_realistic.yaml`. Do not simply fill the droplet in: that
+  makes the scene unrenderable at full resolution (risk A) and invalidates every fps
+  number taken on it.
+- **Solvent droplets render essentially opaque, and it is not absorption.** Solvent is
+  defined with `mu_optical: 0.00`, yet the drop core renders at a mean brightness of
+  **0.0405**. Sweeping the objective NA: 0.10 → 0.0405, 0.25 → 0.2005, 0.50 → 0.2613,
+  0.90 → 0.2633. A five-fold brightening that saturates by NA 0.5 means the rays are being
+  discarded by the **NA collection gate** after refracting through the drop's curvature. A
+  real bright-field drop is near background brightness with a dark rim. Two candidates:
+  the scenes' low NA values, and `MAX_DEPTH` bounce exhaustion in `microscope.py`.
+- **Three different cameras are in circulation.** `template.yaml` — which DATA.md calls the
+  authoritative calibration — specifies 0.82 µm pixels and NA 0.28/0.17, but **no shipped
+  scene uses it**: the Hampton scenes use 7.4 µm and NA 0.10/0.07, `mitegen_200um` uses
+  1.0 µm. Since NA is the knob driving the opaque-droplet result, settling which of these
+  matches the real beamline camera is a prerequisite for judging fidelity.
+- **The fiber is beaded at the default sampling.** Tubes become `n_samples - 1` capsules;
+  at the default `n_samples=50` a 300 µm loop yields 19.3 µm segments against a 20.0 µm
+  fiber — capsules as long as they are wide. Raise `n_samples` for fidelity renders.
+- **`crystal_harvester` is the trustworthy source of scenes.** Its 300 µm circular loop
+  measures 300.4 × 300.0 µm, its droplet mesh spans 300 × 300 × 150 µm, its pin is exactly
+  700 µm. The hand-built bundled scenes are the outlier.
+- Reusable harnesses for all of the above live in `investigation/scene_survey.py` (renders
+  a set of scenes across spindle angles into a labelled contact sheet) and
+  `investigation/scene_dimcheck.py` (dimensional + NA-sensitivity checks). Note
+  `investigation/` is **not shipped** — see Open questions.
 
 **Deployment reality — the 10 fps target reproduces on the TITAN V (11.9 fps), but only with
 the full software stack; the hardware was never the bottleneck, the beamline's default
@@ -90,12 +158,22 @@ fallback **6.3 fps**. The three things that decide whether you get 11.9 or 6.3:
   reserved**. On the TITAN V's 12 GB that *fits on torch 2.6* (its allocator packs it in),
   but with only ~tens of MB free once the CUDA context is counted — and it **OOMs on torch
   2.0.1** (worse fragmentation). So: fine on a free card with a modern torch, but one
-  concurrent allocation or a busier card from the edge. **Fix (verified byte-exact):
-  sub-frame tiling** — `render_torch(..., tile_size=32768)` drops mitegen to ~1.2 GB
-  (`engine_torch.py:1003` `tile_size = max(tile_size, WH)` is a *perf* clamp, not correctness
-  — per-ray results are tile-independent). The durable fix is giving `TSurfaceMesh` the
-  `_aabb_survivors` cull `TTube` already has (`engine_torch.py:59`). Tube scenes like hampton
-  are unaffected (~250 MB).
+  concurrent allocation or a busier card from the edge. Tube scenes like hampton are
+  unaffected (~250 MB, measured 0.33 GB peak at n_cond=7).
+
+  **CORRECTED 2026-07-28 — the tiling escape hatch does not work as written, and the risk
+  is wider than mesh-only-on-12 GB.** Measured law: mesh peak ≈ `tile_rays × faces ×
+  24 bytes`, times ~6 for the Möller-Trumbore temporaries — driven by tile size and face
+  count, **not** by image resolution. `render_torch` clamps `tile_size = max(tile_size,
+  W*H)` (`engine_torch.py:1003`), so at 640×480 a tile can never be smaller than 307,200
+  rays: 307200 × 2880 faces × 24 B ≈ **19.8 GB predicted, and a 19.78 GiB OOM observed on a
+  16 GB card**. Passing `tile_size=32768` therefore does nothing at full resolution — the
+  clamp raises it straight back. Dropping resolution does not rescue it either (320×240
+  still OOMs; only 160×120 renders). So: any scene with a solvent droplet — including a
+  routine `crystal_harvester` Hampton loop, not just `mitegen_200um` — is unrenderable at
+  full resolution on current hardware. The durable fix is giving `TSurfaceMesh` the
+  `_aabb_survivors` cull `TTube` already has (`engine_torch.py:59`), which attacks `faces`;
+  relaxing the clamp is the stopgap.
 - **B — `torch.compile` silently falls back to eager, and on the beamline it WILL fail
   without help.** compiled ≈ 11.9 fps vs eager ≈ 6.3 fps. `camera_server.py`
   `_warmup_compiled_preview` (≈line 714) and the runtime path (≈line 478) catch **any**
@@ -118,8 +196,15 @@ fallback **6.3 fps**. The three things that decide whether you get 11.9 or 6.3:
 - **`--device cuda` only does something on scenes with `Tube` or `SurfaceMesh` objects.**
   Those are the only shapes with a CUDA path, so a scene of pure primitives/CSG
   (half-spaces, cylinders, spheres) renders CPU==GPU byte-identical and `--device cuda` is
-  a no-op. Use `hampton_300um` (tube-based) to exercise the tube GPU path; `mitegen_200um`
-  (mesh-based) exercises the `SurfaceMesh` path (and is the OOM risk in A above).
+  a no-op. Use `hampton_300um` (tube-based) to exercise the tube GPU path.
+  **`mitegen_200um` is a trap in both directions** (an earlier HANDOFF called it
+  "mesh-based", the RUNBOOK called it "primitives/CSG only" — each was half right): its
+  `micromount` is a `ThinShell`, which *wraps an internal `SurfaceMesh`*. On the torch
+  engine `build_torch_shape` maps it to `TSurfaceMesh`, so it does exercise the mesh path
+  and does carry the risk-A memory behaviour. But `scene.py::_build_shape` never passes
+  `device=` to `ThinShell`, so on `render.py`'s legacy per-object path the shell's mesh
+  stays on the CPU and `--device cuda` genuinely is a no-op. Same scene, different answer
+  depending on which engine you are in.
 - **Never down-cast the intersection geometry to float32** — it reintroduces the hairy-fiber
   artifact (DECISIONS.md).
 - **Never use `torch.compile(mode="reduce-overhead")` in the server** — its CUDA-graph
@@ -134,6 +219,23 @@ fallback **6.3 fps**. The three things that decide whether you get 11.9 or 6.3:
 
 ## Open questions
 
+- **Which camera calibration is real?** `template.yaml` (0.82 µm px, NA 0.28/0.17), the
+  Hampton scenes (7.4 µm, NA 0.10/0.07), and `mitegen_200um` (1.0 µm) disagree, and DATA.md
+  names `template.yaml` authoritative although nothing uses it. NA drives the opaque-droplet
+  result, so this gates fidelity work. Needs a measurement against the real beamline camera.
+- **Is the bundled `hampton_300um` loop mislabelled, or digitized at another size?** Its
+  waypoints span 69 × 200 µm, not ~300 µm. Worth comparing against the physical part before
+  assuming the geometry is wrong rather than the name.
+- **Why do droplets go opaque?** The NA sweep shows rays being culled by the collection
+  gate rather than absorbed, but even at NA 0.90 the drop only reaches 0.26 brightness —
+  so there is likely a second loss mechanism. `MAX_DEPTH` bounce exhaustion in
+  `microscope.py` is the first candidate to rule out.
+- **Should the dimensional check become a test?** The 700 µm → 703.0 µm pin measurement is
+  architecture-independent and would close the "no golden reference / gates are
+  architecture-blind" gap DATA.md records. It needs no committed image, only the assertion.
+- **Frame-library coverage.** The sweep covers rotation; `zoom` and `tz` are not free the
+  way lateral translation is and would need their own sweeps or a live render. Decide
+  whether the AXIS consumer needs them before treating the library as complete.
 - **Push/merge decision for `performance-correctness-optimizations`** — owner: James. Until
   pushed, the branch lives only on this tree + the gateway mirror.
 - **Package the TITAN V software stack.** The 11.9 fps result needs torch 2.6 + a modern
@@ -162,9 +264,23 @@ those numbers don't have to be re-derived.
 
 - `render.py` — CLI: load scene, drive goniometer, render to JPEG.
 - `loop_sim/` — the package: `scene/` (YAML loader, `next_interface`, primitives, `tube.py`,
-  `surface_mesh.py`, CSG), `motors/goniometer.py`, `renderer/` (`microscope.py` numpy
-  reference tracer, `beam.py` X-ray, **`engine_torch.py`** GPU-resident engine),
-  `server/camera_server.py` (AXIS HTTP server + control page).
+  `surface_mesh.py`, `thin_shell.py`, CSG), `motors/goniometer.py`, `renderer/`
+  (`microscope.py` numpy reference tracer, `beam.py` X-ray, **`engine_torch.py`**
+  GPU-resident engine), `server/camera_server.py` (AXIS HTTP server + control page),
+  **`library/`** (pre-computed rotation sweeps — `build_library` / `ensure_library`,
+  `frame_for_angle`, `crop_window`; CLI `python -m loop_sim.library`).
+- `frame_library/<scene>/` — **tracked deliverable**, not build output: a rendered 360°
+  sweep plus a `manifest.json` per scene. The repo ignores `*.jpg` globally, so
+  `.gitignore` carries an explicit re-include for this tree. **Currently shipped:
+  `hampton_300um` only** (360 frames, 1° steps, 1.5× pan margin, verified byte-identical to
+  live renders). `mitegen_200um` is deliberately not shipped — as a mesh scene it needs
+  `--margin 1.0` (RUNBOOK "Frame libraries") and takes ~17 min to build; run
+  `python -m loop_sim.library --scene scene_files/mitegen_200um.yaml --margin 1.0` if you
+  want it, or let `ensure_library()` build it on first use.
+- `crystal_harvester/` — scene *generator* (James's original geometry code: elastica loop
+  mechanics, Bashforth-Adams droplets, crystal habits, pin geometry). Builds a complete
+  scene from physical parameters — 8 Hampton loop sizes × 3 shapes, 9 MiTeGen models. This
+  is the dimensionally-correct source of scenes; prefer it to hand-editing YAML.
 - `digitize_fiber.py → add_stem.py → add_droplet.py → add_crystal.py → generate_scene.py`
   — the pipeline that builds a scene from a real loop image (README).
 - `scene_files/` — complete example scenes (`hampton_300um.yaml` tube-based;
@@ -180,6 +296,31 @@ those numbers don't have to be re-derived.
 
 ## Work log (append-only)
 
+- **2026-07-28** — First scene-fidelity audit, and a change of delivery architecture.
+  Performance work stopped; the question became whether the pictures are *right*. Built
+  survey and measurement harnesses (`investigation/scene_survey.py`,
+  `investigation/scene_dimcheck.py`) and rendered a spread of Hampton and MiTeGen mounts
+  across spindle angles. **The imaging chain validated** — a 700.0 µm pin measures 703.0 µm
+  at four independent columns. **The scenes did not:** the benchmark scene has a
+  zero-radius droplet, no crystal and a 69 × 200 µm loop despite its `300um` name; droplets
+  render opaque via the NA collection gate rather than absorption (drop core 0.0405 at
+  NA 0.10, 0.2005 at 0.25, saturating ~0.26); three mutually inconsistent camera
+  calibrations are in circulation; the fiber is beaded because capsule length ≈ fiber
+  diameter at the default `n_samples`. Also corrected risk A — the documented
+  `tile_size=32768` escape hatch is defeated by a `max(tile_size, W*H)` clamp, and *any*
+  droplet-bearing scene (not just `mitegen_200um`) is unrenderable at full resolution,
+  so the `TSurfaceMesh` AABB cull is now blocking rather than cosmetic. Separately,
+  measured that lateral translation is an **exact** image shift (max pixel difference
+  0.000000) — panning is a crop — which made a **pre-computed rotation sweep** the better
+  architecture than chasing live frame rate. Added `loop_sim/library/` plus the tracked
+  `frame_library/` output and a `.gitignore` re-include. Recorded the team's
+  "Lagrange polynomial waypoints" idea under Already Tried: it is the current design, and
+  the global form is deliberately capped at degree 3 to avoid Runge oscillations.
+  **Next:** settle the camera calibration, land the AABB cull, decide what the bundled
+  `hampton_300um` loop is meant to be; James's call on pushing the branch.
+- **2026-07-23** — `contacts:` roster dropped from the HANDOFF front-matter (`96356be`),
+  following a knowledge-transfer protocol change: a standing roster ages into
+  mis-attribution, so people are named inline where they own a specific artifact instead.
 - **2026-07-17** — TITAN V acceptance measured. Added `acceptance_voltron.py` (`df33635`), a
   self-contained one-command GO/NO-GO harness (fps + VRAM + compile check), and ran it on a
   real voltron TITAN V. Result: compiled preview **11.9 fps median / 10.1 fps p90 (GO)**,

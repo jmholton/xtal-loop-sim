@@ -8,6 +8,75 @@
 
 ## Decisions
 
+### 2026-07-28 — deliver a pre-computed rotation sweep, not a faster live renderer
+- **Decision:** for the AXIS-camera use case, ship a **pre-rendered frame library**
+  (`loop_sim/library/`, output in `frame_library/`) instead of pushing live frame rate
+  further. A full 360° sweep about the spindle is rendered once; the consumer replays it.
+- **Why it collapses the problem:** the camera is **orthographic**, so translating the
+  sample sideways shifts the image by an exact whole number of pixels and changes nothing
+  else — measured, `tx` of 5 px and 20 px worth reproduced the un-translated frame rolled
+  by exactly +5 and +20 px, **max pixel difference 0.000000**. Panning is therefore a
+  *crop*, not a render. Rotation is the only motor that genuinely changes image content,
+  so the interactive envelope needs one sweep, not a grid over all seven motors. At 1°
+  steps that is 360 frames; a frame is ~12–19 kB JPEG (640×480, scene with content), so a
+  library is single-digit MB and seekable instantly.
+- **Design constraints that are load-bearing:** frames are rendered `margin`× larger than
+  the camera (default 1.5) so there is material to pan into — `pan_px` in the manifest is
+  the crop limit, and `crop_window()` raises rather than silently clamping past it. The
+  manifest carries a SHA-256 of the scene YAML, so an edited or new scene rebuilds on
+  first use (`ensure_library()`). Build failures raise; they never degrade quality
+  silently, because a library rendered at a reduced setting is indistinguishable from a
+  good one afterwards.
+- **What this does NOT cover:** `zoom` and `tz` (focus) are not free the way lateral
+  translation is — they need their own sweeps or a live render. The library is invalidated
+  by any scene change, so it suits a fixed sample being explored, not scene authoring.
+- **`.gitignore`:** the repo ignores `*.jpg` globally; `frame_library/**/*.jpg` and its
+  manifests are explicitly re-included. The library is a deliverable, not build output.
+
+### 2026-07-28 — scene-fidelity audit: the physics is sound, the bundled scene is not
+- **Finding (positive):** the geometry-to-image chain is **dimensionally correct**. The
+  pin's ground-truth diameter is 700.0 µm; measured in the rendered image at four
+  independent columns it is **703.0 µm every time** (0.4%, i.e. the half-pixel edge
+  threshold). Camera model, pixel size, projection, and the goniometer transform are all
+  right. This is an architecture-independent check — unlike the GPU↔CPU parity gates, it
+  compares against physics rather than another render on the same machine, and it is the
+  cheapest available answer to the "is any of this correct?" question.
+- **Finding (negative):** `scene_files/hampton_300um.yaml` — the scene every test,
+  benchmark and the TITAN V acceptance number runs on — is **not a realistic sample**. Its
+  `solvent` object is a sphere of `radius: 0.0` (no droplet at all), it has **no crystal**,
+  and its `loop_fiber` waypoints span **69 × 200 µm** despite the `300um` name. The
+  radius-0 sphere was optimised around rather than questioned (commit `77fa545`,
+  "radius-0 Sphere -> TNull"). The performance work is real; it was tuned on a bare fiber
+  and a pin.
+- **Why not just fill the drop in:** a real droplet is a `SurfaceMesh`, and the mesh path
+  is exactly what exhausts VRAM (below). Populating the benchmark scene would make it
+  unrenderable at full resolution *and* invalidate every fps number measured on it.
+  Prefer a second, generated scene for fidelity work (see HANDOFF "Two scenes, two jobs").
+- **Scene generation is trustworthy:** `crystal_harvester` produces dimensionally correct
+  geometry — its 300 µm circular loop measures 300.4 × 300.0 µm, the droplet mesh spans
+  300 × 300 × 150 µm, and the pin is exactly 700 µm. The hand-built bundled scenes are the
+  outlier, not the generator.
+
+### 2026-07-28 — the mesh VRAM law, and why the documented tiling fix is unreachable
+- **Measured law:** mesh peak memory ≈ `tile_rays × faces × 24 bytes`, multiplied by ~6
+  for the Möller-Trumbore temporaries. It is driven by the **tile size and the face count,
+  not by image resolution**.
+- **The clamp is the binding constraint.** `render_torch` does
+  `tile_size = max(tile_size, W*H)`, so at 640×480 the tile can never be smaller than
+  307,200 rays: 307200 × 2880 faces × 24 B ≈ **19.8 GB predicted, 19.78 GiB observed as an
+  OOM**. This **corrects the 2026-07-17 entry's safety note** — calling
+  `render_torch(..., tile_size=32768)` does nothing at full resolution, because the clamp
+  raises it straight back to `W*H`. The tiling fix is only reachable by relaxing that clamp.
+- **Reducing resolution does not rescue it:** 320×240 still OOMs (predicted 4.9 GB × ~6
+  temporaries). Only 160×120 renders, at ~8 GB peak. Half-resolution rendering is a real
+  *speed* lever (640×480 → 320×240 measured **3.5× faster**, 1.29 s → 0.37 s) but a weak
+  *memory* one (only **1.7×** less VRAM, 0.33 → 0.19 GB, because resident scene geometry
+  is a fixed floor) — and it is a poor trade here regardless, since the loop fiber is only
+  ~3 px wide at the scene's own pixel size and sub-sampling destroys the feature under
+  inspection.
+- **The durable fix remains the `TSurfaceMesh` AABB cull** (`TTube` already has it,
+  `engine_torch.py:59`): it attacks `faces`, which is the term that actually needs to fall.
+
 ### 2026-07-17 — TITAN V measured: 10 fps confirmed (11.9 fps), gated on the software stack
 - **Finding:** the 10 fps target reproduces on a real voltron TITAN V — **compiled preview
   11.9 fps median / 10.1 fps p90 (GO)**, eager fallback 6.3 fps — measured by
@@ -136,6 +205,27 @@
 
 <!-- Evidence, not fences. Each entry is here so nobody spends a week re-deriving a
      number that already exists. -->
+
+### global Lagrange / Neville polynomial waypoints for the fiber path
+- **Status: already implemented, and deliberately bounded.** Every fiber path — the loop,
+  both stem strands, the droplet rim, the Kapton outline — is built by `neville_sample()`
+  in `loop_sim/scene/tube.py`, and Neville's algorithm *is* Lagrange interpolation
+  (same polynomial, stabler evaluation). So "use Lagrange waypoints" is the current design,
+  not a change.
+- **What was measured:** the global form is used only for **≤ 4 waypoints** (degree ≤ 3).
+  Above that the code switches to `scipy` `CubicSpline`, because global Neville at degree
+  5+ produces Runge-phenomenon knots on curved paths. Real loop paths carry 40–59
+  waypoints, so a global fit would be degree ~58 and would put visible oscillations in the
+  fiber. The interpolant also runs **once at scene load**, so it is not on the render hot
+  path and offers no speed lever.
+- **Where fiber quality is actually lost:** the curve is sampled into `n_samples - 1`
+  capsules and every ray tests all of them. At the default `n_samples=50` a 300 µm loop
+  gives **19.3 µm segments against a 20.0 µm fiber diameter** — capsules as long as they
+  are wide, which renders as a visibly beaded ring rather than a smooth fiber. Raising
+  `n_samples` fixes the appearance and costs render time roughly linearly.
+- **Would be worth another look if:** the goal is *performance* rather than smoothness —
+  in which case the target is intersecting an analytic swept surface, or hierarchical
+  culling over the capsule chain, rather than changing the interpolant.
 
 ### fp32 preview mode
 - **What was measured:** on the sync-starved compiled engine, fp32-compiled is **~2×
