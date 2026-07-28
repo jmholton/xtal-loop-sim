@@ -5,6 +5,11 @@
 *.tif
 *.tiff
 
+# ...except the pre-computed frame libraries, which ARE a deliverable
+# (rotation sweeps replayed by the camera server; see loop_sim/library/).
+!frame_library/**/*.jpg
+!frame_library/**/manifest.json
+
 # Generated scene files (built by the pipeline)
 scene.yaml
 loop.yaml
