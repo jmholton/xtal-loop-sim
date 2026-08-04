@@ -940,13 +940,127 @@ class TorchScene:
 
 
 # ---------------------------------------------------------------------------
+# Automatic tile sizing.
+#
+# Peak memory is linear in the number of rays in flight, with a scene-dependent
+# slope: a tube scene costs ~1.1 GiB per million rays, a mesh scene scales as
+# tile_rays * faces * 24 B and is orders of magnitude steeper. So the slope is
+# measured per scene rather than assumed.
+#
+# The sizing is deliberately PREDICTIVE, not try-and-retry. Under WSL2 there is
+# no OOM to back off from: past the card's capacity the Windows driver silently
+# spills to host RAM and the render crawls 10-50x instead of failing, so a retry
+# loop would hang rather than recover. See docs/RUNBOOK.md.
+# ---------------------------------------------------------------------------
+_TILE_MIN = 32_768
+# Big enough that a camera-sized frame (640x480 = 307k rays per condenser
+# sample) is still a single pass. The old code clamped the tile up to W*H, so a
+# smaller default would quietly split those frames and shift every recorded
+# benchmark: measured +8.3% at n_cond=7 with a 250k tile. Anything rendering
+# larger than this -- the library builder -- passes tile_size=None for the
+# VRAM-aware size instead.
+_TILE_DEFAULT = 1_000_000
+
+
+def _probe_peak(fn):
+    """Marginal bytes `fn` adds to the allocator's RESERVED pool.
+
+    Reserved, not allocated: the card is filled by what the caching allocator
+    holds, and a fragmenting workload (the mesh path, whose Moller-Trumbore
+    temporaries vary in size with the AABB survivor count) reserves
+    substantially more than it allocates. Budgeting against `allocated`
+    under-counts that gap and lets a mesh scene sail past the card's capacity --
+    which under WSL2 means a silent spill to host RAM, not an OOM.
+
+    NOTE: this RESETS the process-global peak-memory counters. Torch offers no
+    way to restore them, so anything reporting peak memory around a render
+    (`bench_frame.py`, `acceptance_voltron.py`) must not run while a calibration
+    is happening. Both are safe today: they pass an explicit `tile_size`, and
+    calibration is cached per scene so it happens at most once.
+    """
+    torch.cuda.empty_cache()          # start from a clean pool so the delta is real
+    torch.cuda.synchronize()
+    torch.cuda.reset_peak_memory_stats()
+    before = torch.cuda.memory_reserved()
+    fn()
+    torch.cuda.synchronize()
+    return max(torch.cuda.max_memory_reserved() - before, 0)
+
+
+def plan_tile_size(tscene, o_t, d_t, na_obj, opt_axis_s, total_rays,
+                   vram_fraction=0.80):
+    """
+    Choose a trace tile size that fits in free VRAM with headroom.
+
+    Measures by a doubling ramp rather than extrapolating a slope from two tiny
+    probes. Extrapolation was the wrong tool: fitting on 64k rays and solving
+    for ~10M is a 150x stretch, and on the mesh path -- where the
+    Moller-Trumbore temporaries fragment the pool -- it under-predicted by
+    ~2.7 GB and sailed the render straight past the card's capacity. Under WSL2
+    that is not an OOM, it is a silent spill to host RAM and a 10x slowdown.
+
+    Each rung is *measured* and the ramp stops before a rung that would exceed
+    the budget, so no probe can itself trigger the failure it is sizing to
+    avoid. Returns `total_rays` unchanged on CPU (no device memory to budget).
+    """
+    if tscene.dev.type != "cuda":
+        return total_rays
+
+    free, _total = torch.cuda.mem_get_info()
+    budget = free * vram_fraction
+
+    def _sample(n):
+        """n rays spread across the whole frame, not a contiguous prefix.
+
+        The first n rays of a wide frame are its top few rows, which for most
+        scenes is pure background: they die at the first depth and understate
+        the per-ray cost. The stride is recomputed per rung -- a single fixed
+        stride caps the sample at one size, and then every larger rung measures
+        the same rays, reports a flat cost, and the ramp doubles to the top.
+        """
+        stride = max(1, total_rays // n)
+        return o_t[::stride][:n], d_t[::stride][:n]
+
+    best = _TILE_MIN
+    n = _TILE_MIN
+    while n <= total_rays:
+        o_s, d_s = _sample(n)
+        if o_s.shape[0] < n:           # cannot actually assemble this rung
+            break
+        try:
+            cost = _probe_peak(
+                lambda: tscene.trace_rays(o_s, d_s, na_obj, opt_axis_s))
+        except torch.OutOfMemoryError:
+            torch.cuda.empty_cache()
+            break
+        if cost > budget:
+            break
+        best = n
+        if cost * 2.0 > budget or n >= total_rays:
+            break                      # the next rung would not fit
+        n *= 2
+
+    torch.cuda.empty_cache()
+    return max(_TILE_MIN, min(best, total_rays))
+
+
+# ---------------------------------------------------------------------------
 # render: torch port of microscope.render. Reuses the numpy ray-grid/condenser
 # setup verbatim (tiny, per-frame) so any divergence is isolated to the trace.
-# Returns an (H, W, 3) torch tensor in [0, 1]; condenser rays still looped here
-# (batched into one resident trace in 2f).
+# Returns an (H, W, 3) torch tensor in [0, 1].
+#
+# Condenser samples are traced one at a time and accumulated, so the resident
+# ray arrays are W*H rather than n_cond*W*H -- peak memory is independent of
+# n_cond. Within a sample the trace is tiled, which bounds the TRACE working
+# set at any resolution; note the resident arrays (o_t, d_t, accum) are still
+# O(W*H) and tiling cannot shrink them -- about 1 GB at a 14 Mpx template --
+# so peak memory is reduced by tiling, not made resolution-independent.
+# Per-ray results are tile-independent (verified byte-exact down to 1000-ray
+# tiles), which is what makes both safe.
 # ---------------------------------------------------------------------------
 @torch.inference_mode()
-def render_torch(tscene, goniometer, n_cond=1, tile_size=250_000, compiled=False):
+def render_torch(tscene, goniometer, n_cond=1, tile_size=_TILE_DEFAULT,
+                 compiled=False, vram_fraction=0.80):
     from .microscope import _condenser_offsets
     from ..motors.goniometer import apply_transform
 
@@ -975,13 +1089,11 @@ def render_torch(tscene, goniometer, n_cond=1, tile_size=250_000, compiled=False
     opt_axis_s = T_inv[:3, :3] @ opt_axis
     opt_axis_s /= np.linalg.norm(opt_axis_s) + 1e-30
 
-    # Build ALL n_cond condenser ray sets and trace them in ONE resident pass,
-    # tiled to bound peak memory (the (B,K,3) tube intermediate scales with B).
-    # All condenser rays share opt_axis_s, so a single trace_rays handles them.
     offsets = _condenser_offsets(n_cond, na_cond)
     WH = W * H
-    o_all = np.empty((n_cond * WH, 3))
-    d_all = np.empty((n_cond * WH, 3))
+    accum = torch.zeros((WH, 3), device=dev, dtype=dt)
+    plan = tile_size          # None/"auto" -> calibrate against free VRAM once
+
     for k in range(n_cond):
         ox, oy, _ = offsets[k]
         illum_dir = opt_axis + ox * fast + oy * slow
@@ -989,25 +1101,34 @@ def render_torch(tscene, goniometer, n_cond=1, tile_size=250_000, compiled=False
         illum_dir_s = T_inv[:3, :3] @ illum_dir
         illum_dir_s /= np.linalg.norm(illum_dir_s) + 1e-30
         t_up = 50.0 / max(abs(np.dot(illum_dir, opt_axis)), 1e-6)
-        o_all[k * WH:(k + 1) * WH] = focal_pts_s - t_up * illum_dir_s
-        d_all[k * WH:(k + 1) * WH] = illum_dir_s
 
-    o_t = torch.as_tensor(o_all, device=dev, dtype=dt)
-    d_t = torch.as_tensor(d_all, device=dev, dtype=dt)
-    M = n_cond * WH
-    # Never split one condenser sample across tiles: at 640x480 this traces
-    # n_cond=1 in a single pass (2 -> 1 tiles) and aligns n_cond=7 to seven
-    # sample-sized tiles (9 -> 7). Byte-exact -- per-ray results are tile-
-    # independent -- and peak memory grows only ~25% (measured, well clear of
-    # the WSL2 VRAM spill cliff).
-    tile_size = max(tile_size, WH)
-    out = torch.empty((M, 3), device=dev, dtype=dt)
-    for s in range(0, M, tile_size):
-        e = min(s + tile_size, M)
-        out[s:e] = tscene.trace_rays(o_t[s:e], d_t[s:e], na_obj, opt_axis_s,
-                                     compiled=compiled)
-    # average over the condenser dimension
-    return out.reshape(n_cond, WH, 3).mean(dim=0).reshape(H, W, 3)
+        o_t = torch.as_tensor(focal_pts_s - t_up * illum_dir_s, device=dev, dtype=dt)
+        d_t = torch.as_tensor(np.broadcast_to(illum_dir_s, (WH, 3)).copy(),
+                              device=dev, dtype=dt)
+
+        if plan is None or plan == "auto":
+            # Cache per (scene, frame size, headroom): calibrating costs two
+            # probe traces, and a 360-frame sweep would otherwise pay for them
+            # 360 times over.
+            key = (WH, round(float(vram_fraction), 3))
+            plan = getattr(tscene, "_tile_plan", {}).get(key)
+            if plan is None:
+                plan = plan_tile_size(tscene, o_t, d_t, na_obj, opt_axis_s, WH,
+                                      vram_fraction=vram_fraction)
+                if not hasattr(tscene, "_tile_plan"):
+                    tscene._tile_plan = {}
+                tscene._tile_plan[key] = plan
+        step = max(int(plan), 1)
+
+        for s in range(0, WH, step):
+            e = min(s + step, WH)
+            accum[s:e] += tscene.trace_rays(o_t[s:e], d_t[s:e], na_obj, opt_axis_s,
+                                            compiled=compiled)
+        del o_t, d_t
+
+    # average over the condenser dimension (sequential sum / n, matching the
+    # numpy reference in microscope.render)
+    return (accum / n_cond).reshape(H, W, 3)
 
 
 # ---------------------------------------------------------------------------

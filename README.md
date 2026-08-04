@@ -120,7 +120,10 @@ browser, VLC, etc.).
 python -m loop_sim.server.camera_server --scene scene.yaml --port 8080
 ```
 
-Useful flags: `--n-cond` (condenser rays for settled frames, default 7),
+Useful flags: `--templates {on,off}` (on = serve from a pre-computed frame
+library, building it first if absent; off = raytrace every frame live),
+`--supersample` (template sampling factor when a build is needed),
+`--n-cond` (condenser rays for settled frames, default 7),
 `--fps-limit` (MJPEG stream cap, default 5), `--engine {auto,torch,numpy}`,
 `--preview-mode {on,off}` (on = fast approximate frames while a move animates,
 refining to the exact frame on settle; off = every frame exact full quality),
@@ -152,14 +155,29 @@ settles.  Frame production is single-flight: one background thread renders,
 MJPEG clients consume the newest frame (idle streams re-send the last frame
 about once a second as a keepalive).
 
+### Pre-computed templates (the default)
+
+The camera is orthographic, so the spindle is the only motor that genuinely
+changes image content — everything else is an image-space transform.  The server
+therefore renders one 360° sweep per scene, stores it in `frame_library/`, and
+serves every frame by cropping, scaling and blurring a template.  On startup it
+checks for a current library and builds one if it is missing or stale, so the
+first launch for a new scene is slow and every launch after it is instant.
+
+Frames are served in **single-digit milliseconds** and **no GPU is needed at
+runtime** — a GPU only accelerates building the library.  Pass `--templates off`
+to raytrace every frame live instead.  See `docs/RUNBOOK.md` "Frame libraries"
+for the build flags.
+
 ### Interactive control page
 
 Open **`http://<host>:<port>/`** in a browser for a live control panel: the
-MJPEG view with a centre crosshair, pan / rotate-x / zoom buttons, an editable
-angle box, a speed dial, and **click-in-image-to-recentre**.  Moves are
+MJPEG view with a centre crosshair, a jog pad, zoom buttons, a speed dial,
+**click-in-image-to-recentre**, and a **goniometer target** panel — type X, Y, Z
+(mm) and φ (degrees), press **GO**, and the stage slews there.  Moves are
 **animated** — the sample interpolates linearly to the target instead of
-teleporting (≈2 s to cross the screen, 60 rpm for rotx, scaled by the speed
-dial), so the motion looks like a real stage slewing.
+teleporting (≈2 s to cross the screen, 60 rpm for the spindle, scaled by the
+speed dial), so the motion looks like a real stage slewing.
 
 ### HTTP endpoints
 

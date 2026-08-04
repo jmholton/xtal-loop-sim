@@ -1,8 +1,8 @@
 ---
 project: loop-sim (xtal-loop-sim) — bright-field microscope + X-ray simulator for protein crystals in cryo-loops
-status: active — performance goals met; scene fidelity is the open front
-last_verified: 2026-07-28        # `pytest tests/` = 62 passed in 58 s on this tree (branch performance-correctness-optimizations, RTX 4080 SUPER)
-verify: python -m pytest tests/ -q        # 62 tests; "python" = the torch-enabled project interpreter (see docs/RUNBOOK.md "Environment")
+status: active — camera served from pre-computed templates (no GPU at runtime); scene fidelity is the open front
+last_verified: 2026-07-31        # `pytest tests/` = 78 passed in 61 s on this tree (branch performance-correctness-optimizations, RTX 4080 SUPER)
+verify: python -m pytest tests/ -q        # 78 tests; "python" = the torch-enabled project interpreter (see docs/RUNBOOK.md "Environment")
 ---
 
 # HANDOFF — loop-sim (xtal-loop-sim)
@@ -29,12 +29,28 @@ the GPU path **correct** (it was producing a "hairy" artifact on the loop fiber)
   pushed to GitHub.** James owns the push/merge decision. (`master` itself is 22 commits
   ahead of the stale GitHub default `main`, which is a divergent "Initial commit" — always
   work from `master`/this branch, never `main`.)
-- **Delivery shifted from live rendering to a pre-computed rotation sweep.** The camera is
-  orthographic, so lateral translation is an *exact* image shift (measured: max pixel
-  difference 0.000000) — panning is a crop, not a render, and rotation is the only motor
-  that changes image content. `loop_sim/library/` renders one 360° sweep per scene into
-  the tracked `frame_library/` directory and replays it. See DECISIONS.md and RUNBOOK
+- **Delivery has moved to pre-computed templates, and the camera server now serves from
+  them.** The camera is orthographic, so the spindle is the only motor that genuinely
+  changes image content; everything else is an image-space transform. `loop_sim/library/`
+  renders one 360° sweep per scene into the tracked `frame_library/`, and
+  `camera_server` checks for a current library at startup, builds one if it is missing or
+  stale, then serves every frame by cropping/scaling/blurring a template. Measured
+  with CUDA switched off entirely: **42 ms/frame (24 fps) through a spindle slew**, where
+  every frame is a fresh template decode, and **13 ms (75 fps) panning at a fixed angle**.
+  A GPU only accelerates *building*. Live rendering is still there behind
+  `--templates off` and remains the correctness reference. See DECISIONS.md and RUNBOOK
   "Frame libraries".
+- **Templates are supersampled and scene-anchored.** `--supersample` (default 4) divides
+  the rendered pixel size, which is what makes `zoom` servable — 4× is where sampling
+  critically matches the NA 0.10 objective, so it is a physical ceiling rather than a
+  guess. The render window is measured from the scene by a coarse scout sweep rather than
+  being a symmetric margin about the origin, because the pin reaches x=6.7 mm against a
+  4.7 mm field and a centred window left most of it unrendered.
+- **VRAM no longer limits resolution.** The tile clamp in `render_torch` was the ceiling,
+  and it was never a correctness constraint — verified byte-exact down to 1000-ray tiles.
+  Tiles are now sized at runtime against free VRAM, and rays are built one condenser
+  sample at a time. A 14.34 Mpx template renders at **4.7 GB peak** where the old path
+  needed ~14 GiB and spilled. **This retires risk A** (see Hazards).
 - **Scene fidelity was audited for the first time, and it is the weak half of the
   project.** The imaging chain is dimensionally correct (a 700.0 µm pin measures 703.0 µm
   in the image), but the bundled benchmark scene contains no droplet and no crystal, and
@@ -153,7 +169,20 @@ software stack is.** Measured on a real voltron TITAN V (2026-07-17, `acceptance
 torch 2.6, devtoolset-7): compiled preview **11.9 fps median / 10.1 fps p90 (GO)**, eager
 fallback **6.3 fps**. The three things that decide whether you get 11.9 or 6.3:
 
-- **A — the mesh scene's VRAM is a knife's-edge fit, not a hard OOM.** `TSurfaceMesh` has no
+- **A — RESOLVED 2026-07-31. VRAM no longer scales with resolution.** The binding
+  constraint was never the mesh geometry as such, it was `tile_size = max(tile_size, WH)`
+  at `engine_torch.py`, which forced every trace tile to be at least a whole frame. The
+  comment above that line already said per-ray results are tile-independent and
+  byte-exact, and that is now verified (tiles of 307200 / 100000 / 37649 / 8192 / 1000 rays
+  all byte-identical, at φ = 0, 37, 90) and test-guarded. With the clamp relaxed, rays
+  built per condenser sample, and the tile sized at runtime against
+  `torch.cuda.mem_get_info()`, peak memory is set by the tile rather than the image: a
+  14.34 Mpx template renders at 4.7 GB. The same build runs on an 8 GB card and on the
+  12 GB TITAN V, in more passes. `TSurfaceMesh` still lacks the AABB cull `TTube` has, so
+  mesh scenes remain *slow* — but they are no longer unrenderable, and the cull is back to
+  being an optimisation rather than a blocker. The superseded analysis follows.
+
+  *(historical)* **the mesh scene's VRAM is a knife's-edge fit, not a hard OOM.** `TSurfaceMesh` has no
   AABB cull, so `mitegen_200um` (n_cond=1) brute-forces Möller-Trumbore to **~11.1 GB
   reserved**. On the TITAN V's 12 GB that *fits on torch 2.6* (its allocator packs it in),
   but with only ~tens of MB free once the CUDA context is counted — and it **OOMs on torch
@@ -268,15 +297,16 @@ those numbers don't have to be re-derived.
   (`microscope.py` numpy reference tracer, `beam.py` X-ray, **`engine_torch.py`**
   GPU-resident engine), `server/camera_server.py` (AXIS HTTP server + control page),
   **`library/`** (pre-computed rotation sweeps — `build_library` / `ensure_library`,
-  `frame_for_angle`, `crop_window`; CLI `python -m loop_sim.library`).
+  `frame_for_angle`, `pose_crop`, `zoom_limits`; CLI `python -m loop_sim.library`).
 - `frame_library/<scene>/` — **tracked deliverable**, not build output: a rendered 360°
   sweep plus a `manifest.json` per scene. The repo ignores `*.jpg` globally, so
   `.gitignore` carries an explicit re-include for this tree. **Currently shipped:
-  `hampton_300um` only** (360 frames, 1° steps, 1.5× pan margin, verified byte-identical to
-  live renders). `mitegen_200um` is deliberately not shipped — as a mesh scene it needs
-  `--margin 1.0` (RUNBOOK "Frame libraries") and takes ~17 min to build; run
-  `python -m loop_sim.library --scene scene_files/mitegen_200um.yaml --margin 1.0` if you
-  want it, or let `ensure_library()` build it on first use.
+  `hampton_300um`** (360 frames, 1° steps, `--supersample 4`, 5578×2570 each, 84.9 MB) and
+  **`mitegen_200um`** (360 frames, `--supersample 1`, 1840×2296, 26.8 MB) — both verified
+  against live renders at 0.00 px. The supersample differs because the two cameras sample
+  the same NA 0.10 optics very differently; RUNBOOK "Frame libraries" has the rule. Note
+  library size in git (see DATA.md "Known gaps") — `--supersample 2` is 4× cheaper than 4
+  if that matters for a future scene.
 - `crystal_harvester/` — scene *generator* (James's original geometry code: elastica loop
   mechanics, Bashforth-Adams droplets, crystal habits, pin geometry). Builds a complete
   scene from physical parameters — 8 Hampton loop sizes × 3 shapes, 9 MiTeGen models. This
@@ -296,6 +326,60 @@ those numbers don't have to be re-derived.
 
 ## Work log (append-only)
 
+- **2026-08-03** — Second scene shipped and two defects fixed. **`mitegen_200um` library
+  built**: 360 frames at 1840×2296, 26.8 MB, 103 min at 17.3 s/frame; verified against
+  live renders at **0.00 px** sub-pixel offset across φ = 0/90/213 and at zoom 0.5, and
+  served with CUDA disabled at 19.8 ms/frame (50 fps). Both scenes now serve without a
+  GPU. **Supersample is per-scene and follows the optics**, not preference: the Nyquist
+  limit for NA 0.10 is 1.68 µm, so hampton's 7.4 µm pixel under-samples 4.4× (→ 4) while
+  mitegen's 1.0 µm pixel already over-samples 1.7× (→ 1); see RUNBOOK "Frame libraries".
+  Fixed: (1) **the server rebuilt the library on every default launch** — `--jpeg-quality`
+  (what the server *sends*) was being forwarded as the library's `quality` (what gets
+  *stored*), different defaults, and quality is a staleness key. Mapping extracted to
+  `library_kwargs_from_args()` with a separate `--template-quality`, and a test now asserts
+  a no-flag launch cannot invalidate a no-flag build. (2) **`plan_tile_size` rewritten**:
+  extrapolating a slope from two 64 k probes to a ~10 M-ray tile under-predicted the mesh
+  path by ~2.7 GB and spilled; it now probes *reserved* memory by a measured doubling ramp
+  that stops before a rung exceeding budget. (3) `manifest.json` is now written atomically
+  and fsynced — a host crash after a long build previously lost it and orphaned the
+  library. Suite: **80 passed**.
+
+- **2026-07-31** — The template pipeline was wired end to end, and the VRAM ceiling that
+  blocked it turned out not to be real. Audit first: `loop_sim/library/` existed but had
+  **zero callers** — the server never imported it, so every frame was still a live
+  raytrace despite the `.gitignore` claiming otherwise. Templates were also not
+  high-resolution (the builder scaled width/height by the margin but left `pixel_size`
+  alone, so 960×720 was pure extra field of view), `crop_window` ignored the
+  translation/rotation coupling and had an inverted sign, and `is_current` ignored every
+  build parameter. Fixed all of it: `--supersample` (default 4, the zoom ceiling, set by
+  the NA 0.10 Rayleigh limit), a scene-anchored render window measured by a scout sweep
+  (the pin reaches 6.7 mm against a 4.7 mm field, so a centred window left most of it
+  unrendered), `pose_crop` taking a full pose with the φ coupling and a Gaussian defocus,
+  and a `TemplateSource` in `camera_server` with `ensure_library` at startup. The web UI
+  gained X/Y/Z/φ target boxes and a **GO** button reusing the existing animator.
+  **Serving costs 42 ms/frame through a slew and 13 ms panning, CUDA switched off
+  entirely** (24 and 75 fps against an original goal of 10). The enabling fix was
+  removing the `max(tile_size, WH)` clamp and building rays per condenser sample: peak
+  memory dropped from ~14 GiB (which spilled on a 16 GB card) to 4.7 GB at 14.34 Mpx, and
+  the tile is now sized at runtime from free VRAM with 20% headroom. Risk A is retired.
+  The settle-parity tests were expected to be casualties but were not — the live path is
+  preserved, so all 62 stayed green and new template tests were added on top.
+  An independent review pass then found a further crop of defects, all of the same
+  character — wrong output that looks entirely plausible on screen: the clamp squeezed the
+  two axes independently (so every zoom below ~0.75 was served stretched, across the whole
+  advertised range), the crop box was rounded to integers (a 0.375 px registration offset
+  at 4× plus ~0.1% magnification flicker during a pan), `--axis roty` silently built a
+  geometrically wrong library, an interrupted build left a manifest describing
+  half-overwritten frames, the VRAM-spill warning was baselined against frame 0 (the
+  slowest frame, so it could never fire), the tile budget double-counted the resident set,
+  and `plan_tile_size` re-probed on every one of the 360 frames. All fixed and
+  test-guarded. The shipped `hampton_300um` library was rebuilt at `--supersample 4`:
+  **360 frames of 5578×2570, 84.9 MB, 43 min** at 7.2 s/frame and 4.7 GB peak VRAM.
+  Verified against live renders at supersample 4 with **0.00 px sub-pixel offset** at
+  φ = 0/45/90/180 and at zoom 2, and the servable zoom range is 0.80–4×.
+  Suite: **78 passed in 61 s**. **Next:** build libraries for the remaining scenes;
+  `TSurfaceMesh` AABB cull is now an optimisation, not a blocker; scene fidelity (the
+  hazard block above) is untouched and remains the highest-value open work.
 - **2026-07-28** — First scene-fidelity audit, and a change of delivery architecture.
   Performance work stopped; the question became whether the pictures are *right*. Built
   survey and measurement harnesses (`investigation/scene_survey.py`,

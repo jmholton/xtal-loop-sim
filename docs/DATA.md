@@ -17,7 +17,7 @@ calibration input and performance-and-correctness baselines, below.
 | Pipeline part-files (`hoop.yaml`, `crystal.yaml`, `droplet.yaml`) | **authoritative** | in-repo, tracked | this repo | Regenerable in principle via `digitize_fiber.py` / `add_*.py` from a real loop photo, but `digitize_fiber.py` needs a human clicking waypoints — treat the committed ones as the record. |
 | Assembled scene (`scene.yaml`, `loop.yaml`) | regenerable | **not shipped** — gitignored | — | `generate_scene.py loop.yaml crystal.yaml droplet.yaml --template template.yaml --output scene.yaml` (see ../README.md). |
 | Rendered images (`*.png`, `*.jpg`) | regenerable | **not shipped** — gitignored | — | `render.py <scene>.yaml …`. Deterministic given scene + pose + code. |
-| **Frame libraries** (`frame_library/<scene>/*.jpg` + `manifest.json`) | **shipped, tracked** | in-repo, tracked (explicit `.gitignore` re-include, since `*.jpg` is ignored repo-wide) | this repo | `python -m loop_sim.library --all`. Regenerable but **deliberately committed** — a library is the replay source for the camera, so it ships with the code rather than being rebuilt on each host. Each manifest stores a SHA-256 of its scene YAML; a changed scene rebuilds on first use. ~6 MB per scene at the 1° default. |
+| **Frame libraries** (`frame_library/<scene>/*.jpg` + `manifest.json`) | **shipped, tracked** | in-repo, tracked (explicit `.gitignore` re-include, since `*.jpg` is ignored repo-wide) | this repo | `python -m loop_sim.library --all`. Regenerable but **deliberately committed** — a library is what the camera server replays, so it ships with the code rather than being rebuilt on each host. Each manifest stores a SHA-256 of its scene YAML *and* the build parameters; changing either rebuilds on first use. At the `--supersample 4` default the shipped hampton sweep is 360 frames of 5578×2570, **84.9 MB**, built in 43 min at 7.2 s/frame on an RTX 4080 SUPER. **Sizes are much larger than the 1× libraries** — see the gap below. |
 | Benchmark baselines (`bench_results/`) | regenerable | **not shipped** — gitignored | — | `bench_frame.py` (`--compiled`, `--fp32`). See the gap below. |
 
 ## External dependencies & succession
@@ -30,6 +30,15 @@ external dependency is the runtime itself: a torch+CUDA interpreter, unpinned �
 
 ## Known gaps
 
+- **Supersampled frame libraries are large, and every scene adds another one.** The 1×
+  library was 5.3 MB; `hampton_300um` at the `--supersample 4` default is **84.9 MB**
+  (360 frames of 5578×2570). It is tracked in git, so each rebuild writes a fresh copy
+  into history and every `push-all` moves it. Options if this becomes a problem: drop to
+  `--supersample 2` (4× cheaper, still resolves the fiber), track only the reference
+  `hampton_300um` library and let the rest build on first use, or stop tracking them and
+  accept a slow first launch per scene. The repo currently ships two — `hampton_300um`
+  (84.9 MB at `--supersample 4`) and `mitegen_200um` (26.8 MB at `--supersample 1`), about
+  112 MB together.
 - **Benchmark baselines don't travel.** `bench_results/` is gitignored, so the numbers a
   perf claim rests on exist only on the machine that produced them. Comparing this
   machine's results against the beamline's TITAN V (voltron) requires committing a

@@ -65,9 +65,85 @@ import numpy as np
 from ..motors.goniometer import Goniometer
 from ..renderer.microscope import render as microscope_render
 from ..renderer.beam        import beam_volumes_json
+from ..library.frame_library import (DEFAULT_ROOT as _LIB_DEFAULT_ROOT,
+                                     frame_for_angle, pose_crop)
 
 _MJPEG_BOUNDARY = b"--myboundary"
 _MOTOR_KEYS = ("tx", "ty", "tz", "rotx", "roty", "rotz", "zoom")
+
+
+# ---------------------------------------------------------------------------
+# Template replay
+# ---------------------------------------------------------------------------
+class TemplateSource:
+    """Serves frames from a pre-rendered spindle sweep.
+
+    A frame is produced by picking the nearest template angle, cropping the
+    window the pose asks for, scaling it to the camera resolution, and blurring
+    by the defocus the depth component implies.  No raytracing, no GPU.
+
+    Decoded templates are cached (they are large -- tens of MB each at 4x
+    supersample -- so the cache is deliberately small; decoding is ~20 ms and
+    is not the bottleneck).
+    """
+
+    def __init__(self, manifest, lib_dir, jpeg_quality=85, cache_size=8):
+        self.manifest = manifest
+        self.lib_dir = lib_dir
+        self.jpeg_quality = jpeg_quality
+        self._cache_size = max(1, int(cache_size))
+        self._cache = {}
+        self._order = []
+        self._lock = threading.Lock()
+        self._warned_clamp = False
+
+    def _frame(self, name):
+        from PIL import Image
+        with self._lock:
+            img = self._cache.get(name)
+            if img is not None:
+                self._order.remove(name)
+                self._order.append(name)
+                return img
+        img = Image.open(os.path.join(self.lib_dir, name)).convert("RGB")
+        img.load()
+        with self._lock:
+            # Re-check: two threads can miss on the same frame and both decode.
+            # Inserting twice would leave the name in _order twice while _cache
+            # holds it once, so the eviction loop would over-evict for good.
+            cached = self._cache.get(name)
+            if cached is not None:
+                return cached
+            self._cache[name] = img
+            self._order.append(name)
+            while len(self._order) > self._cache_size:
+                self._cache.pop(self._order.pop(0), None)
+        return img
+
+    def render(self, pose):
+        """JPEG bytes for a motor pose dict."""
+        from PIL import Image, ImageFilter
+
+        man = self.manifest
+        angle = float(pose.get(man["axis"], 0.0))
+        rec = frame_for_angle(man, angle)
+        box, out_size, sigma, note = pose_crop(
+            man, tx=float(pose.get("tx", 0.0)), ty=float(pose.get("ty", 0.0)),
+            tz=float(pose.get("tz", 0.0)), angle_deg=angle,
+            zoom=float(pose.get("zoom", 1.0)), clamp=True)
+        if note and not self._warned_clamp:
+            # Say it once: a clamped pose looks entirely plausible on screen.
+            self._warned_clamp = True
+            print(f"[templates] request clamped to what the library can serve: {note}")
+
+        # Resample straight from the float source box -- cropping to integers
+        # first would quantise the registration and the magnification.
+        img = self._frame(rec["file"]).resize(out_size, Image.BILINEAR, box=box)
+        if sigma > 0.05:
+            img = img.filter(ImageFilter.GaussianBlur(radius=sigma))
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=self.jpeg_quality)
+        return buf.getvalue()
 
 
 # ---------------------------------------------------------------------------
@@ -363,11 +439,31 @@ class CameraServer(ThreadingHTTPServer):
     port       : int
     n_cond     : int — condenser rays per pixel (1=fast preview, 7=smooth)
     fps_limit  : float — max frame rate for MJPEG stream
+    scene_path : str | None — YAML the scene was loaded from. Required to serve
+                 from a pre-computed frame library; without it every frame is a
+                 live render.
+    templates  : bool — serve from the frame library (building it first if it is
+                 absent or stale). This is the low-latency path and needs no GPU
+                 at runtime.
     """
 
     def __init__(self, scene, host="0.0.0.0", port=8080,
                  n_cond=7, fps_limit=5.0, engine="auto", jpeg_quality=85,
-                 preview_mode=True, compile_preview=True, settle_delay=0.5):
+                 preview_mode=True, compile_preview=True, settle_delay=0.5,
+                 scene_path=None, templates=True, library_kwargs=None):
+        self._scene_path     = scene_path
+        self._want_templates = bool(templates) and scene_path is not None
+        self._library_kwargs = dict(library_kwargs or {})
+        self._templates      = None    # TemplateSource once the library is ready
+
+        # Build BEFORE binding the socket. A cold build is tens of minutes; a
+        # bound-but-unresponsive port leaves clients waiting in the backlog
+        # instead of failing to connect, which reads as a hung server.
+        manifest = None
+        if self._want_templates:
+            from ..library.frame_library import ensure_library
+            manifest = ensure_library(scene_path, **self._library_kwargs)
+
         super().__init__((host, port), _Handler)
         self._scene          = scene
         self._goniometer     = Goniometer(scene.geometry)
@@ -429,11 +525,27 @@ class CameraServer(ThreadingHTTPServer):
                 want_torch = torch.cuda.is_available()
             except Exception:
                 want_torch = False
+        # Templates never call the renderer, and the library builder makes its
+        # own TorchScene -- holding a second one here would pin GPU memory for
+        # nothing and make "no GPU needed at runtime" untrue.
+        if self._want_templates and engine == "auto":
+            want_torch = False
         if want_torch:
             import torch
             from ..renderer.engine_torch import TorchScene
             dev = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
             self._tscene = TorchScene(scene, dev, torch.float64)
+
+        # Templates (built above, before the socket was bound) serve every
+        # frame by cropping/scaling. Building needs the renderer; serving does
+        # not, so a GPU is a build-time accelerator, not a runtime requirement.
+        if manifest is not None:
+            from ..library.frame_library import library_dir
+            self._templates = TemplateSource(
+                manifest,
+                library_dir(scene_path,
+                            self._library_kwargs.get("root", _LIB_DEFAULT_ROOT)),
+                jpeg_quality=jpeg_quality)
 
     # ------------------------------------------------------------------
     # Cache management
@@ -455,8 +567,14 @@ class CameraServer(ThreadingHTTPServer):
         return Goniometer(self._scene.geometry).set(**state)
 
     def _render_frame(self):
-        """Render + JPEG-encode the current pose (no cache bookkeeping)."""
+        """Produce + JPEG-encode the current pose (no cache bookkeeping)."""
         gono   = self._snapshot_gonio()
+        # Templates serve every frame when a library is loaded: the preview /
+        # settle split exists to trade quality for speed during motion, and a
+        # template crop is already both.
+        if self._templates is not None:
+            self._last_render_preview = False
+            return self._templates.render(gono.get())
         # Fast preview while the pose is moving (an animated /move, or an
         # instant /motor set within the last settle_delay seconds); full
         # quality once it settles.
@@ -699,6 +817,10 @@ class CameraServer(ThreadingHTTPServer):
         engine is live and preview compilation is both requested and reachable
         (preview_mode on).
         """
+        # Templates never call the renderer, so compiling it would cost a minute
+        # of startup for kernels nothing will run.
+        if self._templates is not None:
+            return
         if not (self._compile_preview and self._preview_mode
                 and self._tscene is not None and self._tscene.dev.type == "cuda"):
             return
@@ -722,6 +844,19 @@ class CameraServer(ThreadingHTTPServer):
         background=True → runs in a daemon thread and returns immediately.
         background=False → blocks (use Ctrl-C to stop).
         """
+        if self._templates is not None:
+            from ..library.frame_library import zoom_limits
+            man = self._templates.manifest
+            rnd = man["rendered"]
+            zmin, zmax = zoom_limits(man)
+            print(f"[templates] serving from {len(man['frames'])} pre-rendered "
+                  f"frames at {rnd['width']}x{rnd['height']} "
+                  f"({man['supersample']}x), {man['step_deg']}deg steps about "
+                  f"{man['axis']}; zoom {zmin:.2f}-{zmax:.0f}x, "
+                  f"X/Y/Z pan within the rendered window, no GPU needed")
+            print(f"[templates] roty/rotz are NOT served from templates "
+                  f"(one sweep covers one axis) -- use --templates off for those")
+
         # Single-threaded first compilation of the preview path (if enabled)
         # BEFORE any thread is spawned — concurrent first-compile crashes dynamo.
         self._warmup_compiled_preview()
@@ -759,6 +894,28 @@ class CameraServer(ThreadingHTTPServer):
                 self.server_close()
 
 
+def library_kwargs_from_args(args):
+    """Map CLI options to frame-library build parameters.
+
+    Only options that genuinely describe the STORED templates belong here. In
+    particular `--jpeg-quality` does NOT: it is the quality of the JPEG this
+    server sends, and forwarding it as the library's `quality` (a different
+    default) made every no-flag launch disagree with the shipped library and
+    silently kick off a full rebuild. `--template-quality` is the knob for the
+    stored templates.
+
+    Kept separate from main() so the mapping is testable without a CLI run --
+    the bug above slipped through precisely because the tests constructed
+    CameraServer directly and never exercised this path.
+    """
+    kwargs = {"n_cond": args.n_cond}
+    if getattr(args, "supersample", None) is not None:
+        kwargs["supersample"] = args.supersample
+    if getattr(args, "template_quality", None) is not None:
+        kwargs["quality"] = args.template_quality
+    return kwargs
+
+
 def main(argv=None):
     """CLI entry point: python -m loop_sim.server.camera_server [options]."""
     import argparse
@@ -790,7 +947,22 @@ def main(argv=None):
                     help="seconds after the last instant pose set (/motor) "
                          "before rendering the exact full-quality frame "
                          "(default: %(default)s)")
+    ap.add_argument("--templates", choices=["on", "off"], default="on",
+                    help="on (default): serve from a pre-computed frame "
+                         "library, building it first if absent or stale. This "
+                         "is the low-latency path and needs no GPU at runtime. "
+                         "off: raytrace every frame live")
+    ap.add_argument("--supersample", type=int, default=None,
+                    help="template sampling factor when building a library "
+                         "(default: the library builder's own default)")
+    ap.add_argument("--template-quality", type=int, default=None,
+                    help="JPEG quality of the STORED templates when a library "
+                         "has to be built. Distinct from --jpeg-quality, which "
+                         "is the quality of the frames this server sends. "
+                         "Changing it invalidates an existing library")
     args = ap.parse_args(argv)
+
+    lib_kwargs = library_kwargs_from_args(args)
 
     scene = load(args.scene)
     server = CameraServer(scene, host=args.host, port=args.port,
@@ -798,7 +970,10 @@ def main(argv=None):
                           engine=args.engine, jpeg_quality=args.jpeg_quality,
                           preview_mode=args.preview_mode == "on",
                           compile_preview=args.compile_preview == "on",
-                          settle_delay=args.settle_delay)
+                          settle_delay=args.settle_delay,
+                          scene_path=args.scene,
+                          templates=args.templates == "on",
+                          library_kwargs=lib_kwargs)
     server.start()
 
 

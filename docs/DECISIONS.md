@@ -8,6 +8,106 @@
 
 ## Decisions
 
+### 2026-07-31 — templates serve every frame; VRAM stops limiting resolution
+- **Decision:** the camera server serves *every* frame from the pre-computed sweep
+  (`--templates on`, default): pick the nearest spindle angle, crop, scale, blur, encode.
+  Live rendering remains available (`--templates off`) and is still the correctness
+  reference. Startup calls `ensure_library`, so the tool checks for templates and builds
+  them if missing before serving.
+- **Measured:** serving costs **1–16 ms/frame with no GPU at all** (decode 1.4/4.6/21.4 ms
+  at 1×/2×/4× supersample, plus crop+scale+encode). The old goal was 10 fps of live
+  raytracing; this is faster than that by a wide margin and the frame rate no longer
+  depends on the hardware.
+- **`supersample` is the zoom ceiling, and 4 is a physical number, not a guess.** NA 0.10
+  gives a Rayleigh resolution of 0.61λ/NA = **3.35 µm**; Nyquist wants 1.68 µm/px against a
+  7.4 µm native pixel, so **4.41×** is where sampling critically matches the optics. Below
+  it real fiber detail aliases; above it you magnify resolution the objective cannot
+  deliver (the renderer is geometric and models no diffraction, so it will happily keep
+  producing sharper edges that no real instrument would show). If the camera-calibration
+  question ever resolves toward `template.yaml` (0.82 µm px, NA 0.28) the answer becomes
+  **1.37×** — hence the flag.
+- **The render window is measured from the scene, not centred on the goniometer origin.**
+  The hampton pin runs to x=6.7 mm against a 4.736 mm field, so a symmetric margin left
+  more than half the pin unrendered and panning right scrolled in blank background.
+  `content_window()` renders a coarse wide-field scout sweep and measures where the image
+  differs from background — this works for CSG and half-spaces, which have no finite
+  bounding box. The sweep is then rendered at a fixed `tx` offset that centres that window;
+  `tx` is parallel to the spindle axis, so a constant offset is rotation-invariant and
+  exactly equivalent to moving the camera. Costs nothing: the scene-anchored window is
+  10.32 × 4.76 mm where a symmetric 1.5× margin was 7.10 × 5.33 mm.
+- **Depth is a Gaussian blur, not a focus stack.** `σ_px = 0.5 · NA_cond · |Δz| / eff_px`
+  keeps build time and disk independent of focus, at the cost of not reproducing the
+  discrete 7-replica ghosting a real `n_cond=7` render shows.
+- **What breaks if you change it:** the crop math depends on the goniometer composing
+  `T = Rz·Ry·Rx·T_trans` — the stage rides on the spindle, so the lab displacement is
+  `R·vec` and *which motor is lateral rotates with φ*. At φ=90 a `ty` move produces zero
+  image shift and `tz` produces all of it. Reversing that leaves the picture looking
+  entirely plausible while showing the wrong part of the sample;
+  `tests/test_frame_library.py::test_template_matches_live_render` is the guard.
+- **Three sub-pixel constraints, all found in review, all invisible to an
+  integer-shift comparison:**
+  1. `pose_crop` returns a **float** source box consumed by
+     `Image.resize(size, box=…)`, not an integer crop box. PIL maps output pixel *i* to
+     source *edge* `left + (i+0.5)·scale`, i.e. index `left + i·scale + 0.5(scale−1)`,
+     so the box origin must sit half a source pixel early. Dropping that offsets every
+     served frame by 0.375 camera px at 4×.
+  2. Rounding the box to integers also makes the span vary by ±1 template px at
+     non-integer `scale`, and the result is always resized to exactly *W* — so
+     magnification flickers ~0.1% as a pan crosses pixel boundaries.
+  3. The template must have the **same parity** as the camera, or `(RW−W)/2` is a half
+     integer and every crop inherits a half-pixel offset. This one was caught by
+     measurement: it showed up as a systematic ±1 px wobble and a 6× worse residual.
+- **The zoom floor is not `camera / template`.** The window is anchored on the sample and
+  the sample is long and thin, so it is deliberately off-centre; at the home pose the
+  camera runs out of room on the near side before the span stops fitting.
+  `zoom_limits()` measures from the nearer edge. Clamping **slides** the crop and never
+  squeezes it — squeezing the axes independently changes magnification per axis, hence
+  the aspect ratio, and looks entirely plausible on screen.
+
+### 2026-07-31 — the tile clamp was the VRAM ceiling, and it was never a correctness one
+- **Finding:** `render_torch` already traced in batches, but `tile_size = max(tile_size, WH)`
+  forced every tile to be at least a whole frame, so peak memory scaled with resolution.
+  **This supersedes the 2026-07-28 entry below**, which concluded the clamp made the tiling
+  fix "unreachable" and that droplet scenes were unrenderable at full resolution. The clamp
+  was a performance floor. Removing it is safe.
+- **Verified before relying on it:** tracing the same pose in tiles of 307200, 100000,
+  37649 (deliberately straddling condenser-sample boundaries), 8192 and 1000 rays is
+  **byte-identical** to a single-pass trace, at φ = 0, 37 and 90. The comment above the
+  clamp had said as much; it is now a test.
+- **Second ceiling, also removed:** `o_all`/`d_all`/`o_t`/`d_t`/`out` were allocated at the
+  full `M = n_cond × W × H` before any tracing — 5.4 GB on device at 10.7 Mpx and n_cond=7.
+  Tracing one condenser sample at a time and accumulating drops that 7×, making peak memory
+  independent of `n_cond` as well as resolution. The accumulation is a sequential
+  `sum / n_cond`, which matches the numpy reference's own reduction order; all 62
+  pre-existing tests stayed green through the change.
+- **Measured law:** peak ≈ `0.12 + 1.13 × tile_Mrays` GiB on this tube scene. The slope is
+  scene-dependent, so it must be measured per scene, not assumed.
+- **Size the tile by a measured doubling ramp, not by extrapolating a slope.** The first
+  implementation fitted `k` from two 64 k-ray probes and solved for a ~10 M-ray tile — a
+  150× extrapolation. On the mesh path it under-predicted by ~2.7 GB and pushed a
+  `mitegen_200um` render to 15.7/16 GB, i.e. straight into the WSL2 spill. Two corrections:
+  probe against **reserved**, not allocated (the mesh Möller-Trumbore temporaries fragment
+  the pool, so reserved is what actually fills the card and it exceeds allocated), and
+  **measure each rung** rather than extrapolating, stopping before a rung that would exceed
+  the budget. No probe can then trigger the failure it is sizing to avoid.
+  - Trap found while writing the ramp: sampling the probe rays through **one fixed stride**
+    caps the sample's length, so every rung past it re-measures the same rays, reports a
+    flat cost, and the ramp doubles to the top — which then attempted an **87 GiB**
+    allocation. The stride has to be recomputed per rung.
+- **Mesh scenes are memory-bound on `TSurfaceMesh`, which still has no AABB cull.** It
+  brute-forces `(B, F, 3)` Möller-Trumbore intermediates, so at 2880 faces a single ray
+  costs ~69 kB and the tile that fits a 12 GB budget is only ~262 k rays. That is why
+  `mitegen_200um` renders at 18 s/frame against `hampton_300um`'s 7.2 s despite being
+  3.4× *smaller*. The cull `TTube` already has is the fix, and it is now purely a speed
+  optimisation — the scene renders correctly either way.
+- **Sizing is predictive, never try-and-retry.** Under WSL2 there is no OOM to back off
+  from: past capacity the driver silently spills to host RAM and the render crawls 10–50×,
+  so a retry loop would hang rather than recover. A sustained per-frame slowdown during a
+  build is the only available spill signal and is now warned about.
+- **Result:** a 14.34 Mpx template renders at **4.7 GB peak** where the unclamped path
+  needed ~14 GiB and spilled. The same templates build on an 8 GB card, and on the
+  beamline's 12 GB TITAN V, in more passes.
+
 ### 2026-07-28 — deliver a pre-computed rotation sweep, not a faster live renderer
 - **Decision:** for the AXIS-camera use case, ship a **pre-rendered frame library**
   (`loop_sim/library/`, output in `frame_library/`) instead of pushing live frame rate

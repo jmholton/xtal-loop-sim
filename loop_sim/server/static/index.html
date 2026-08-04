@@ -77,12 +77,12 @@
       <div class="sp"></div><button data-pan="0,1" title="down">&#9660;</button><div class="sp"></div>
     </div>
 
-    <h2>Rotate &amp; zoom</h2>
+    <h2>Jog</h2>
     <div class="grp">
       <div class="row">
-        <label>rot&thinsp;x</label>
+        <label>&phi;</label>
         <button data-drotx="-1">&minus;</button>
-        <input id="rotx" type="number" step="1" value="0"> &deg;
+        <span class="val" id="phijog"></span>
         <button data-drotx="1">+</button>
       </div>
       <div class="row">
@@ -91,6 +91,20 @@
         <input id="zoom" type="number" step="0.1" min="0.1" value="1.0">&times;
         <button data-dzoom="1">+</button>
       </div>
+    </div>
+
+    <h2>Goniometer target</h2>
+    <div class="grp">
+      <div class="row"><label>X</label><input id="tgt_tx" type="number" step="0.01" value="0"> mm</div>
+      <div class="row"><label>Y</label><input id="tgt_ty" type="number" step="0.01" value="0"> mm</div>
+      <div class="row"><label>Z</label><input id="tgt_tz" type="number" step="0.01" value="0"> mm</div>
+      <div class="row"><label>&phi;</label><input id="tgt_rotx" type="number" step="1" value="0"> &deg;</div>
+      <div class="row">
+        <button id="go" style="min-width:64px">GO</button>
+        <button id="usecur" title="load the current position into the target boxes">&#8635;</button>
+      </div>
+      <div class="hint">The stage interpolates from where it is to the target.
+        Enter in any box also fires GO.</div>
     </div>
 
     <h2>Speed</h2>
@@ -115,6 +129,7 @@ const cam = $("cam"), layer = $("clicklayer"), mark = $("clickmark");
 const PAN_FRAC = 0.25;   // quarter of the field of view per arrow click
 const ROT_STEP = 15;     // degrees per rotx click
 const ZOOM_FAC = 1.25;   // zoom multiply/divide per click
+$("phijog").textContent = ROT_STEP + "° steps";   // label from the constant
 
 // speed dial: slider is log10(speed), so 0 → 1x, -1 → 0.1x (slow-mo), +0.7 → ~5x
 function speed() { return Math.pow(10, parseFloat($("speed").value)); }
@@ -144,15 +159,48 @@ document.querySelectorAll("[data-dzoom]").forEach(b => b.addEventListener("click
   move({ zoom: dir > 0 ? cur * ZOOM_FAC : cur / ZOOM_FAC });
 }));
 
-// editable angle / zoom boxes → absolute animated move on Enter or blur
-function bindBox(id, key) {
-  const el = $(id);
-  const commit = () => move({ [key]: parseFloat(el.value) || 0 });
+// zoom box → absolute animated move on Enter or blur
+(function bindZoom() {
+  const el = $("zoom");
+  const commit = () => move({ zoom: parseFloat(el.value) || 1.0 });
   el.addEventListener("keydown", e => { if (e.key === "Enter") { commit(); el.blur(); } });
   el.addEventListener("change", commit);
+})();
+
+// Goniometer target: type X/Y/Z/phi, press GO, the stage slews there.
+// One /move carries all four axes so they arrive together and the animator
+// interpolates the whole pose as a single motion.
+const TGT = { tx: "tgt_tx", ty: "tgt_ty", tz: "tgt_tz", rotx: "tgt_rotx" };
+function go() {
+  const p = {};
+  for (const [key, id] of Object.entries(TGT)) {
+    const v = parseFloat($(id).value);
+    if (!Number.isFinite(v)) {
+      // Defaulting an unparseable box to 0 would silently slew that axis to
+      // the origin -- e.g. a decimal comma yields "" in a number input.
+      $(id).focus();
+      $("state").textContent = `cannot move: ${key.toUpperCase()} is not a number`;
+      return;
+    }
+    p[key] = v;
+  }
+  move(p);
 }
-bindBox("rotx", "rotx");
-bindBox("zoom", "zoom");
+function loadCurrent(s) {
+  if (!s) return;
+  for (const [key, id] of Object.entries(TGT)) {
+    if (document.activeElement !== $(id)) $(id).value = (+s[key]).toFixed(key === "rotx" ? 1 : 3);
+  }
+}
+$("go").addEventListener("click", go);
+$("usecur").addEventListener("click", async () => {
+  try { loadCurrent(await (await fetch("/motor")).json()); } catch (e) {}
+});
+for (const id of Object.values(TGT)) {
+  $(id).addEventListener("keydown", e => {
+    if (e.key === "Enter") { e.preventDefault(); go(); $(id).blur(); }
+  });
+}
 
 // recenter button → animate back to tx=ty=0 (origin)
 $("recenter").addEventListener("click", () => move({ tx: 0, ty: 0 }));
@@ -191,17 +239,21 @@ showSizes();
 // keep the boxes / readout in sync with the server (skip a box being edited)
 function applyState(s) {
   if (!s) return;
-  if (document.activeElement !== $("rotx")) $("rotx").value = (+s.rotx).toFixed(1);
   if (document.activeElement !== $("zoom")) $("zoom").value = (+s.zoom).toFixed(2);
   $("state").textContent =
-    `tx ${(+s.tx).toFixed(3)}  ty ${(+s.ty).toFixed(3)}  tz ${(+s.tz).toFixed(3)}\n` +
-    `rotx ${(+s.rotx).toFixed(1)}  roty ${(+s.roty).toFixed(1)}  rotz ${(+s.rotz).toFixed(1)}  zoom ${(+s.zoom).toFixed(2)}`;
+    `X ${(+s.tx).toFixed(3)}  Y ${(+s.ty).toFixed(3)}  Z ${(+s.tz).toFixed(3)}  (mm)\n` +
+    `phi ${(+s.rotx).toFixed(1)}°   zoom ${(+s.zoom).toFixed(2)}×`;
 }
 async function poll() {
   try { applyState(await (await fetch("/motor")).json()); } catch (e) {}
 }
 fmtSpeed();
-poll();
+// seed the target boxes from the live pose once, then leave them alone: they
+// are a target the operator is composing, not a readout.
+(async () => {
+  try { const s = await (await fetch("/motor")).json(); applyState(s); loadCurrent(s); }
+  catch (e) {}
+})();
 setInterval(poll, 600);
 </script>
 </body>

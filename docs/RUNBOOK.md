@@ -91,38 +91,69 @@ $PY -m loop_sim.library --all
 $PY -m loop_sim.library --scene <s>.yaml --force        # rebuild regardless
 ```
 
-Useful flags: `--step` (degrees between frames, default 1.0 → 360 frames), `--margin`
-(render this much larger than the camera so panning is a crop, default 1.5), `--axis`
-(spindle motor, default `rotx`), `--n-cond`, `--quality`.
+Useful flags: `--step` (degrees between frames, default 1.0 → 360 frames),
+`--supersample` (render this many times finer than the camera pixel; default 4, and the
+hard ceiling on zoom-in), `--pan-mm` (sample travel to allow beyond the scene and the
+centred field of view, default 0.6), `--axis` (spindle motor, default `rotx`), `--n-cond`,
+`--quality`, `--tile-size` (default `auto`), `--vram-fraction` (default 0.80), `--device`.
 
 Re-running is a **no-op when the library is current** — the manifest stores a SHA-256 of
-the scene YAML, so an edited or newly added scene rebuilds automatically on first use.
-From Python, `ensure_library(scene_path)` does the same thing and returns the manifest;
-`frame_for_angle(manifest, deg)` picks the frame and `crop_window(manifest, tx_mm, ty_mm)`
-gives the pan crop box.
+the scene YAML *and* the build parameters, so an edited scene or a different
+`--supersample` rebuilds automatically. From Python, `ensure_library(scene_path)` does the
+same and returns the manifest; `frame_for_angle(manifest, deg)` picks the frame and
+`pose_crop(manifest, tx, ty, tz, angle_deg, zoom)` gives the crop box, output size and
+defocus blur.
 
 Notes:
 
-- **Panning is free, rotation is not.** Lateral translation is an exact image shift under
-  this orthographic camera (measured max pixel difference 0.000000), so `tx`/`ty` are
-  served by cropping inside the rendered margin. `crop_window()` raises if you ask to pan
-  beyond it — rebuild with a larger `--margin` rather than clamping. `zoom` and `tz` are
-  **not** covered and still need a live render.
-- **Cost:** ~1.1 s/frame for `hampton_300um` at the default margin on an RTX 4080 SUPER,
-  so a 360-frame sweep is a few minutes and lands around 6 MB of JPEG.
-- **Droplet scenes will fail to build** with an explicit out-of-memory error until
-  `TSurfaceMesh` gets its AABB cull (docs/HANDOFF.md risk A). The builder raises rather
-  than quietly dropping resolution — a library rendered at a degraded setting is
-  indistinguishable from a good one once it is on disk.
-- **Mesh-bearing scenes cannot afford the default pan margin yet — same root cause.** The
-  margin multiplies pixel count by `margin²`, and mesh memory scales with tile rays, so
-  `mitegen_200um` at `--margin 1.5` needs ~2.25× its already-large working set. On a 16 GB
-  card that lands at ~15.4/16.4 GB, which under WSL2 **spills to system RAM instead of
-  raising OOM** and the build crawls rather than failing (see "Dev-environment caveat"
-  below). Build mesh scenes with **`--margin 1.0`** until the AABB cull lands — the library
-  is then rotation-only, with no free panning. Tube scenes take the default 1.5 fine.
-  `frame_library/*/manifest.json` records the margin actually used, and `crop_window()`
-  raises on any pan request a margin-1.0 library cannot serve.
+- **The window is measured from the scene, not centred on the origin.** A mount is long
+  and thin — the hampton pin reaches x=6.7 mm against a 4.7 mm field — so a symmetric
+  margin leaves most of the pin unrendered and panning scrolls in blank background.
+  `content_window()` renders a coarse wide-field scout sweep to find where content
+  actually is, and the sweep is then rendered at a fixed `tx` offset that centres it.
+- **What the library serves:** the spindle axis (quantised to `--step`), `tx`/`ty`/`tz`
+  as a crop, and `zoom` between the floor the window allows and `--supersample`. Depth
+  translation becomes a Gaussian blur approximating condenser defocus. `roty`/`rotz` are
+  **not** covered — one sweep is one axis, and `--axis` other than `rotx` is refused
+  rather than silently building a geometrically wrong library. The server prints the
+  actual zoom range at startup; `zoom_limits(manifest)` returns it. The floor is not
+  simply `camera / template` — the window is anchored on the sample rather than centred,
+  so at the home pose the camera runs out of room on the near side first.
+- **Out-of-range requests are refused, not clamped**, except in the live server, which
+  clamps so it keeps serving and prints what it clamped. Clamping slides the crop and
+  never squeezes it: squeezing would change magnification per axis and silently alter the
+  aspect ratio.
+- **Which motor is lateral depends on φ.** The XYZ stage rides on the spindle, so at φ=0
+  `ty` moves the image vertically and `tz` is pure defocus, while at φ=90 they swap. This
+  is handled in `pose_crop`; it is also the single easiest thing to get backwards.
+- **Pick `--supersample` per scene, from the camera's own sampling.** The right value is
+  where the template pitch reaches the objective's Nyquist limit, `0.61λ/NA / 2`:
+
+  | scene | pixel | NA | Nyquist | camera is… | supersample |
+  |---|---|---|---|---|---|
+  | `hampton_300um` | 7.4 µm | 0.10 | 1.68 µm | under-sampling 4.4× | **4** |
+  | `mitegen_200um` | 1.0 µm | 0.10 | 1.68 µm | already over-sampling 1.7× | **1** |
+
+  Going beyond that magnifies resolution the optics cannot deliver. It also costs: the
+  template grows with the square. For a scene whose content is wider than its field
+  (mitegen's is, 1.10 mm against 0.48 mm) the useful zoom direction is *out*, which the
+  window already provides, not *in*.
+- **Cost** (RTX 4080 SUPER, n_cond 7): `hampton_300um` ~7.2 s/frame at `--supersample 4`
+  (5578×2570), a 360-frame sweep in ~45 min. `mitegen_200um` ~18 s/frame at
+  `--supersample 1` (1840×2296) — **slower despite being 3.4× smaller**, because it is a
+  mesh scene and `TSurfaceMesh` has no AABB cull, so its tile is memory-capped at ~262 k
+  rays. ~1.8 h for its sweep.
+- **VRAM no longer limits resolution.** The trace is tiled and the tile is sized at
+  runtime to fit `--vram-fraction` of free VRAM, so an 8 GB card renders the same
+  templates as a 16 GB one, just in more passes. Per-ray results are tile-independent
+  (tested byte-exact down to 1000-ray tiles), so the image does not depend on the tile.
+  Tiling bounds the *trace* working set; the resident ray arrays are still O(W×H)
+  (~1 GB at a 14 Mpx template) and no tile size shrinks them, so peak memory is reduced
+  by tiling rather than made independent of resolution.
+- **The build raises on out-of-memory rather than quietly dropping resolution** — a
+  library rendered at a degraded setting is indistinguishable from a good one once it is
+  on disk. Under WSL2 there is no OOM to catch (the driver spills to host RAM instead), so
+  the builder also warns when frames slow down persistently; see "Dev-environment caveat".
 
 ### On voltron (the beamline GPU node)
 
