@@ -1,10 +1,12 @@
 {
   "scene": "scene_files/hampton_300um.yaml",
   "scene_sha256": "3965f9a3ef4ade6857e50ff26f8bd9c47d6c4bbcdd146b4355abca251ebfd629",
-  "built_utc": "2026-07-28T19:26:20Z",
+  "built_utc": "2026-08-03T16:05:22Z",
   "axis": "rotx",
   "step_deg": 1.0,
   "n_cond": 7,
+  "supersample": 4,
+  "pan_mm": 0.6,
   "jpeg_quality": 90,
   "camera": {
     "width": 640,
@@ -14,13 +16,17 @@
     "na_condenser": 0.07
   },
   "rendered": {
-    "width": 960,
-    "height": 720,
-    "margin": 1.5
+    "width": 5578,
+    "height": 2570,
+    "pixel_size": 0.00185
   },
-  "pan_px": {
-    "x": 160,
-    "y": 120
+  "window_mm": {
+    "x0": -2.9680000000000004,
+    "x1": 7.3513,
+    "y0": -2.376,
+    "y1": 2.3785000000000003,
+    "centre_x": 2.19165,
+    "centre_y": 0.0012500000000001954
   },
   "frames": [
     {
