@@ -1,8 +1,8 @@
 ---
 project: loop-sim (xtal-loop-sim) — bright-field microscope + X-ray simulator for protein crystals in cryo-loops
-status: active — camera served from pre-computed templates (no GPU at runtime); scene fidelity is the open front
-last_verified: 2026-07-31        # `pytest tests/` = 78 passed in 61 s on this tree (branch performance-correctness-optimizations, RTX 4080 SUPER)
-verify: python -m pytest tests/ -q        # 78 tests; "python" = the torch-enabled project interpreter (see docs/RUNBOOK.md "Environment")
+status: active — camera served from pre-computed templates (no GPU at runtime) and usable interactively; scene geometry/fidelity is the open front
+last_verified: 2026-08-06        # `pytest tests/` = 102 passed in 105 s on this tree (branch performance-correctness-optimizations, RTX 4080 SUPER)
+verify: python -m pytest tests/ -q        # 102 tests; "python" = the torch-enabled project interpreter (see docs/RUNBOOK.md "Environment")
 ---
 
 # HANDOFF — loop-sim (xtal-loop-sim)
@@ -23,9 +23,18 @@ generation, and dose estimation. James Holton wrote it; Jacob's contribution was
 the GPU path **correct** (it was producing a "hairy" artifact on the loop fiber) and
 **fast enough to drive as a live camera** (10 image files/s).
 
-## Current state (2026-07-28)
+## Current state (2026-08-06)
 
-- **Branch `performance-correctness-optimizations`, 24 commits ahead of `master`, NOT
+- **The interactive path now works, and it had never been driven by a person before.**
+  Templates made frames cheap in 2026-07-31, but the control page was still unusable: the
+  stream was capped at 5 fps by a stale default, the last frame of every move arrived a
+  second late, the translate pad moved the sample along motor axes rather than image axes
+  at any φ≠0, out-of-range entries were accepted and silently ignored, and a 15° jog
+  arrived as a single-frame jump. All five are fixed and measured — see DECISIONS.md
+  §2026-08-06. **The renderer was not touched**; every one of these lived in delivery or
+  in the control geometry, and none was visible from server-side timings or the test suite.
+  Suite is now 86 tests.
+- **Branch `performance-correctness-optimizations`, 30 commits ahead of `master`, NOT
   pushed to GitHub.** James owns the push/merge decision. (`master` itself is 22 commits
   ahead of the stale GitHub default `main`, which is a divergent "Initial commit" — always
   work from `master`/this branch, never `main`.)
@@ -57,9 +66,12 @@ the GPU path **correct** (it was producing a "hairy" artifact on the loop fiber)
   droplets render opaque for a non-physical reason. See "Scene fidelity" below — this is
   now the highest-value open work, ahead of any further performance tuning.
 - **Correctness: DONE + committed.** The float32 "hairy/spikey fiber" GPU artifact is
-  fixed — the CUDA intersection quadratic now runs in float64, and the GPU render is
-  **byte-identical to the float64 CPU reference**. See DECISIONS.md §"float64 GPU
-  intersection" for the root cause.
+  fixed — the CUDA intersection quadratic now runs in float64, and the GPU **geometric
+  trace is byte-identical to the float64 CPU reference**. With the objective PSF enabled
+  (the default since 2026-08-06) the delivered image agrees to **±1 grey level**: the two
+  traces always differed by ~3e-8 on ~0.7% of values, and the PSF makes that visible at
+  the quantisation boundary. Both properties are tested separately. See DECISIONS.md
+  §"float64 GPU intersection" and §2026-08-06 "realism pass".
 - **Performance: 10 fps interactive goal MET — and now confirmed on the beamline's TITAN V
   (11.9 fps).** A GPU-resident torch engine (`loop_sim/renderer/engine_torch.py`) runs the
   whole trace on-device; on the 4080 the live server reaches ~25 fps during animated motion
@@ -69,7 +81,7 @@ the GPU path **correct** (it was producing a "hairy" artifact on the loop fiber)
   + a modern compiler for `torch.compile`); the beamline's default stack falls back to eager
   at 6.3 fps. Settled/offline/`/xray` frames stay bit-exact f64. See RUNBOOK "Deploy on the
   TITAN V" for the exact recipe and DECISIONS.md.
-- **Verify: `pytest tests/` = 62 tests, green** on the local torch env (needs a
+- **Verify: `pytest tests/` = 102 tests, green** on the local torch env (needs a
   torch+CUDA interpreter; GPU-gated parity tests skip on a CPU-only box).
 - **Paused with clear open items** (see below) — nothing half-broken; the engine works.
 
@@ -78,7 +90,7 @@ the GPU path **correct** (it was producing a "hairy" artifact on the loop fiber)
 For a stranger picking this up cold:
 
 1. Build the environment and confirm health: follow **`RUNBOOK.md`** → run `python -m pytest
-   tests/ -q` (should be 62 green). "python" is the torch-enabled interpreter — beamline:
+   tests/ -q` (should be 102 green). "python" is the torch-enabled interpreter — beamline:
    `/programs/pytorch/envs/pt/bin/python`; local dev: a conda env with `torch==2.6.0+cu124`.
    On a CPU-only box the GPU parity tests skip, so green there proves less.
 2. Understand the design before editing: **`../CLAUDE.md`** is the deep engineering doc
@@ -90,8 +102,9 @@ For a stranger picking this up cold:
 4. **Beamline (TITAN V) readiness is now measured** — the 10 fps result reproduces on the
    real card (11.9 fps) *when the software stack is right* (RUNBOOK "Deploy on the TITAN V").
    The remaining work is packaging that stack, not proving the hardware.
-5. **Know which half of the project you are in.** The *renderer* is well verified — 62 tests,
-   GPU byte-identical to the CPU reference, and a dimensional check against physics. The
+5. **Know which half of the project you are in.** The *renderer* is well verified — 102 tests,
+   GPU matching the CPU reference (byte-identical on the geometric trace, ±1 grey level
+   once the objective PSF is applied), and a dimensional check against physics. The
    *scenes* are not: they were never validated until 2026-07-28 and two known-wrong ones
    ship. Speed work is essentially done; fidelity work has barely started. If you are
    deciding where to spend a week, spend it on "Scene fidelity" under Hazards.
@@ -116,7 +129,14 @@ The highest-value open engineering items, in rough priority:
   confusing second GPU path.
 - **Click-to-recentre bug** (paused) — lands ~100–200 px off, non-deterministically;
   leading hypothesis is a frame/pose lag race. Full resume plan in `../CLAUDE.md` §"Click-to-
-  recentre" and DECISIONS.md.
+  recentre" and DECISIONS.md. **New evidence 2026-08-06:** on the template path, which
+  serves a frame in ~35 ms instead of the ~1 s an n_cond=7 live render took, a recentre
+  driven over HTTP landed **2.5 px** from target (centroid measured from the server's own
+  served frame, target 320,240 → 317.5,240.0; part of that residual is the centroid
+  including an asymmetric stem stub). That is consistent with the lag hypothesis but does
+  not confirm it: the test drove the endpoint directly, so the browser-side MJPEG
+  buffering the hypothesis blames was absent. Reproducing it by clicking in a real browser
+  on the template path is the check that would settle it.
 
 ## Hazards & gotchas
 
@@ -222,6 +242,35 @@ fallback **6.3 fps**. The three things that decide whether you get 11.9 or 6.3:
   *only* because compile works, which loops back to risk B.)
 
 **Other traps:**
+- **`mitegen_200um`'s library is still pre-PSF and JPEG.** Only hampton was rebuilt on
+  2026-08-06. `format` and `psf` are build parameters, so the server correctly sees
+  mitegen's library as stale — and, by design, will **silently rebuild it (~1.9 h)** on
+  first use. That is the intended behaviour (the team should never have to run a build),
+  but rebuild it deliberately before handing the project over so nobody pays the
+  wall-clock by surprise:
+  `python -m loop_sim.library --scene scene_files/mitegen_200um.yaml`.
+- **CPU/GPU parity is now "±1 grey level", not "byte-identical", once the PSF is on.**
+  The two float64 traces always differed by ~3e-8 on ~0.7% of values; that was invisible
+  while the image was near-binary and the PSF makes it visible at the quantisation
+  boundary. The exact `== 0` tests still run against the geometric trace (`psf=False`);
+  a second family bounds the PSF path at ≤1. Exceeding 1 means something structural
+  broke, not more rounding. See DECISIONS.md §2026-08-06 "realism pass".
+- **The XYZ stage rides on the spindle, so motor axes are not image axes.** Anything that
+  moves the sample *the way it looks on screen* must build the displacement in lab space
+  from the camera `fast`/`slow` axes and map it into motor space with `Rᵀ` —
+  `recenter_target` and `resolve_target`'s pan both do, and `pose_crop` documents the same
+  coupling for the crop. Adding `panx` to `tx` is correct only at φ=0; at φ=90 it is a
+  no-op or pure defocus. **Corollary:** a screen-space pan writes `tz`, so any "return to
+  origin" must zero `tx`, `ty` **and** `tz`. The recenter button zeroed only tx/ty and was
+  therefore a no-op at φ=90.
+- **The MJPEG stream needs both of its flush mechanisms.** Each part is closed by the
+  boundary written after its payload, *and* new content is followed by one prompt resend
+  one frame-interval later. They cover different consumers (see DECISIONS.md
+  §2026-08-06); dropping either leaves some clients holding the previous frame for a full
+  keepalive, which looks exactly like the stage stalling short of target and teleporting.
+  Guarded by `test_new_content_is_followed_promptly`. Note that a stream of n frames
+  therefore carries n+1 boundaries — count payloads, not boundaries, when writing a test
+  client.
 - **`--device cuda` only does something on scenes with `Tube` or `SurfaceMesh` objects.**
   Those are the only shapes with a CUDA path, so a scene of pure primitives/CSG
   (half-spaces, cylinders, spheres) renders CPU==GPU byte-identical and `--device cuda` is
@@ -299,8 +348,8 @@ those numbers don't have to be re-derived.
   **`library/`** (pre-computed rotation sweeps — `build_library` / `ensure_library`,
   `frame_for_angle`, `pose_crop`, `zoom_limits`; CLI `python -m loop_sim.library`).
 - `frame_library/<scene>/` — **tracked deliverable**, not build output: a rendered 360°
-  sweep plus a `manifest.json` per scene. The repo ignores `*.jpg` globally, so
-  `.gitignore` carries an explicit re-include for this tree. **Currently shipped:
+  sweep plus a `manifest.json` per scene. The repo ignores `*.png` and `*.jpg` globally, so
+  `.gitignore` carries explicit re-includes for both under this tree. **Currently shipped:
   `hampton_300um`** (360 frames, 1° steps, `--supersample 4`, 5578×2570 each, 84.9 MB) and
   **`mitegen_200um`** (360 frames, `--supersample 1`, 1840×2296, 26.8 MB) — both verified
   against live renders at 0.00 px. The supersample differs because the two cameras sample
@@ -318,13 +367,74 @@ those numbers don't have to be re-derived.
 - `bench_frame.py` — warm-frame benchmark (`--compiled`, `--fp32`). `acceptance_voltron.py`
   — self-contained TITAN V acceptance test (fps + VRAM + compile check → GO/NO-GO +
   `acceptance_report.json`; auto-picks a free GPU). `run_gpu.slurm` — voltron GPU job (no
-  `--time`!). `tests/` — 62 tests (the verify command).
+  `--time`!). `tests/` — 86 tests (the verify command).
 - `README.md` — user guide (repo root). `CLAUDE.md` — deep engineering notes (repo root:
   architecture, precision, concurrency, the recentre bug). `docs/` — the handoff docs
   (this file + `RUNBOOK.md`, `DECISIONS.md`, `DATA.md`). `investigation/` — **not
   shipped**; experiment scratch + perf harnesses.
 
 ## Work log (append-only)
+
+- **2026-08-06 (later)** — Realism pass: the renderer gained the optics it was missing,
+  and templates became lossless. **UNCOMMITTED, Jacob commits.** Driven by a simple
+  observation — the image looked blocky at zoom 4 — which turned out not to be aliasing:
+  at zoom 4 the 4× supersample budget is exactly exhausted (1.00 template px per output
+  px), and underneath, **97.7% of a frame was pure black or white** with edges resolving
+  in ~1 template pixel. NA 0.10 at 550 nm cannot form an edge sharper than ~1.8. The
+  renderer was about twice as sharp as the optics it claims to model.
+  **(1) Objective PSF** (`loop_sim/renderer/optics.py`): a Gaussian approximation to the
+  Airy PSF, σ = 0.21 λ/NA, applied by both renderers through one shared numpy
+  implementation — two implementations could not have stayed byte-equal. σ is derived
+  from `eff_px`, so it is fixed in object space and only becomes visible under
+  magnification (0.156 px on hampton's camera pixel, 0.624 px in its template). An edge
+  went from a pure 255→0 step to a 255→254→209→46→1 ramp.
+  **(2) A pre-existing float divergence surfaced and the parity claim was restated
+  honestly:** the numpy and torch traces were never bit-identical (~3e-8 on ~0.7% of
+  values); near-binary images hid it, and the PSF exposes it at the rounding boundary.
+  CPU/GPU now agree to **±1 grey level** with the PSF on, and the exact `== 0` tests were
+  *kept* — they now run against the geometric trace (`psf=False`), with a second family
+  bounding the PSF path.
+  **(3) Templates are lossless PNG.** A real AXIS camera compresses once; storing JPEG
+  templates and re-encoding on the wire compressed twice. PNG is also *smaller* here
+  (0.10 vs 0.25 MB/frame; ~35 vs 84.9 MB/library) because the frames are overwhelmingly
+  flat. `format` and `psf` became build parameters, `build_library` now deletes frames
+  whose extension no longer matches (they would otherwise strand in git), and
+  `.gitignore` gained the `*.png` re-include without which the new deliverable would
+  never have been committed at all.
+  Auto-rebuild on stale was deliberately left as-is — the team must never have to run a
+  build step. README gained a table of contents and a physics section (what is modelled,
+  and explicitly what is not); RUNBOOK gained an "Every lever" table of every CLI flag,
+  scene key and environment requirement, marking which ones force a library rebuild.
+  Suite **102 passed**, up from 86. **hampton_300um rebuilt; `mitegen_200um` deliberately
+  not** — it will silently auto-rebuild (~1.9 h) on first use until someone does it.
+  **Next:** scene geometry correctness.
+
+- **2026-08-06** — The camera was driven interactively for the first time, and the
+  delivery path turned out to be the weak part, not the renderer. **UNCOMMITTED — 8 files,
+  Jacob commits.** Nothing in `loop_sim/renderer/` was touched. Fixed, each with a
+  measurement (DECISIONS.md §2026-08-06): **(1)** `--fps-limit` default 5.0 → 30.0 — the
+  MJPEG clamp, not rendering, was setting the frame rate, and every inter-frame gap was
+  exactly 200 ms until the flag changed (5.12 → 28.1 fps, same server, same scene); the
+  24 fps in the 2026-07-31 entry was a render-cost figure the shipped default could not
+  deliver. **(2)** The ~1 s freeze at the end of every move: MJPEG parts are now closed as
+  they are written *and* new content is followed by one prompt resend — both are needed,
+  for different consumers, and this regressed twice before the test existed
+  (1002 ms → 35 ms worst gap for the strictest consumer). **(3)** The translate pad was
+  moving the sample along motor axes: it now resolves through `Rᵀ` like `recenter_target`
+  always did — it had been sending the same `ty = −0.888 mm` at every φ, a no-op at 90°
+  and backwards at 180°; verified by phase correlation, 0 wrong out of 14 across seven
+  angles. **(4)** Out-of-range zoom/x/y/z was accepted and silently ignored; the commanded
+  pose is now clamped to what the library can serve via a new `servable_pose()` (which
+  inverts `pose_crop`'s own box rather than reimplementing the clamp), so the readout and
+  the target boxes match the picture — re-requesting the reported pose reproduces the
+  image byte-for-byte. **(5)** A 15° jog was a one-frame jump; non-zero moves now have a
+  0.25 s duration floor so bursts chain into continuous rotation (18 stalls → 1 over a
+  20-click burst). Control page also gained a typable φ box beside relabelled
+  `[−15°] [φ] [+15°]` jog buttons, and the goniometer-target boxes now follow the stage
+  (a box you type in holds its value until GO). Suite **86 passed**, up from 80: new
+  guards for pan-under-rotation, the pan/recenter sign convention, the duration floor,
+  `servable_pose` exactness, and the stream flush. **Next:** scene geometry correctness —
+  the fidelity block under Hazards is still untouched and is the highest-value work.
 
 - **2026-08-03** — Second scene shipped and two defects fixed. **`mitegen_200um` library
   built**: 360 frames at 1840×2296, 26.8 MB, 103 min at 17.3 s/frame; verified against

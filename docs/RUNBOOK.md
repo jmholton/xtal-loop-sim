@@ -95,7 +95,9 @@ Useful flags: `--step` (degrees between frames, default 1.0 → 360 frames),
 `--supersample` (render this many times finer than the camera pixel; default 4, and the
 hard ceiling on zoom-in), `--pan-mm` (sample travel to allow beyond the scene and the
 centred field of view, default 0.6), `--axis` (spindle motor, default `rotx`), `--n-cond`,
-`--quality`, `--tile-size` (default `auto`), `--vram-fraction` (default 0.80), `--device`.
+`--format` (default `png`, lossless), `--psf` (default `on`), `--quality` (JPEG only),
+`--tile-size` (default `auto`), `--vram-fraction` (default 0.80), `--device`.
+Every lever, with defaults and what it costs, is tabulated under "Every lever" below.
 
 Re-running is a **no-op when the library is current** — the manifest stores a SHA-256 of
 the scene YAML *and* the build parameters, so an edited scene or a different
@@ -169,6 +171,88 @@ cat slurm_<jobid>.log
 gets jobs cancelled early. If you need an interactive session, voltron's login shell is
 tcsh and does not parse `&&`: write a bash script and run
 `ssh voltron "cd $PWD ; bash script.bash"`.
+
+## Every lever
+
+Everything a user can turn, with its default and what it does. **The right-hand column is
+the one to read before a long run:** a lever marked *rebuilds library* changes the stored
+template pixels, so touching it invalidates a frame library and the next server launch
+silently regenerates it (~45 min for hampton, ~1.9 h for mitegen).
+
+### `render.py` — offline single frame
+
+| Flag | Default | Effect |
+|---|---|---|
+| `<scene.yaml>` | — | scene to render (positional) |
+| `--tx` `--ty` | from the scene's `motor:` block | stage translation, mm. The CLI overrides the YAML; there is no `--tz` here |
+| `--rotx` `--roty` `--rotz` | 0 | rotation, degrees; `rotx` is the spindle for the bundled scenes |
+| `--n-cond` | 1 | condenser angles per pixel; 7 = soft NA edges, >7 buys little |
+| `--device` | `cpu` | `cuda` uses the legacy per-object GPU path (tube/mesh scenes only) |
+| `--output` | `<scene_basename>.jpg` | output JPEG path |
+
+`render.py` exposes no `--zoom`; set `zoom` in the scene's `motor:` block, or use the
+server, whose `/motor` endpoint takes all seven axes.
+
+### `python -m loop_sim.server.camera_server` — the live/pretend camera
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--scene` | `scene_files/hampton_300um.yaml` | scene to serve |
+| `--host` / `--port` | `0.0.0.0` / 8080 | bind address |
+| `--templates` | `on` | serve from the pre-computed sweep (no GPU at runtime). `off` raytraces every frame — the correctness reference |
+| `--fps-limit` | 30.0 | MJPEG wire-rate ceiling. This is a hard clamp: the old default of 5 capped the stream far below what templates can deliver |
+| `--n-cond` | 7 | condenser angles for settled frames |
+| `--jpeg-quality` | 85 | quality of frames the server **sends**. Not the stored template — see `--template-quality` |
+| `--engine` | `auto` | `torch` (GPU-resident) / `numpy` (reference) / auto-detect |
+| `--preview-mode` | `on` | approximate frames while moving, exact on settle |
+| `--compile-preview` | `on` | `torch.compile` the preview path (CUDA + preview only) |
+| `--settle-delay` | 0.5 s | quiet time after a `/motor` set before the exact frame renders |
+| `--supersample` | builder default (4) | *rebuilds library* |
+| `--template-format` | builder default (`png`) | *rebuilds library* |
+| `--template-quality` | builder default (90) | JPEG quality of **stored** templates; ignored for png. *rebuilds library* |
+
+### `python -m loop_sim.library` — build a frame library
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--scene` / `--all` | — | one scene, or every `scene_files/*.yaml` |
+| `--root` | `frame_library/` | output directory |
+| `--step` | 1.0° | degrees between frames → 360 frames. *rebuilds library* |
+| `--supersample` | 4 | render this many times finer than the camera pixel; the hard ceiling on zoom-in. *rebuilds library* |
+| `--pan-mm` | 0.6 mm | travel to allow beyond the scene and the centred field. *rebuilds library* |
+| `--n-cond` | 7 | condenser angles. *rebuilds library* |
+| `--axis` | `rotx` | spindle motor; anything else is refused rather than built wrong. *rebuilds library* |
+| `--format` | `png` | stored template format. png is lossless **and** smaller here. *rebuilds library* |
+| `--psf` | `on` | bake the objective diffraction PSF into the templates. *rebuilds library* |
+| `--quality` | 90 | JPEG quality; ignored when `--format png`. *rebuilds library* |
+| `--tile-size` | `auto` | rays per trace pass; auto sizes from free VRAM. Does not change pixels |
+| `--vram-fraction` | 0.80 | share of free VRAM the auto tile may use. Does not change pixels |
+| `--device` | auto | `cuda` when available |
+| `--force` | off | rebuild even if current |
+
+### Scene YAML — `camera:` block
+
+| Key | Example | Effect |
+|---|---|---|
+| `width` / `height` | 640 / 480 | camera resolution in pixels |
+| `pixel_size` | 0.0074 mm | mm per pixel at the sample. Sets the field of view and, with NA, how visible the PSF is |
+| `na_objective` | 0.10 | collection gate **and** the PSF width (σ = 0.21 λ/NA) |
+| `na_condenser` | 0.07 | illumination cone; also drives the template defocus blur |
+
+Per-material properties live on each object: `n` (refractive index), `mu_optical`
+(absorption), and colour. Object **order matters** — the list is priority-ordered and the
+first entry wins at any point in space, so a crystal must precede the droplet that
+contains it, or it renders as solvent.
+
+### Environment
+
+| Lever | Value | Effect |
+|---|---|---|
+| interpreter | `/programs/pytorch/envs/pt/bin/python` on the beamline | the only Python with numpy/scipy/PIL/pyyaml/torch. The system 3.6 has none of them |
+| CUDA present | auto-detected | picks the GPU-resident engine; absent falls back to numpy (minutes per frame) |
+| `CC` / `CXX` | devtoolset-7 on voltron | required for `torch.compile`; without it the server silently drops to eager and misses 10 fps |
+
+---
 
 ## Verify
 

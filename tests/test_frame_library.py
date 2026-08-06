@@ -369,12 +369,18 @@ def test_is_current_tracks_build_parameters(tiny_library):
     man, lib_dir = tiny_library
     base = build_params(axis="rotx", step_deg=90.0, supersample=1,
                         pan_mm=man["pan_mm"], n_cond=1,
-                        quality=man["jpeg_quality"])
+                        quality=man["jpeg_quality"], format=man["format"],
+                        psf=man["psf"])
     assert is_current(SCENE, lib_dir, **base)
 
+    # `format` and `psf` matter as much as the geometric settings: a JPEG
+    # library and a PNG one differ in compression loss, and a pre-PSF library
+    # is geometrically sharper than the renderer now produces. Either mismatch
+    # would serve pixels that no longer match a live render.
     for key, other in (("supersample", 4), ("step_deg", 1.0), ("n_cond", 7),
                        ("pan_mm", 99.0), ("axis", "roty"),
-                       ("jpeg_quality", 60)):
+                       ("jpeg_quality", 60), ("format", "jpeg"),
+                       ("psf", False)):
         assert not is_current(SCENE, lib_dir, **dict(base, **{key: other})), \
             f"a change to {key} should invalidate the library"
 
@@ -390,6 +396,8 @@ def test_build_params_matches_build_library_defaults():
     assert resolved["supersample"] == sig["supersample"].default
     assert resolved["pan_mm"] == sig["pan_mm"].default
     assert resolved["jpeg_quality"] == sig["quality"].default
+    assert resolved["format"] == sig["format"].default
+    assert resolved["psf"] == sig["psf"].default
 
 
 @cuda_only
@@ -428,6 +436,7 @@ def test_server_defaults_do_not_invalidate_a_default_library():
     ap.add_argument("--jpeg-quality", type=int, default=85)
     ap.add_argument("--supersample", type=int, default=None)
     ap.add_argument("--template-quality", type=int, default=None)
+    ap.add_argument("--template-format", choices=["png", "jpeg"], default=None)
     args = ap.parse_args([])
 
     # What is_current() will compare against the manifest, vs what a no-flag
@@ -455,3 +464,60 @@ def test_template_source_serves_without_a_gpu(tiny_library):
         jpeg = src.render(pose)
         img = Image.open(io.BytesIO(jpeg))
         assert img.size == (man["camera"]["width"], man["camera"]["height"])
+
+
+@cuda_only
+def test_servable_pose_is_exact_and_idempotent(tiny_library):
+    """servable_pose must report the pose the library actually shows.
+
+    Two properties matter.  A pose already in range must come back untouched
+    (otherwise the readout drifts on every poll), and a clamped pose must
+    itself be servable -- if it were not, the number shown would still not
+    match the picture, which is the whole point.
+    """
+    from loop_sim.library.frame_library import servable_pose, pose_crop
+
+    man, _lib_dir = tiny_library
+
+    for p in ({"tx": 0.0, "ty": 0.0, "tz": 0.0, "angle_deg": 0.0, "zoom": 1.0},
+              {"tx": 0.0, "ty": 0.0, "tz": 0.0, "angle_deg": 90.0, "zoom": 1.0}):
+        out, note = servable_pose(man, **p)
+        assert note is None, f"in-range pose reported as clamped: {note}"
+        for k in ("tx", "ty", "tz", "zoom"):
+            assert out[k] == pytest.approx(p[k], abs=1e-9), k
+
+    # Absurd requests on every clamped axis; each result must be servable,
+    # which pose_crop(clamp=False) asserts by not raising.
+    for p in ({"tx": 0.0, "ty": 0.0, "tz": 0.0, "angle_deg": 0.0, "zoom": 999.0},
+              {"tx": 0.0, "ty": 0.0, "tz": 0.0, "angle_deg": 0.0, "zoom": 1e-3},
+              {"tx": 50.0, "ty": 0.0, "tz": 0.0, "angle_deg": 0.0, "zoom": 1.0},
+              {"tx": 0.0, "ty": 9.0, "tz": 0.0, "angle_deg": 45.0, "zoom": 1.0}):
+        out, note = servable_pose(man, **p)
+        assert note is not None, f"out-of-range pose not reported: {p}"
+        pose_crop(man, tx=out["tx"], ty=out["ty"], tz=out["tz"],
+                  angle_deg=p["angle_deg"], zoom=out["zoom"], clamp=False)
+
+
+@cuda_only
+def test_rebuilding_in_another_format_removes_the_old_frames(tmp_path):
+    """A format change must not leave the previous frames on disk.
+
+    Frames are overwritten in place, so rot_0000.png does not replace
+    rot_0000.jpg. Orphans are the bad kind of leftover: still on disk, still
+    tracked by git (frame_library is a committed deliverable), referenced by no
+    manifest -- so the library silently doubles in size and ships two copies.
+    """
+    root = str(tmp_path)
+    build_library(SCENE, root=root, step_deg=90.0, supersample=1, n_cond=1,
+                  format="jpeg", progress=None)
+    lib_dir = library_dir(SCENE, root)
+    assert [f for f in os.listdir(lib_dir) if f.endswith(".jpg")]
+
+    man = build_library(SCENE, root=root, step_deg=90.0, supersample=1,
+                        n_cond=1, format="png", progress=None)
+    left = sorted(os.listdir(lib_dir))
+    assert not [f for f in left if f.endswith(".jpg")], \
+        f"stale JPEG frames survived the rebuild: {left}"
+    assert all(f["file"].endswith(".png") for f in man["frames"])
+    assert all(os.path.exists(os.path.join(lib_dir, f["file"]))
+               for f in man["frames"])

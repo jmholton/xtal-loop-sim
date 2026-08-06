@@ -30,19 +30,25 @@ def _u8(img):
     return (np.asarray(img) * 255).clip(0, 255).astype(int)
 
 
-def _render_pair(scene_path, dev, pose, res=None, n_cond=1):
+def _render_pair(scene_path, dev, pose, res=None, n_cond=1, psf=False):
     sc = load(scene_path, device="cpu")
     if res:
         sc.camera_cfg = dict(sc.camera_cfg, width=res[0], height=res[1])
-    npi, _ = np_render(sc, Goniometer(sc.geometry).set(**pose), n_cond=n_cond)
+    npi, _ = np_render(sc, Goniometer(sc.geometry).set(**pose), n_cond=n_cond,
+                       psf=psf)
     ts = TorchScene(sc, dev, torch.float64)
-    ti = render_torch(ts, Goniometer(sc.geometry).set(**pose), n_cond=n_cond).cpu().numpy()
+    ti = render_torch(ts, Goniometer(sc.geometry).set(**pose), n_cond=n_cond,
+                      psf=psf).cpu().numpy()
     return _u8(npi), _u8(ti)
 
 
 CPU = torch.device("cpu")
 cuda_only = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 
+
+# ---------------------------------------------------------------------------
+# The geometric trace: byte-identical, exactly, as it always was.
+# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("pose", [{}, {"rotx": 45}, {"roty": 30, "tx": 0.05}])
 def test_render_parity_cpu_f64_hampton(pose):
@@ -61,3 +67,43 @@ def test_render_parity_cpu_f64_mitegen_thinshell():
 def test_render_parity_cuda_fullres_hampton(pose):
     a, b = _render_pair(HAMPTON, torch.device("cuda"), pose)  # full scene resolution
     assert int(np.abs(a - b).max()) == 0
+
+
+# ---------------------------------------------------------------------------
+# With the PSF: agreement is +/-1 grey level, and that is not a regression.
+#
+# The two float64 traces were NEVER bit-identical -- measured, they differ by up
+# to ~3e-8 on ~0.7% of values, from summation order and library differences
+# between numpy and torch.  That was invisible while the image was essentially
+# binary (0.0 or 1.0 quantise the same either way).  The PSF redistributes those
+# values into intermediate greys, where a 3e-8 difference can land either side
+# of a rounding boundary.  So the bound below is a quantisation artefact of a
+# pre-existing float difference, not new divergence, which is why it is exactly
+# 1 and never more: measured max 1 at 96x72 and at full res, on CPU and CUDA.
+#
+# Keep BOTH families of test.  The exact one above still guards the trace; if
+# this one ever exceeds 1, something structural has broken.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("pose", [{}, {"rotx": 45}, {"roty": 30, "tx": 0.05}])
+def test_render_parity_with_psf_cpu_within_one_level(pose):
+    a, b = _render_pair(HAMPTON, CPU, pose, res=(96, 72), psf=True)
+    assert int(np.abs(a - b).max()) <= 1
+
+
+@cuda_only
+@pytest.mark.parametrize("pose", [{}, {"rotx": 37}, {"zoom": 2.0}])
+def test_render_parity_with_psf_cuda_fullres_within_one_level(pose):
+    a, b = _render_pair(HAMPTON, torch.device("cuda"), pose, psf=True)
+    assert int(np.abs(a - b).max()) <= 1
+
+
+def test_psf_actually_changes_the_image():
+    """Guard against the PSF silently becoming a no-op.
+
+    mitegen's 1.0 um camera pixel puts sigma at 1.155 px, so the softening is
+    unambiguous there even at camera resolution.
+    """
+    sharp, _ = _render_pair(MITEGEN, CPU, {}, res=(96, 72), psf=False)
+    soft, _ = _render_pair(MITEGEN, CPU, {}, res=(96, 72), psf=True)
+    assert int(np.abs(sharp - soft).max()) > 8, "PSF had no visible effect"

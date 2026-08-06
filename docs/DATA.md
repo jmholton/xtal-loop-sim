@@ -17,7 +17,7 @@ calibration input and performance-and-correctness baselines, below.
 | Pipeline part-files (`hoop.yaml`, `crystal.yaml`, `droplet.yaml`) | **authoritative** | in-repo, tracked | this repo | Regenerable in principle via `digitize_fiber.py` / `add_*.py` from a real loop photo, but `digitize_fiber.py` needs a human clicking waypoints — treat the committed ones as the record. |
 | Assembled scene (`scene.yaml`, `loop.yaml`) | regenerable | **not shipped** — gitignored | — | `generate_scene.py loop.yaml crystal.yaml droplet.yaml --template template.yaml --output scene.yaml` (see ../README.md). |
 | Rendered images (`*.png`, `*.jpg`) | regenerable | **not shipped** — gitignored | — | `render.py <scene>.yaml …`. Deterministic given scene + pose + code. |
-| **Frame libraries** (`frame_library/<scene>/*.jpg` + `manifest.json`) | **shipped, tracked** | in-repo, tracked (explicit `.gitignore` re-include, since `*.jpg` is ignored repo-wide) | this repo | `python -m loop_sim.library --all`. Regenerable but **deliberately committed** — a library is what the camera server replays, so it ships with the code rather than being rebuilt on each host. Each manifest stores a SHA-256 of its scene YAML *and* the build parameters; changing either rebuilds on first use. At the `--supersample 4` default the shipped hampton sweep is 360 frames of 5578×2570, **84.9 MB**, built in 43 min at 7.2 s/frame on an RTX 4080 SUPER. **Sizes are much larger than the 1× libraries** — see the gap below. |
+| **Frame libraries** (`frame_library/<scene>/*.png` + `manifest.json`) | **shipped, tracked** | in-repo, tracked (explicit `.gitignore` re-includes for both `*.png` and `*.jpg`, since both are ignored repo-wide) | this repo | `python -m loop_sim.library --all`. Regenerable but **deliberately committed** — a library is what the camera server replays, so it ships with the code rather than being rebuilt on each host. Each manifest stores a SHA-256 of its scene YAML *and* the build parameters (now including `format` and `psf`); changing either rebuilds on first use. **Stored losslessly as PNG since 2026-08-06** — a real AXIS camera applies exactly one JPEG compression, and storing JPEG templates then re-encoding on the wire applied two. PNG is also *smaller* for these near-binary frames: measured 0.10 MB vs 0.25 MB per hampton frame, **~35 MB vs 84.9 MB** per 360-frame sweep, at the cost of a dearer decode (55 vs 36 ms, which bites only on a spindle slew). Templates also carry the objective PSF baked in; `psf_sigma_px` in the manifest records how much. |
 | Benchmark baselines (`bench_results/`) | regenerable | **not shipped** — gitignored | — | `bench_frame.py` (`--compiled`, `--fp32`). See the gap below. |
 
 ## External dependencies & succession
@@ -49,8 +49,8 @@ external dependency is the runtime itself: a torch+CUDA interpreter, unpinned �
   computed *on the same machine*, so they are architecture-blind: a Volta box could pass
   every test while producing wrong images. A numpy-anchored golden image, committed and
   compared against, would close this. That also needs a `.gitignore` exception, because
-  `*.png` is ignored repo-wide — `frame_library/` now sets the precedent for how to write
-  one. See `docs/DECISIONS.md` §"TITAN V deployment".
+  `*.png` is ignored repo-wide — `frame_library/**/*.png` is now re-included and sets the
+  precedent for how to write one. See `docs/DECISIONS.md` §"TITAN V deployment".
   **A cheaper partial answer now exists:** a *dimensional* assertion needs no committed
   image at all. A feature of known physical size must span `size / pixel_size` pixels; the
   pin measures 703.0 µm against a ground truth of 700.0 µm. That check is

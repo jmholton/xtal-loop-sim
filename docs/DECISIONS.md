@@ -8,6 +8,159 @@
 
 ## Decisions
 
+### 2026-08-06 — realism pass: the objective PSF, and lossless templates
+
+The bar moved from *fast and self-consistent* to *realistic*. The original model is a
+useful starting point, not ground truth, and may be deviated from where physics says so.
+
+**The renderer was sharper than the optics it models.** Ray tracing is geometric optics
+with a binary NA collection gate — a ray is either collected or it is not — so it produces
+edges no objective can form. Measured on hampton: **97.7% of a frame was pure 0 or pure
+255**, and a silhouette edge resolved in ~1 template pixel where NA 0.10 at 550 nm has a
+Rayleigh resolution of 3.35 µm and cannot beat ~1.8 template pixels. At zoom 4 the 4×
+supersample budget is exactly exhausted (1.00 template px per output px), so nothing hides
+it and the picture reads as blocky.
+
+**Decision:** convolve the traced image with a Gaussian approximating the objective's Airy
+PSF, `σ = 0.21 λ / NA`, λ = 550 nm hard-coded (`loop_sim/renderer/optics.py`). σ is
+computed from `eff_px = pixel_size / zoom`, so it is a fixed size in *object* space and
+scales correctly with both zoom and supersampling:
+
+| scene | camera px | σ at camera res | template px | σ stored |
+|---|---|---|---|---|
+| hampton_300um | 7.40 µm | 0.156 px | 1.85 µm | 0.624 px |
+| mitegen_200um | 1.00 µm | 1.155 px | 1.00 µm | 1.155 px |
+
+Which is also why the softening only appears when you magnify — exactly where the
+geometric sharpness became visible. The X-ray path is untouched: no objective, no PSF.
+
+**One implementation, called by both renderers.** `microscope.render` and `render_torch`
+are asserted equal after quantisation; two blur implementations (scipy here, a torch conv
+there) would differ in kernel truncation, normalisation, border handling and summation
+order. So the PSF is numpy-only and the torch engine round-trips through it. The caller
+transfers the result to the host immediately anyway, so the extra sync is cheap. This also
+preserves the documented property that the CPU reference needs no PyTorch.
+
+**A pre-existing float divergence surfaced, and the parity claim needed restating.** The
+two float64 traces were **never bit-identical**: measured, they differ by up to **3e-8 on
+~0.7% of values** (numpy vs torch summation order and library differences). That was
+invisible while the image was essentially binary — 0.0 and 1.0 quantise the same either
+way. The PSF redistributes those values into intermediate greys, where a 3e-8 difference
+can land either side of a rounding boundary. Result: with the PSF on, CPU and GPU agree to
+**±1 grey level**, never more, measured at 96×72 and full res on both CPU and CUDA.
+
+The tests keep both properties rather than trading one away: the exact `== 0` assertions
+still run with `psf=False` and still guard the trace, and a second family asserts `<= 1`
+with the PSF on. If that bound is ever exceeded, something structural has broken. The
+claim to make in future is therefore precise: *the geometric trace is byte-identical; the
+delivered image agrees to one grey level.*
+
+**Templates are stored losslessly (PNG).** A real AXIS camera applies exactly **one** JPEG
+compression; storing JPEG templates and re-encoding on the wire applied **two**, a
+signature no real camera has. The wire stays JPEG — MJPEG requires it — so this collapses
+the pipeline to a single generation of loss. PNG is also *smaller* here, which makes it a
+free choice rather than a trade: **0.10 MB vs 0.25 MB per hampton frame, ~35 MB vs 89 MB
+per library**, because the frame is overwhelmingly flat black and white, which deflate
+handles far better than JPEG — which spends its bits ringing around exactly the hard edges
+that matter. Decode is dearer (55 vs 36 ms), costing only on a spindle slew where every
+frame is a fresh decode (~46 → ~62 ms/frame); panning at a fixed angle is cached and
+unchanged. `compress_level` is deliberately **not** a build key: it changes file size,
+never a pixel.
+
+`format` and `psf` are build parameters, so a pre-PSF or JPEG library correctly reads as
+stale. `build_library` now also deletes frames whose extension no longer matches — frames
+are overwritten in place, so a format change would otherwise strand the old ones on disk
+and in git, silently doubling the shipped library.
+
+**Auto-rebuild was deliberately left alone.** It was tempting to make a stale library
+refuse to rebuild and demand an explicit command, since the rebuild is 45 min. Rejected:
+the delivery goal is that the team never runs a build step. The project ships with
+pre-rendered scenes, and if a library is ever stale the server should quietly regenerate
+it rather than block someone who just wants a camera. Note the consequence — a library
+left un-rebuilt costs the *next* person the wall-clock, so rebuild deliberately before
+handing over.
+
+**Caveat to carry forward.** `na_condenser / na_objective = 0.70` < 1, so this is
+partially coherent imaging. Intensity is only a straight convolution with the PSF in the
+fully incoherent limit; at 0.70 real edges overshoot and ring in a way a Gaussian will not
+reproduce. This is a large step toward realism, not the end of it. Do not read the
+softened edges as exact — measuring an edge position or a droplet boundary off a rendered
+frame inherits this approximation.
+
+### 2026-08-06 — the interactive path: what the operator sees must be what the server means
+
+Serving from templates made frames cheap (13–46 ms), but the *interactive* path had never
+been driven by a person. Doing so surfaced five defects, all of the same character as the
+2026-07-31 crop of bugs — the picture looks entirely plausible while being wrong, or the
+numbers on screen disagree with the picture. Each is recorded with its measurement.
+
+- **`--fps-limit` default 5.0 → 30.0.** The MJPEG handler clamps the wire rate to
+  `1/fps_limit`. 5 fps was a sensible ceiling when every frame was a ~1 s live raytrace;
+  once templates cut a frame to ~35 ms it became the binding constraint, and nobody
+  re-tuned it. Measured on the same server, same scene, changing only the flag: at
+  `--fps-limit 5` every inter-frame gap was 200 ms (min 200, max 204) for **5.12 fps**; at
+  30 the median gap is 34 ms for **28.1 fps**. The headline 24 fps in the template work
+  was a *render-cost* number the shipped default could not deliver — anyone following the
+  RUNBOOK and watching a browser would have concluded the template work did nothing.
+  A static pose still publishes nothing and rides the 1 s keepalive, so an idle stream is
+  ~1 fps by design; that is not the cap.
+
+- **MJPEG parts are closed as they are written, and new content is followed by one prompt
+  resend.** The obvious framing writes each part's boundary *before* its payload, so the
+  last frame of a motion stays unterminated until the next send — a full keepalive away.
+  Consumers differ in when they consider a part finished, and the cost falls entirely on
+  the stricter ones. Measured on one move, three client behaviours on the same stream:
+
+  | client finalises a part when… | worst gap | final frame visible |
+  |---|---|---|
+  | `Content-Length` is satisfied | 35 ms | +0.86 s |
+  | the closing boundary arrives | 1002 ms → 35 ms | +1.86 s → +0.86 s |
+  | the NEXT part's headers arrive | 1002 ms → 35 ms | +1.86 s → +0.90 s |
+
+  Closing each part immediately fixes the second row. It does **not** fix the third, and
+  cannot: `Content-Length` is unknown until the next frame exists, so the next part's
+  headers cannot be sent early. That row needs one duplicate frame sent promptly (one
+  frame interval) after any new content. Both mechanisms are required; either alone
+  leaves some consumer holding the previous frame for a second, which reads as the stage
+  stalling short of target and then teleporting. **This regressed twice during one
+  session** — once by removing the prompt resend after adding the reframing, on the
+  reasoning that it was now redundant. It is guarded by
+  `tests/test_server_singleflight.py::test_new_content_is_followed_promptly`.
+
+- **Screen-space pan is resolved through Rᵀ, like `recenter_target` always was.**
+  `resolve_target` added `panx`/`pany` straight into `tx`/`ty`, which are *motor* axes.
+  The XYZ stage rides on the spindle, so those coincide with image axes only at φ=0. The
+  same request produced an identical `ty = −0.888 mm` at every angle: at φ=90 that is pure
+  defocus (the image does not move at all) and at φ=180 it moves the image backwards. The
+  pan is now built as a lab-space displacement from the camera `fast`/`slow` axes and
+  mapped into motor space by `Rᵀ`, reducing algebraically to the old expression at zero
+  rotation. Verified against the live server by FFT phase correlation — commanded vs
+  actual image shift, 0 wrong out of 14 across φ = 0/30/45/90/135/180/270.
+  **Consequence worth knowing:** a screen pan now writes `tz`, so anything that "returns
+  to the origin" must zero `tz` too. The recenter button did not, and was a no-op at φ=90.
+
+- **The commanded pose is clamped to what the library can serve, not just the crop.**
+  `pose_crop(clamp=True)` slid the crop box and left the pose where the operator put it,
+  so the readout and the target boxes advertised a pose that was not on screen.
+  `servable_pose()` reports the nearest servable pose and the server now clamps the
+  command itself. It is not a second implementation of the clamp: it calls `pose_crop`
+  and inverts its box back into motor coordinates, so the two cannot disagree. Depth is
+  carried through unclamped — it only defocuses. Invariant, checked live: re-requesting
+  the pose the server reports reproduces the image byte-for-byte.
+
+- **Non-zero moves get a 0.25 s duration floor.** A 15° φ jog is 42 ms at 360 °/s — about
+  one frame — so it arrived as a jump, and a burst of clicks read as N separate jumps
+  rather than one rotation. With a floor, a single click glides and a click landing while
+  the previous is still running preempts and extends it. A/B on the same 20-click burst
+  at 120 ms intervals: **18 stalls >70 ms → 1**, median gap 68 ms → 39 ms, 39 → 67 distinct
+  frames. The floor is a floor, not a fixed cost: a 360° spin still takes 1.0 s and the
+  speed dial still scales it. Zero-distance moves stay 0 so a no-op does not animate.
+
+**The lesson that generalises:** every one of these was invisible from the server side.
+Render-path timings, unit tests and byte-comparisons all looked healthy while the thing a
+person actually experienced was broken. Measure the delivered stream and the on-screen
+numbers, not just the renderer.
+
 ### 2026-07-31 — templates serve every frame; VRAM stops limiting resolution
 - **Decision:** the camera server serves *every* frame from the pre-computed sweep
   (`--templates on`, default): pick the nearest spindle angle, crop, scale, blur, encode.

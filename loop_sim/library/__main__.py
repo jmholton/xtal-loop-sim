@@ -15,8 +15,8 @@ import glob
 import os
 import sys
 
-from .frame_library import (DEFAULT_N_COND, DEFAULT_PAN_MM, DEFAULT_QUALITY,
-                            DEFAULT_ROOT, DEFAULT_STEP_DEG,
+from .frame_library import (DEFAULT_FORMAT, DEFAULT_N_COND, DEFAULT_PAN_MM,
+                            DEFAULT_QUALITY, DEFAULT_ROOT, DEFAULT_STEP_DEG,
                             DEFAULT_SUPERSAMPLE, DEFAULT_VRAM_FRACTION,
                             build_library, build_params, is_current,
                             library_dir, zoom_limits)
@@ -42,7 +42,17 @@ def main(argv=None):
                    help="sample travel to allow beyond the scene and the "
                         f"centred field of view (default {DEFAULT_PAN_MM} mm)")
     p.add_argument("--n-cond", type=int, default=DEFAULT_N_COND)
-    p.add_argument("--quality", type=int, default=DEFAULT_QUALITY)
+    p.add_argument("--quality", type=int, default=DEFAULT_QUALITY,
+                   help="JPEG quality of the stored templates; ignored when "
+                        "--format is png (the default)")
+    p.add_argument("--format", choices=["png", "jpeg"], default=DEFAULT_FORMAT,
+                   help=f"stored template format (default {DEFAULT_FORMAT}). "
+                        "png is lossless and, for these near-binary frames, "
+                        "also smaller than jpeg")
+    p.add_argument("--psf", choices=["on", "off"], default="on",
+                   help="on (default): bake the objective's diffraction PSF "
+                        "into the templates. off reproduces the purely "
+                        "geometric pre-2026-08 output")
     p.add_argument("--tile-size", default="auto",
                    help="rays per trace pass, or 'auto' to size from free VRAM")
     p.add_argument("--vram-fraction", type=float, default=DEFAULT_VRAM_FRACTION,
@@ -61,7 +71,8 @@ def main(argv=None):
 
     tile = None if args.tile_size == "auto" else int(args.tile_size)
     opts = dict(axis=args.axis, step_deg=args.step, supersample=args.supersample,
-                pan_mm=args.pan_mm, n_cond=args.n_cond, quality=args.quality)
+                pan_mm=args.pan_mm, n_cond=args.n_cond, quality=args.quality,
+                format=args.format, psf=args.psf == "on")
 
     rc = 0
     for s in scenes:

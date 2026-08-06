@@ -81,9 +81,10 @@
     <div class="grp">
       <div class="row">
         <label>&phi;</label>
-        <button data-drotx="-1">&minus;</button>
-        <span class="val" id="phijog"></span>
-        <button data-drotx="1">+</button>
+        <button data-drotx="-1" id="phiminus"></button>
+        <input id="phijog" type="number" step="1"
+               title="current spindle angle -- type one and press Enter">&deg;
+        <button data-drotx="1" id="phiplus"></button>
       </div>
       <div class="row">
         <label>zoom</label>
@@ -103,8 +104,6 @@
         <button id="go" style="min-width:64px">GO</button>
         <button id="usecur" title="load the current position into the target boxes">&#8635;</button>
       </div>
-      <div class="hint">The stage interpolates from where it is to the target.
-        Enter in any box also fires GO.</div>
     </div>
 
     <h2>Speed</h2>
@@ -129,7 +128,21 @@ const cam = $("cam"), layer = $("clicklayer"), mark = $("clickmark");
 const PAN_FRAC = 0.25;   // quarter of the field of view per arrow click
 const ROT_STEP = 15;     // degrees per rotx click
 const ZOOM_FAC = 1.25;   // zoom multiply/divide per click
-$("phijog").textContent = ROT_STEP + "° steps";   // label from the constant
+// Buttons say what they DO; the box between them says where phi IS, and is
+// also how you type one.  Same commit convention as the zoom box: Enter or
+// blur sends an absolute animated move.
+$("phiminus").textContent = "−" + ROT_STEP + "°";
+$("phiplus").textContent  = "+" + ROT_STEP + "°";
+(function bindPhi() {
+  const el = $("phijog");
+  const commit = () => {
+    const v = parseFloat(el.value);
+    if (!Number.isFinite(v)) return;   // never slew to 0 on an unparseable box
+    move({ rotx: v });
+  };
+  el.addEventListener("keydown", e => { if (e.key === "Enter") { commit(); el.blur(); } });
+  el.addEventListener("change", commit);
+})();
 
 // speed dial: slider is log10(speed), so 0 → 1x, -1 → 0.1x (slow-mo), +0.7 → ~5x
 function speed() { return Math.pow(10, parseFloat($("speed").value)); }
@@ -141,7 +154,11 @@ $("speed").addEventListener("input", fmtSpeed);
 async function move(params) {
   params.speed = speed();
   const q = new URLSearchParams(params).toString();
-  try { applyState(await (await fetch("/move?" + q)).json()); } catch (e) {}
+  try {
+    const s = await (await fetch("/move?" + q)).json();
+    applyState(s);
+    return s;
+  } catch (e) { return null; }
 }
 
 // translate pad
@@ -170,8 +187,21 @@ document.querySelectorAll("[data-dzoom]").forEach(b => b.addEventListener("click
 // Goniometer target: type X/Y/Z/phi, press GO, the stage slews there.
 // One /move carries all four axes so they arrive together and the animator
 // interpolates the whole pose as a single motion.
+//
+// The boxes FOLLOW the stage, so however you got somewhere -- click-to-centre,
+// the translate pad, a jog -- they hold that pose and a relative edit starts
+// from where you actually are, not from the last thing typed.
+//
+// The exception is a box you are composing.  Auto-updating every box on every
+// poll would clobber a multi-axis target as soon as you tab out of the first
+// field, so an edited box is left alone until GO consumes it.
 const TGT = { tx: "tgt_tx", ty: "tgt_ty", tz: "tgt_tz", rotx: "tgt_rotx" };
-function go() {
+const tgtEdited = new Set();     // boxes typed in since the last GO
+for (const [key, id] of Object.entries(TGT)) {
+  // `input` fires on operator typing only -- setting .value from JS does not.
+  $(id).addEventListener("input", () => tgtEdited.add(key));
+}
+async function go() {
   const p = {};
   for (const [key, id] of Object.entries(TGT)) {
     const v = parseFloat($(id).value);
@@ -184,17 +214,48 @@ function go() {
     }
     p[key] = v;
   }
-  move(p);
+  const s = await move(p);
+  tgtEdited.clear();             // target consumed -- boxes follow the stage again
+  // The server clamps a target the frame library cannot show.  Leaving the
+  // typed number in the box while the stage sits at the cap is the mismatch
+  // this corrects: the box is rewritten to the value that matches the picture.
+  if (s) writeBackClamped(p, s);
 }
-function loadCurrent(s) {
+
+// Rewrite any target box the server had to clamp, and name the axes it moved.
+function writeBackClamped(asked, got) {
+  const capped = [];
+  for (const [key, id] of Object.entries(TGT)) {
+    if (!(key in asked)) continue;
+    const dp = key === "rotx" ? 1 : 3;
+    // Compare at the precision the box displays, so a 1e-16 inversion
+    // residual never counts as a clamp.
+    if ((+got[key]).toFixed(dp) !== (+asked[key]).toFixed(dp)) {
+      $(id).value = (+got[key]).toFixed(dp);
+      capped.push(key.toUpperCase().replace("ROTX", "PHI"));
+    }
+  }
+  if (capped.length) {
+    $("state").textContent =
+      `${capped.join(", ")} clamped to what the frame library can show\n` +
+      $("state").textContent;
+  }
+}
+function loadCurrent(s, force) {
   if (!s) return;
   for (const [key, id] of Object.entries(TGT)) {
-    if (document.activeElement !== $(id)) $(id).value = (+s[key]).toFixed(key === "rotx" ? 1 : 3);
+    if (!force && (document.activeElement === $(id) || tgtEdited.has(key))) continue;
+    $(id).value = (+s[key]).toFixed(key === "rotx" ? 1 : 3);
   }
 }
 $("go").addEventListener("click", go);
+// The load-current button is an explicit "discard what I typed, show me where
+// the stage is", so it overrides both guards.
 $("usecur").addEventListener("click", async () => {
-  try { loadCurrent(await (await fetch("/motor")).json()); } catch (e) {}
+  try {
+    tgtEdited.clear();
+    loadCurrent(await (await fetch("/motor")).json(), true);
+  } catch (e) {}
 });
 for (const id of Object.values(TGT)) {
   $(id).addEventListener("keydown", e => {
@@ -202,8 +263,12 @@ for (const id of Object.values(TGT)) {
   });
 }
 
-// recenter button → animate back to tx=ty=0 (origin)
-$("recenter").addEventListener("click", () => move({ tx: 0, ty: 0 }));
+// recenter button → animate back to the stage origin.
+// tz MUST be zeroed too: the translate pad is image-relative, so at any
+// phi != 0 a screen-space pan lands partly in tz (at phi = 90 it is entirely
+// tz).  Zeroing only tx/ty left that depth offset in place, so the button did
+// nothing at phi = 90 and undershot everywhere between.
+$("recenter").addEventListener("click", () => move({ tx: 0, ty: 0, tz: 0 }));
 
 // click in the image → move that pixel to the centre.
 // The click is taken as a FRACTION of the displayed image (the server scales it
@@ -240,6 +305,8 @@ showSizes();
 function applyState(s) {
   if (!s) return;
   if (document.activeElement !== $("zoom")) $("zoom").value = (+s.zoom).toFixed(2);
+  if (document.activeElement !== $("phijog")) $("phijog").value = (+s.rotx).toFixed(1);
+  loadCurrent(s);                // target boxes track the stage (see TGT above)
   $("state").textContent =
     `X ${(+s.tx).toFixed(3)}  Y ${(+s.ty).toFixed(3)}  Z ${(+s.tz).toFixed(3)}  (mm)\n` +
     `phi ${(+s.rotx).toFixed(1)}°   zoom ${(+s.zoom).toFixed(2)}×`;
@@ -248,11 +315,9 @@ async function poll() {
   try { applyState(await (await fetch("/motor")).json()); } catch (e) {}
 }
 fmtSpeed();
-// seed the target boxes from the live pose once, then leave them alone: they
-// are a target the operator is composing, not a readout.
+// Seed everything from the live pose; applyState keeps it there from then on.
 (async () => {
-  try { const s = await (await fetch("/motor")).json(); applyState(s); loadCurrent(s); }
-  catch (e) {}
+  try { applyState(await (await fetch("/motor")).json()); } catch (e) {}
 })();
 setInterval(poll, 600);
 </script>

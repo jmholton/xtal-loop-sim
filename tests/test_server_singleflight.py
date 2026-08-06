@@ -82,7 +82,10 @@ class _MjpegClient:
                 if not chunk:
                     break
                 self.buf += chunk
-                n = self.buf.count(b"--myboundary")
+                # Count PAYLOADS, not boundaries: each part is closed by the
+                # boundary that follows it, so a stream of n frames carries
+                # n+1 boundaries and counting those is off by one.
+                n = self.buf.count(b"Content-Type: image/jpeg")
                 now = time.monotonic()
                 for _ in range(n - seen):
                     self.frame_times.append(now)
@@ -241,4 +244,42 @@ def test_get_jpeg_without_start_renders_sync_once():
         srv._get_jpeg()                # dirty + still no bg thread: sync again
         assert srv._render_count == 2
     finally:
+        srv.server_close()
+
+
+def test_new_content_is_followed_promptly():
+    """A frame carrying new content must be followed by another part fast.
+
+    Each part is closed by the boundary written after its payload, but the
+    strictest MJPEG consumers only finalise a part once the NEXT part's
+    headers arrive -- and those cannot be sent early, since Content-Length is
+    unknown until the next frame exists.  So the last frame of a motion is
+    followed by one prompt duplicate.  Without it that frame is displayed a
+    whole keepalive (1 s) late by such a client: the pose appears to stall
+    just short of target and then teleport.  This has regressed twice.
+    """
+    srv = _make_server(fps_limit=20.0)     # 50 ms frame interval
+    client = None
+    try:
+        client = _MjpegClient(srv.server_address[1])
+        client.wait_first_frame()
+        time.sleep(0.4)                    # let the stream go quiet
+        n_before = client.n_frames()
+        t_dirty = time.monotonic()
+        srv._invalidate()                  # one pose change -> one new frame
+
+        # Two more parts must follow: the new content, then its prompt
+        # flush.  Both well inside a keepalive.
+        deadline = t_dirty + 0.6
+        while client.n_frames() < n_before + 2 and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert client.n_frames() >= n_before + 2, (
+            "new content was not followed by a prompt part; a strict client "
+            "would hold the previous frame until the 1 s keepalive")
+        elapsed = client.frame_times[n_before + 1] - t_dirty
+        assert elapsed < 0.5, f"flush took {elapsed:.3f}s -- keepalive-bound"
+    finally:
+        if client is not None:
+            client.close()
+        srv.shutdown()
         srv.server_close()

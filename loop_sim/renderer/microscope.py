@@ -31,6 +31,7 @@ from PIL import Image
 
 from ..motors.goniometer import apply_transform, apply_transform_dirs
 from ..scene.materials   import AIR
+from .optics             import apply_psf_for
 
 _INF = np.inf
 MAX_DEPTH = 12    # max number of refractions to follow per ray
@@ -240,7 +241,7 @@ def _trace_rays(scene, origins, dirs, na_obj, n_background=1.0,
 # Public render function
 # ---------------------------------------------------------------------------
 
-def render(scene, goniometer, n_cond=1, jpeg_quality=85):
+def render(scene, goniometer, n_cond=1, jpeg_quality=85, psf=True):
     """
     Render a bright-field microscope image of the scene at the current
     goniometer position.
@@ -251,11 +252,14 @@ def render(scene, goniometer, n_cond=1, jpeg_quality=85):
     goniometer : Goniometer object (current motor positions)
     n_cond     : int — number of condenser illumination rays per pixel
     jpeg_quality: int — JPEG compression quality
+    psf        : bool — convolve with the objective's diffraction PSF
+                 (renderer/optics.py).  Off reproduces the pre-2026-08 purely
+                 geometric output; the trace itself is identical either way.
 
     Returns
     -------
-    img_array : (H, W) float32 array, values in [0, 1]
-    jpeg_bytes : bytes — JPEG-encoded grayscale image
+    img_array : (H, W, 3) float32 array, values in [0, 1]
+    jpeg_bytes : bytes — JPEG-encoded RGB image
     """
     cam = scene.camera_cfg
     W = int(cam.get("width",  640))
@@ -315,7 +319,12 @@ def render(scene, goniometer, n_cond=1, jpeg_quality=85):
         accum += _trace_rays(scene, origins_s_k, illum_dirs_s, na_obj,
                              opt_axis_sample=opt_axis_s)
 
-    img = (accum / n_cond).reshape(H, W, 3).astype(np.float32)
+    # Objective PSF, applied in float64 BEFORE the float32 cast so this matches
+    # render_torch (which is float64 throughout) bit for bit -- the two are
+    # asserted byte-identical after quantisation.
+    img = apply_psf_for(
+        (accum / n_cond).reshape(H, W, 3), cam, eff_px, enabled=psf)
+    img = img.astype(np.float32)
 
     # --- Encode JPEG (RGB) ---
     img8 = (img * 255).clip(0, 255).astype(np.uint8)

@@ -7,6 +7,7 @@
 
 # ...except the pre-computed frame libraries, which ARE a deliverable
 # (rotation sweeps replayed by the camera server; see loop_sim/library/).
+!frame_library/**/*.png
 !frame_library/**/*.jpg
 !frame_library/**/manifest.json
 

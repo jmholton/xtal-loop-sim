@@ -7,12 +7,80 @@ and dose estimation.
 Maintainers: project status, open issues, and design rationale are in
 [`docs/HANDOFF.md`](docs/HANDOFF.md).
 
-**Physics model:** Snell's law refraction at every material interface + Beer-Lambert
-absorption + Köhler condenser illumination (soft NA edges via multi-ray sampling).
-X-ray beam volumes are computed separately by grid ray-casting.
-
 **Output:** JPEG images or an AXIS-compatible MJPEG HTTP stream that looks like a
 real beamline camera.
+
+---
+
+## Contents
+
+- [The physics](#the-physics)
+  - [What is modelled](#what-is-modelled)
+  - [What is not modelled](#what-is-not-modelled)
+- [Quick start (pre-built scene)](#quick-start-pre-built-scene)
+- [Full pipeline from a real loop image](#full-pipeline-from-a-real-loop-image)
+- [Live MJPEG server](#live-mjpeg-server)
+  - [Pre-computed templates (the default)](#pre-computed-templates-the-default)
+  - [Interactive control page](#interactive-control-page)
+  - [HTTP endpoints](#http-endpoints)
+- [Scene template](#scene-template)
+- [Python interpreter](#python-interpreter)
+
+Every knob — CLI flags, scene keys, environment — is tabulated in
+[`docs/RUNBOOK.md`](docs/RUNBOOK.md#every-lever).
+
+---
+
+## The physics
+
+### What is modelled
+
+**Optical (bright-field) path.** Rays are launched from the condenser and traced
+through the scene:
+
+- **Snell refraction at every material interface.** Each object carries a refractive
+  index; the ray bends at every crossing, and total internal reflection is handled.
+  The intersection quadratic runs in float64 — float32 catastrophically cancels here
+  and produces a "hairy fiber" artefact (`docs/DECISIONS.md`).
+- **Beer-Lambert absorption.** Intensity decays as `exp(-mu * path_length)` through
+  each material, with `mu_optical` per material.
+- **Köhler illumination**, sampled at `n_cond` condenser angles (1 = a hard NA step,
+  7 = 1 centre + a 6-point hex ring giving soft edges). More angles cost time
+  linearly and buy little past 7.
+- **Numerical-aperture collection gate.** A ray reaching the objective is collected
+  only if its angle falls inside `na_objective`; the condenser's `na_condenser` sets
+  the illumination cone.
+- **Diffraction blur (point-spread function).** The traced image is convolved with a
+  Gaussian approximating the objective's Airy PSF, `sigma = 0.21 * lambda / NA` at
+  `lambda = 550 nm` — 1.155 um for NA 0.10. Ray tracing alone is geometric optics and
+  produces edges sharper than any real objective can form; without this the picture
+  is visibly blocky as soon as you magnify. See `loop_sim/renderer/optics.py`.
+
+**X-ray path** (`/beam`, `/xray`) is a separate modality, not the same rays: the beam
+is grid-cast through the scene as straight lines, and per-material path lengths give
+illuminated volume, absorbed dose and a transmission radiograph via Beer-Lambert. The
+objective PSF does **not** apply to it — there is no objective.
+
+**Template replay.** When serving from a pre-computed sweep, depth translation is
+approximated as a Gaussian defocus whose width grows with distance from the focal
+plane. Everything else (rotation, translation, zoom) is exact: the camera is
+orthographic, so those are image-space transforms of the rendered master.
+
+### What is not modelled
+
+Worth knowing before treating a rendered image as ground truth:
+
+- **Partial coherence.** `na_condenser / na_objective = 0.70` (< 1) means the imaging
+  is partially coherent, so real edges overshoot and ring slightly. The Gaussian PSF
+  is the incoherent approximation and will not reproduce that.
+- **Interference and phase contrast** — amplitude only; no propagation of phase.
+- **Polarisation** — rays carry no polarisation state.
+- **Chromatic effects** — a single 550 nm wavelength, so no dispersion and no colour
+  fringing.
+- **Scattering** — absorption and refraction only; no diffuse or Mie scattering.
+
+Rationale and the measurements behind each choice are in
+[`docs/DECISIONS.md`](docs/DECISIONS.md).
 
 ---
 
@@ -124,7 +192,7 @@ Useful flags: `--templates {on,off}` (on = serve from a pre-computed frame
 library, building it first if absent; off = raytrace every frame live),
 `--supersample` (template sampling factor when a build is needed),
 `--n-cond` (condenser rays for settled frames, default 7),
-`--fps-limit` (MJPEG stream cap, default 5), `--engine {auto,torch,numpy}`,
+`--fps-limit` (MJPEG stream cap, default 30), `--engine {auto,torch,numpy}`,
 `--preview-mode {on,off}` (on = fast approximate frames while a move animates,
 refining to the exact frame on settle; off = every frame exact full quality),
 `--compile-preview {on,off}` (on = preview frames render through a

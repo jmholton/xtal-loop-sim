@@ -11,4 +11,5 @@ from .frame_library import (          # noqa: F401
     load_manifest,
     plan_window,
     pose_crop,
+    servable_pose,
 )

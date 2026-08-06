@@ -1060,9 +1060,10 @@ def plan_tile_size(tscene, o_t, d_t, na_obj, opt_axis_s, total_rays,
 # ---------------------------------------------------------------------------
 @torch.inference_mode()
 def render_torch(tscene, goniometer, n_cond=1, tile_size=_TILE_DEFAULT,
-                 compiled=False, vram_fraction=0.80):
+                 compiled=False, vram_fraction=0.80, psf=True):
     from .microscope import _condenser_offsets
     from ..motors.goniometer import apply_transform
+    from .optics import apply_psf, psf_sigma_px, MIN_SIGMA_PX
 
     scene = tscene.scene
     dev, dt = tscene.dev, tscene.dt
@@ -1128,7 +1129,21 @@ def render_torch(tscene, goniometer, n_cond=1, tile_size=_TILE_DEFAULT,
 
     # average over the condenser dimension (sequential sum / n, matching the
     # numpy reference in microscope.render)
-    return (accum / n_cond).reshape(H, W, 3)
+    out = (accum / n_cond).reshape(H, W, 3)
+
+    # Objective PSF.  Deliberately a numpy round-trip through the SAME helper
+    # microscope.render uses: the two renders are asserted byte-identical after
+    # quantisation, and a separate device-side convolution would diverge in
+    # kernel truncation, normalisation and summation order.  The caller
+    # transfers this result to the host immediately anyway (to encode a JPEG),
+    # so the extra sync costs little in the paths that matter.  Skipped entirely
+    # when the resolved sigma is sub-threshold, so coarse renders are untouched.
+    if psf:
+        sigma = psf_sigma_px(cam, eff_px)
+        if sigma >= MIN_SIGMA_PX:
+            blurred = apply_psf(out.detach().cpu().numpy(), sigma)
+            out = torch.as_tensor(blurred, dtype=dt, device=dev)
+    return out
 
 
 # ---------------------------------------------------------------------------

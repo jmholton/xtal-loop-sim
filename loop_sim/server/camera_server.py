@@ -66,7 +66,7 @@ from ..motors.goniometer import Goniometer
 from ..renderer.microscope import render as microscope_render
 from ..renderer.beam        import beam_volumes_json
 from ..library.frame_library import (DEFAULT_ROOT as _LIB_DEFAULT_ROOT,
-                                     frame_for_angle, pose_crop)
+                                     frame_for_angle, pose_crop, servable_pose)
 
 _MJPEG_BOUNDARY = b"--myboundary"
 _MOTOR_KEYS = ("tx", "ty", "tz", "rotx", "roty", "rotz", "zoom")
@@ -150,13 +150,20 @@ class TemplateSource:
 # Move resolution + animation geometry (pure functions — unit-tested directly)
 # ---------------------------------------------------------------------------
 
-def resolve_target(current, params, W, H, pixel_size):
+def resolve_target(current, params, W, H, pixel_size, geometry=None):
     """Resolve a /move request into a full absolute target motor dict.
 
     Supports three param styles, applied in order:
       * absolute    — tx, ty, tz, rotx, roty, rotz, zoom
       * relative    — d<key> (dtx, drotx, dzoom, ...) added to the running base
-      * screen pan  — panx/pany (fraction of the field of view) → tx/ty in mm
+      * screen pan  — panx/pany (fraction of the field of view) → mm, in IMAGE
+        axes: the pad moves the sample the way it looks on screen at any
+        spindle angle.  The XYZ stage rides on the spindle, so screen-vertical
+        is ty at phi=0 but tz at phi=90; the pan is therefore built in lab
+        space and mapped into motor space by Rᵀ, exactly as recenter_target
+        does.  `geometry` supplies the camera axes.  Without it the pan is
+        applied to tx/ty directly, which only matches the image at zero
+        rotation — the server always passes geometry.
 
     `current` is the running command target (not the in-flight pose), so rapid
     button clicks accumulate (four 0.25-screen pans = one full screen).
@@ -170,22 +177,42 @@ def resolve_target(current, params, W, H, pixel_size):
         if dk in params:
             t[k] = t[k] + float(params[dk])
     eff_px = pixel_size / max(t.get("zoom", 1.0), 1e-6)
-    if "panx" in params:
-        t["tx"] = t["tx"] + float(params["panx"]) * W * eff_px
-    if "pany" in params:
-        t["ty"] = t["ty"] + float(params["pany"]) * H * eff_px
+    if "panx" in params or "pany" in params:
+        dx = float(params.get("panx", 0.0)) * W * eff_px
+        dy = float(params.get("pany", 0.0)) * H * eff_px
+        if geometry is None:
+            t["tx"] = t["tx"] + dx
+            t["ty"] = t["ty"] + dy
+        else:
+            fast = np.array(geometry.get("camera_fast", [1, 0, 0]), dtype=float)
+            slow = np.array(geometry.get("camera_slow", [0, 1, 0]), dtype=float)
+            beam = np.array(geometry.get("beam_axis",   [0, 0, 1]), dtype=float)
+            p_lab  = dx * fast + dy * slow
+            R      = Goniometer(geometry).set(**t).transform()[:3, :3]
+            dtrans = R.T @ p_lab
+            t["tx"] = t["tx"] + float(dtrans @ fast)
+            t["ty"] = t["ty"] + float(dtrans @ slow)
+            t["tz"] = t["tz"] + float(dtrans @ beam)
     t["zoom"] = max(t.get("zoom", 1.0), 1e-3)
     return t
 
 
 def move_duration(start, target, speed, W, pixel_size,
-                  cross_time=2.0, rot_rate=360.0, zoom_rate=4.0):
+                  cross_time=2.0, rot_rate=360.0, zoom_rate=4.0,
+                  min_time=0.25):
     """Linear-interpolation duration (s) for a move.
 
     Translations cross the screen *width* in `cross_time` s (scene- and
     zoom-aware via eff_px), rotations spin at `rot_rate` deg/s (360 = 60 rpm),
     zoom changes at `zoom_rate` /s.  The move lasts as long as its slowest
     parameter needs, divided by the speed-dial multiplier (>1 faster).
+
+    `min_time` puts a floor under a *non-zero* move.  A 15 deg phi jog is only
+    42 ms at 360 deg/s -- about one frame -- so it arrives as a jump rather
+    than a move, and a burst of clicks reads as N separate jumps with a pause
+    between each.  With the floor a single click glides, and a click landing
+    while the previous is still running preempts and extends it, so a burst
+    becomes one continuous rotation.  A zero-distance move stays 0.
     """
     zoom0 = max(start.get("zoom", 1.0), 1e-6)
     eff_px = pixel_size / zoom0
@@ -196,7 +223,10 @@ def move_duration(start, target, speed, W, pixel_size,
     for k in ("rotx", "roty", "rotz"):
         durs.append(abs(target[k] - start[k]) / rot_rate)
     durs.append(abs(target.get("zoom", zoom0) - zoom0) / zoom_rate)
-    return max(durs) / max(speed, 1e-6)
+    longest = max(durs)
+    if longest <= 0.0:
+        return 0.0
+    return max(longest, min_time) / max(speed, 1e-6)
 
 
 def recenter_target(col, row, state, geometry, camera_cfg):
@@ -304,13 +334,33 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         keepalive = 1.0     # idle resend period (s)
+        # Each part is TERMINATED as it is written: payload, then the boundary
+        # that closes it.  The obvious framing (boundary first, then payload)
+        # leaves the last frame of a motion unterminated until the next send,
+        # so a client that renders on the boundary rather than on
+        # Content-Length holds the second-to-last frame until the keepalive
+        # fires -- the pose appears to stall just short of target and then
+        # teleport.  Closing every part immediately removes that class of
+        # stutter entirely instead of shortening it.
+        self.wfile.write(_MJPEG_BOUNDARY + b"\r\n")
+        # Closing the part is still not enough for the strictest consumers,
+        # which only finalise a part once the NEXT part's headers arrive -- and
+        # those cannot be sent early, because Content-Length is not known until
+        # the next frame exists.  So the last frame of a motion is followed by
+        # one prompt duplicate, which costs a single extra frame per motion and
+        # bounds every consumer's wait at the normal cadence instead of a
+        # keepalive.  Measured on one move: length-driven and boundary-driven
+        # clients both saw 35 ms, a next-headers-driven client saw 1002 ms.
+        flush_delay = srv._frame_interval
         last_gen  = 0
         last_send = 0.0
+        fresh     = False   # the last send carried new content
         try:
             while True:
                 # Wait for a frame newer than the last one sent (or keepalive).
                 with srv._frame_cv:
-                    deadline = time.monotonic() + keepalive
+                    deadline = time.monotonic() + (
+                        flush_delay if fresh else keepalive)
                     while srv._frame_gen == last_gen:
                         remaining = deadline - time.monotonic()
                         if remaining <= 0.0:
@@ -327,15 +377,16 @@ class _Handler(BaseHTTPRequestHandler):
                 if jpeg is None:
                     continue                  # nothing rendered yet
                 frame = (
-                    _MJPEG_BOUNDARY + b"\r\n"
-                    + b"Content-Type: image/jpeg\r\n"
+                    b"Content-Type: image/jpeg\r\n"
                     + f"Content-Length: {len(jpeg)}\r\n".encode()
                     + b"\r\n"
                     + jpeg
                     + b"\r\n"
+                    + _MJPEG_BOUNDARY + b"\r\n"   # closes THIS part at once
                 )
                 self.wfile.write(frame)
                 self.wfile.flush()
+                fresh     = gen != last_gen
                 last_gen  = gen
                 last_send = time.monotonic()
         except (BrokenPipeError, ConnectionResetError):
@@ -448,7 +499,7 @@ class CameraServer(ThreadingHTTPServer):
     """
 
     def __init__(self, scene, host="0.0.0.0", port=8080,
-                 n_cond=7, fps_limit=5.0, engine="auto", jpeg_quality=85,
+                 n_cond=7, fps_limit=30.0, engine="auto", jpeg_quality=85,
                  preview_mode=True, compile_preview=True, settle_delay=0.5,
                  scene_path=None, templates=True, library_kwargs=None):
         self._scene_path     = scene_path
@@ -711,6 +762,30 @@ class CameraServer(ThreadingHTTPServer):
     # Move commands + animator
     # ------------------------------------------------------------------
 
+    def _servable(self, pose):
+        """Clamp a commanded pose to what is actually on screen.
+
+        Only the template path has limits -- they are a property of the
+        rendered window, not of the goniometer -- so the live path is
+        untouched.  Clamping the COMMANDED pose (rather than clamping the crop
+        and leaving the pose where the operator put it) is what keeps the
+        readout, the target boxes and the picture telling the same story: a
+        pose the library cannot show is not silently accepted.
+        """
+        if self._templates is None:
+            return pose
+        eff, note = servable_pose(
+            self._templates.manifest,
+            tx=pose.get("tx", 0.0), ty=pose.get("ty", 0.0),
+            tz=pose.get("tz", 0.0),
+            angle_deg=pose.get(self._templates.manifest["axis"], 0.0),
+            zoom=pose.get("zoom", 1.0))
+        if note is None:
+            return pose
+        out = dict(pose)
+        out.update(eff)
+        return out
+
     def _set_pose_instant(self, updates):
         """Apply an absolute pose immediately, cancelling any running animation
         (the legacy /motor path)."""
@@ -719,6 +794,7 @@ class CameraServer(ThreadingHTTPServer):
             self._anim_gen   += 1
             with self._gonio_lock:
                 self._goniometer.set(**updates)
+                self._goniometer.set(**self._servable(self._goniometer.get()))
                 self._target_pose = self._goniometer.get()
         self._anim_active = False
         self._last_pose_change = time.monotonic()
@@ -731,7 +807,9 @@ class CameraServer(ThreadingHTTPServer):
         H = int(cam.get("height", 480))
         pixel_size = float(cam.get("pixel_size", 0.005))
         with self._anim_cv:
-            target = resolve_target(self._target_pose, params, W, H, pixel_size)
+            target = resolve_target(self._target_pose, params, W, H, pixel_size,
+                                    geometry=self._scene.geometry)
+            target = self._servable(target)
             self._commit_target_locked(target, speed)
         return target
 
@@ -746,6 +824,7 @@ class CameraServer(ThreadingHTTPServer):
         with self._anim_cv:
             target = recenter_target(col, row, state,
                                      self._scene.geometry, self._scene.camera_cfg)
+            target = self._servable(target)
             self._commit_target_locked(target, speed)
         return target
 
@@ -913,6 +992,8 @@ def library_kwargs_from_args(args):
         kwargs["supersample"] = args.supersample
     if getattr(args, "template_quality", None) is not None:
         kwargs["quality"] = args.template_quality
+    if getattr(args, "template_format", None) is not None:
+        kwargs["format"] = args.template_format
     return kwargs
 
 
@@ -931,7 +1012,7 @@ def main(argv=None):
     ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--n-cond", type=int, default=7,
                     help="condenser rays for settled frames (default: %(default)s)")
-    ap.add_argument("--fps-limit", type=float, default=5.0,
+    ap.add_argument("--fps-limit", type=float, default=30.0,
                     help="max MJPEG stream frame rate (default: %(default)s)")
     ap.add_argument("--engine", choices=["auto", "torch", "numpy"], default="auto")
     ap.add_argument("--jpeg-quality", type=int, default=85)
@@ -955,6 +1036,10 @@ def main(argv=None):
     ap.add_argument("--supersample", type=int, default=None,
                     help="template sampling factor when building a library "
                          "(default: the library builder's own default)")
+    ap.add_argument("--template-format", choices=["png", "jpeg"], default=None,
+                    help="stored template format when a library has to be "
+                         "built (default: the library builder's own default, "
+                         "png). Changing it invalidates an existing library")
     ap.add_argument("--template-quality", type=int, default=None,
                     help="JPEG quality of the STORED templates when a library "
                          "has to be built. Distinct from --jpeg-quality, which "

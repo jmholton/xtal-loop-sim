@@ -36,10 +36,15 @@ to moving the camera.
 Layout
 ------
     frame_library/<scene_stem>/manifest.json
-    frame_library/<scene_stem>/rot_0000.jpg ...
+    frame_library/<scene_stem>/rot_0000.png ...
+
+Frames are stored LOSSLESSLY.  A real AXIS camera applies exactly one JPEG
+compression; storing JPEG templates and re-encoding them on the wire applied
+two.  PNG is also smaller for these near-binary frames -- see DEFAULT_FORMAT.
 
 The manifest records a SHA-256 of the scene YAML and the build parameters;
-`ensure_library()` rebuilds when either changes.
+`ensure_library()` rebuilds when either changes.  `format` and `psf` are build
+parameters, so a library predating either correctly reads as stale.
 """
 import hashlib
 import json
@@ -58,6 +63,22 @@ DEFAULT_SUPERSAMPLE = 4
 DEFAULT_PAN_MM = 0.6
 DEFAULT_N_COND = 7
 DEFAULT_QUALITY = 90
+# Templates are stored losslessly.  A real AXIS camera applies exactly ONE JPEG
+# compression; storing JPEG templates and re-encoding them on the wire applied
+# two, which is a compression signature no real camera has.  PNG also happens to
+# be SMALLER here (measured 0.10 MB vs 0.25 MB per hampton frame, 35 MB vs 89 MB
+# per library): the frame is overwhelmingly flat black and white, which deflate
+# handles far better than JPEG, which spends its bits ringing around exactly the
+# hard edges that matter.  Decode is dearer (55 vs 36 ms), which costs only on a
+# spindle slew where every frame is a fresh decode.
+DEFAULT_FORMAT = "png"
+# PNG compression level.  NOT a build parameter: it changes file size, never a
+# pixel, so it must not invalidate a library.
+PNG_COMPRESS_LEVEL = 6
+# Convolve each template with the objective PSF as it is rendered (see
+# renderer/optics.py).  Without it the templates are geometrically sharper than
+# the optics can form, which shows as blocky edges once you magnify.
+DEFAULT_PSF = True
 DEFAULT_VRAM_FRACTION = 0.80
 # Sanity guard on the measured render window, not a hardware limit: 4x
 # supersample over a 10 x 5 mm window is ~14 Mpx, so anything past this means
@@ -67,7 +88,7 @@ MAX_TEMPLATE_MPX = 200.0
 # Build parameters that change the pixels. A library whose manifest disagrees
 # with the requested value of any of these is stale, not merely different.
 _BUILD_KEYS = ("axis", "step_deg", "n_cond", "supersample", "pan_mm",
-               "jpeg_quality")
+               "jpeg_quality", "format", "psf")
 
 
 def scene_fingerprint(scene_path):
@@ -110,16 +131,21 @@ def _write_manifest(lib_dir, manifest):
 
 def build_params(axis="rotx", step_deg=DEFAULT_STEP_DEG, n_cond=DEFAULT_N_COND,
                  supersample=DEFAULT_SUPERSAMPLE, pan_mm=DEFAULT_PAN_MM,
-                 quality=DEFAULT_QUALITY, **_ignored):
+                 quality=DEFAULT_QUALITY, format=DEFAULT_FORMAT,
+                 psf=DEFAULT_PSF, **_ignored):
     """The pixel-affecting settings, keyed as the manifest stores them.
 
     One place to resolve defaults, so `is_current` cannot drift from
     `build_library` and start reporting every default build as stale (or, worse,
     every changed build as current).
+
+    Every value here must resolve to something concrete -- `is_current` skips
+    any key whose requested value is None, so a None default would silently
+    disable staleness checking for that parameter.
     """
     return {"axis": axis, "step_deg": step_deg, "n_cond": n_cond,
             "supersample": supersample, "pan_mm": pan_mm,
-            "jpeg_quality": quality}
+            "jpeg_quality": quality, "format": format, "psf": bool(psf)}
 
 
 def is_current(scene_path, lib_dir, **params):
@@ -258,7 +284,8 @@ def plan_window(cam, content, pan_mm=DEFAULT_PAN_MM):
 def build_library(scene_path, root=DEFAULT_ROOT, axis="rotx",
                   step_deg=DEFAULT_STEP_DEG, supersample=DEFAULT_SUPERSAMPLE,
                   pan_mm=DEFAULT_PAN_MM, n_cond=DEFAULT_N_COND,
-                  quality=DEFAULT_QUALITY, tile_size=None,
+                  quality=DEFAULT_QUALITY, format=DEFAULT_FORMAT,
+                  psf=DEFAULT_PSF, tile_size=None,
                   vram_fraction=DEFAULT_VRAM_FRACTION,
                   device=None, progress=print):
     """Render a full 360 deg sweep about `axis` and write it to disk.
@@ -272,6 +299,7 @@ def build_library(scene_path, root=DEFAULT_ROOT, axis="rotx",
     from ..scene.scene import load
     from ..motors.goniometer import Goniometer
     from ..renderer.engine_torch import TorchScene, render_torch
+    from ..renderer.optics import psf_sigma_px
 
     if axis != "rotx":
         # build_library's window offset and pose_crop both hard-code the rotx
@@ -291,6 +319,18 @@ def build_library(scene_path, root=DEFAULT_ROOT, axis="rotx",
     if os.path.exists(man_path):
         os.remove(man_path)
 
+    fmt = str(format).lower()
+    if fmt not in ("png", "jpeg"):
+        raise ValueError(f"format={format!r} must be 'png' or 'jpeg'")
+    ext = "png" if fmt == "png" else "jpg"
+    # Frames are overwritten in place, so a build that CHANGES extension would
+    # leave the old ones behind: still on disk, still tracked by git, no longer
+    # referenced by any manifest. Clear every stale frame image first.
+    for old in sorted(os.listdir(lib_dir)):
+        if old.startswith("rot_") and old.lower().endswith((".png", ".jpg", ".jpeg")) \
+                and not old.endswith("." + ext):
+            os.remove(os.path.join(lib_dir, old))
+
     scene = load(scene_path, device="cpu")
     cam = scene.camera_cfg
     W, H = int(cam["width"]), int(cam["height"])
@@ -307,6 +347,9 @@ def build_library(scene_path, root=DEFAULT_ROOT, axis="rotx",
     content = content_window(scene, tscene, axis=axis, progress=progress)
     wx0, wx1, wy0, wy1 = plan_window(cam, content, pan_mm=pan_mm)
     tpl_px = px0 / supersample
+    # Recorded in the manifest for provenance: how much optical softening was
+    # baked in, in template pixels.
+    psf_sigma = psf_sigma_px(cam, tpl_px) if psf else 0.0
     # Keep the template the same parity as the camera so (RW - W)/2 is a whole
     # number: an odd template puts every crop boundary on a half pixel and
     # costs a systematic 1-px wobble against a live render.
@@ -353,7 +396,8 @@ def build_library(scene_path, root=DEFAULT_ROOT, axis="rotx",
                     "ty": -y_win * math.cos(th), "tz": y_win * math.sin(th)})
         t_frame = time.time()
         try:
-            img = render_torch(tscene, gono, n_cond=n_cond, tile_size=tile_size,
+            img = render_torch(tscene, gono, n_cond=n_cond, psf=psf,
+                               tile_size=tile_size,
                                vram_fraction=vram_fraction)
         except torch.OutOfMemoryError as exc:
             raise RuntimeError(
@@ -383,9 +427,14 @@ def build_library(scene_path, root=DEFAULT_ROOT, axis="rotx",
                 slow_run = 0
 
         arr = (img * 255).clamp(0, 255).to(torch.uint8).cpu().numpy()
-        name = f"rot_{i:04d}.jpg"
-        Image.fromarray(arr, mode="RGB").save(
-            os.path.join(lib_dir, name), format="JPEG", quality=quality)
+        name = f"rot_{i:04d}.{ext}"
+        if fmt == "png":
+            Image.fromarray(arr, mode="RGB").save(
+                os.path.join(lib_dir, name), format="PNG",
+                compress_level=PNG_COMPRESS_LEVEL)
+        else:
+            Image.fromarray(arr, mode="RGB").save(
+                os.path.join(lib_dir, name), format="JPEG", quality=quality)
         frames.append({"index": i, "angle_deg": ang, "file": name})
         if progress and (i % 20 == 0 or i == len(angles) - 1):
             el = time.time() - t_start
@@ -402,6 +451,11 @@ def build_library(scene_path, root=DEFAULT_ROOT, axis="rotx",
         "supersample": supersample,
         "pan_mm": pan_mm,
         "jpeg_quality": quality,
+        "format": fmt,
+        "psf": bool(psf),
+        # Provenance only -- not a build key. The sigma is derived from the
+        # camera NA and the rendered pixel size, both recorded below.
+        "psf_sigma_px": psf_sigma,
         "camera": {"width": W, "height": H, "pixel_size": px0,
                    "na_objective": na_obj, "na_condenser": na_cond},
         "rendered": {"width": RW, "height": RH, "pixel_size": tpl_px},
@@ -569,3 +623,54 @@ def pose_crop(manifest, tx=0.0, ty=0.0, tz=0.0, angle_deg=0.0, zoom=1.0,
     eff_px = float(cam["pixel_size"]) / zoom
     sigma_px = 0.5 * float(cam["na_condenser"]) * abs(w) / eff_px
     return (left, upper, right, lower), (W, H), sigma_px, note
+
+
+def servable_pose(manifest, tx=0.0, ty=0.0, tz=0.0, angle_deg=0.0, zoom=1.0):
+    """The nearest pose this library can actually show, plus what was clamped.
+
+    Returns `({tx, ty, tz, zoom}, note)`.  `note` is None when the requested
+    pose was already servable.
+
+    A clamped pose is indistinguishable from a correct one once it is on
+    screen, so a UI that keeps showing the number the operator typed while the
+    image sits at the cap is lying.  This reports the number that matches the
+    picture.
+
+    The clamp itself is not reimplemented here: `pose_crop` is called and its
+    box inverted back into motor coordinates, so the two can never disagree.
+    Depth (`w`, the component along the view axis) is not clamped -- it only
+    defocuses -- so it is carried through unchanged.
+    """
+    zmin, zmax = zoom_limits(manifest)
+    # pose_crop must see the ORIGINAL zoom or it cannot report that it clamped
+    # it; a non-positive zoom would raise there, so it becomes a tiny positive
+    # one that clamps to zmin and is reported like any other out-of-range zoom.
+    zoom_in = float(zoom) if float(zoom) > 0.0 else 1e-9
+    z = min(max(zoom_in, zmin), zmax)
+    box, (W, H), _sigma, note = pose_crop(
+        manifest, tx=tx, ty=ty, tz=tz, angle_deg=angle_deg, zoom=zoom_in,
+        clamp=True)
+
+    rnd = manifest["rendered"]
+    win = manifest["window_mm"]
+    S = float(manifest["supersample"])
+    tpl_px = float(rnd["pixel_size"])
+    RWp, RHp = int(rnd["width"]), int(rnd["height"])
+
+    scale = S / z
+    span_w, span_h = W * scale, H * scale
+    left, upper = box[0], box[1]
+    # Invert pose_crop's box construction (see its comment on the half-pixel
+    # edge origin): left = RWp/2 - u/tpl_px - span_w/2 - 0.5*scale + 0.5
+    u = (RWp / 2.0 - (left + span_w / 2.0 + 0.5 * scale - 0.5)) * tpl_px
+    v = (RHp / 2.0 - (upper + span_h / 2.0 + 0.5 * scale - 0.5)) * tpl_px
+    u -= win["centre_x"]
+    v -= win["centre_y"]
+
+    th = math.radians(angle_deg)
+    w = ty * math.sin(th) + tz * math.cos(th)     # depth: never clamped
+    return ({"tx": u,
+             "ty": v * math.cos(th) + w * math.sin(th),
+             "tz": -v * math.sin(th) + w * math.cos(th),
+             "zoom": z},
+            note)
