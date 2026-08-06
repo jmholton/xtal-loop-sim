@@ -66,11 +66,12 @@ DEFAULT_QUALITY = 90
 # Templates are stored losslessly.  A real AXIS camera applies exactly ONE JPEG
 # compression; storing JPEG templates and re-encoding them on the wire applied
 # two, which is a compression signature no real camera has.  PNG also happens to
-# be SMALLER here (measured 0.10 MB vs 0.25 MB per hampton frame, 35 MB vs 89 MB
-# per library): the frame is overwhelmingly flat black and white, which deflate
+# be SMALLER here (measured on the shipped hampton sweep: 28.7 MB against the
+# 84.9 MB it replaced, ~3x): the frame is overwhelmingly flat black and white, which deflate
 # handles far better than JPEG, which spends its bits ringing around exactly the
-# hard edges that matter.  Decode is dearer (55 vs 36 ms), which costs only on a
-# spindle slew where every frame is a fresh decode.
+# hard edges that matter.  Decode is dearer (~55 vs 36 ms), which costs only on a
+# spindle slew where every frame is a fresh decode: measured 14.7 fps through a
+# sustained spin, against ~21.6 fps on the JPEG library.
 DEFAULT_FORMAT = "png"
 # PNG compression level.  NOT a build parameter: it changes file size, never a
 # pixel, so it must not invalidate a library.

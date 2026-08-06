@@ -33,7 +33,6 @@ the GPU path **correct** (it was producing a "hairy" artifact on the loop fiber)
   arrived as a single-frame jump. All five are fixed and measured — see DECISIONS.md
   §2026-08-06. **The renderer was not touched**; every one of these lived in delivery or
   in the control geometry, and none was visible from server-side timings or the test suite.
-  Suite is now 86 tests.
 - **Branch `performance-correctness-optimizations`, 30 commits ahead of `master`, NOT
   pushed to GitHub.** James owns the push/merge decision. (`master` itself is 22 commits
   ahead of the stale GitHub default `main`, which is a divergent "Initial commit" — always
@@ -44,8 +43,11 @@ the GPU path **correct** (it was producing a "hairy" artifact on the loop fiber)
   renders one 360° sweep per scene into the tracked `frame_library/`, and
   `camera_server` checks for a current library at startup, builds one if it is missing or
   stale, then serves every frame by cropping/scaling/blurring a template. Measured
-  with CUDA switched off entirely: **42 ms/frame (24 fps) through a spindle slew**, where
-  every frame is a fresh template decode, and **13 ms (75 fps) panning at a fixed angle**.
+  with CUDA switched off entirely on the lossless-PNG library: **68 ms/frame (14.7 fps)
+  through a spindle slew**, where every frame is a fresh template decode, and panning at a
+  fixed angle reuses the decoded template and is far cheaper. (The JPEG library it replaced
+  slewed at ~46 ms / 21.6 fps — PNG trades some decode time for losslessness; both are well
+  above the 10 fps goal.)
   A GPU only accelerates *building*. Live rendering is still there behind
   `--templates off` and remains the correctness reference. See DECISIONS.md and RUNBOOK
   "Frame libraries".
@@ -350,7 +352,7 @@ those numbers don't have to be re-derived.
 - `frame_library/<scene>/` — **tracked deliverable**, not build output: a rendered 360°
   sweep plus a `manifest.json` per scene. The repo ignores `*.png` and `*.jpg` globally, so
   `.gitignore` carries explicit re-includes for both under this tree. **Currently shipped:
-  `hampton_300um`** (360 frames, 1° steps, `--supersample 4`, 5578×2570 each, 84.9 MB) and
+  `hampton_300um`** (360 frames, 1° steps, `--supersample 4`, 5578×2570 each, 28.7 MB PNG) and
   **`mitegen_200um`** (360 frames, `--supersample 1`, 1840×2296, 26.8 MB) — both verified
   against live renders at 0.00 px. The supersample differs because the two cameras sample
   the same NA 0.10 optics very differently; RUNBOOK "Frame libraries" has the rule. Note
@@ -396,7 +398,7 @@ those numbers don't have to be re-derived.
   bounding the PSF path.
   **(3) Templates are lossless PNG.** A real AXIS camera compresses once; storing JPEG
   templates and re-encoding on the wire compressed twice. PNG is also *smaller* here
-  (0.10 vs 0.25 MB/frame; ~35 vs 84.9 MB/library) because the frames are overwhelmingly
+  (28.7 vs 84.9 MB for the hampton sweep) because the frames are overwhelmingly
   flat. `format` and `psf` became build parameters, `build_library` now deletes frames
   whose extension no longer matches (they would otherwise strand in git), and
   `.gitignore` gained the `*.png` re-include without which the new deliverable would

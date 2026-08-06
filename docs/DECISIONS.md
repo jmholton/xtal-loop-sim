@@ -59,12 +59,13 @@ delivered image agrees to one grey level.*
 compression; storing JPEG templates and re-encoding on the wire applied **two**, a
 signature no real camera has. The wire stays JPEG — MJPEG requires it — so this collapses
 the pipeline to a single generation of loss. PNG is also *smaller* here, which makes it a
-free choice rather than a trade: **0.10 MB vs 0.25 MB per hampton frame, ~35 MB vs 89 MB
-per library**, because the frame is overwhelmingly flat black and white, which deflate
+free choice rather than a trade: measured on the rebuilt hampton sweep, **28.7 MB against
+the 84.9 MB it replaced — very nearly 3x smaller**, because the frame is overwhelmingly flat black and white, which deflate
 handles far better than JPEG — which spends its bits ringing around exactly the hard edges
 that matter. Decode is dearer (55 vs 36 ms), costing only on a spindle slew where every
-frame is a fresh decode (~46 → ~62 ms/frame); panning at a fixed angle is cached and
-unchanged. `compress_level` is deliberately **not** a build key: it changes file size,
+frame is a fresh decode: measured **68 ms/frame, 14.7 fps** through a sustained spin
+against ~46 ms / 21.6 fps before, still comfortably above the 10 fps goal. Panning at a
+fixed angle reuses the decoded template and is unaffected. `compress_level` is deliberately **not** a build key: it changes file size,
 never a pixel.
 
 `format` and `psf` are build parameters, so a pre-PSF or JPEG library correctly reads as
