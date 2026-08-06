@@ -150,10 +150,22 @@ streamed sample glides instead of teleporting.  Non-obvious bits:
   (the last *commanded* target, not the in-flight pose) so rapid clicks
   accumulate.  `/motor` stays **instant** (cancels any animation) for AXIS
   back-compat — the UI uses `/move`.
-- Speeds: translation crosses the field-of-view width in ~2 s (zoom-aware via
-  `eff_px`), rotation 360°/s (60 rpm), scaled by the `speed` dial.  The geometry
-  math (`resolve_target` / `move_duration` / `recenter_target`) is factored into
+- Speeds: translation crosses the field-of-view width in ~4 s (zoom-aware via
+  `eff_px`), rotation 180°/s (30 rpm), zoom 2/s, scaled by the `speed` dial.
+  Halved on 2026-08-06 — the old rates were about twice what the real
+  goniometer looks like, so what needed the dial at 0.5x is now 1.0x.
+- **Motion is a velocity profile, not a position tween** (`velocity_step`).
+  Speed ramps at a fixed acceleration (`DEFAULT_RAMP_S` = 0.15 s to full speed,
+  distance-independent), holds, then brakes so the stage arrives at rest;
+  moves too short to reach full speed come out triangular.  Speed is STATE, so
+  a preempted move hands its speed and heading to its replacement and a burst
+  of jog clicks stays one continuous motion — recomputing position from t=0
+  would brake to a stop at every click.  Inherited only when the heading
+  continues; a reversal starts from rest.  The geometry math (`resolve_target`
+  / `move_duration` / `velocity_step` / `recenter_target`) is factored into
   pure module-level functions (unit-tested in `tests/test_server_controls.py`).
+  Note `move_duration` returns the CONSTANT-SPEED time — the input to the
+  stepper, not the wall-clock duration.
 - **Click-to-recentre:** the browser sends the click as a **fraction** `fx,fy ∈
   [0,1]` of the displayed image (taken from `cam.getBoundingClientRect()`); the
   server scales by the true camera W/H.  Do **not** map clicks via

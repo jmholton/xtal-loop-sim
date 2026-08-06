@@ -244,8 +244,10 @@ MJPEG view with a centre crosshair, a jog pad, zoom buttons, a speed dial,
 **click-in-image-to-recentre**, and a **goniometer target** panel — type X, Y, Z
 (mm) and φ (degrees), press **GO**, and the stage slews there.  Moves are
 **animated** — the sample interpolates linearly to the target instead of
-teleporting (≈2 s to cross the screen, 60 rpm for the spindle, scaled by the
-speed dial), so the motion looks like a real stage slewing.
+teleporting (≈4 s to cross the screen, 30 rpm for the spindle, scaled by the
+speed dial).  Motion follows a trapezoidal velocity profile — it accelerates
+to full speed over ~0.15 s, holds, and decelerates into the target — so it
+moves like a real stage rather than snapping between poses.
 
 ### HTTP endpoints
 

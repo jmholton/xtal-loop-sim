@@ -1,8 +1,8 @@
 ---
 project: loop-sim (xtal-loop-sim) — bright-field microscope + X-ray simulator for protein crystals in cryo-loops
 status: active — camera served from pre-computed templates (no GPU at runtime) and usable interactively; scene geometry/fidelity is the open front
-last_verified: 2026-08-06        # `pytest tests/` = 102 passed in 105 s on this tree (branch performance-correctness-optimizations, RTX 4080 SUPER)
-verify: python -m pytest tests/ -q        # 102 tests; "python" = the torch-enabled project interpreter (see docs/RUNBOOK.md "Environment")
+last_verified: 2026-08-06        # `pytest tests/` = 110 passed in 100 s on this tree (branch performance-correctness-optimizations, RTX 4080 SUPER)
+verify: python -m pytest tests/ -q        # 110 tests; "python" = the torch-enabled project interpreter (see docs/RUNBOOK.md "Environment")
 ---
 
 # HANDOFF — loop-sim (xtal-loop-sim)
@@ -83,7 +83,7 @@ the GPU path **correct** (it was producing a "hairy" artifact on the loop fiber)
   + a modern compiler for `torch.compile`); the beamline's default stack falls back to eager
   at 6.3 fps. Settled/offline/`/xray` frames stay bit-exact f64. See RUNBOOK "Deploy on the
   TITAN V" for the exact recipe and DECISIONS.md.
-- **Verify: `pytest tests/` = 102 tests, green** on the local torch env (needs a
+- **Verify: `pytest tests/` = 110 tests, green** on the local torch env (needs a
   torch+CUDA interpreter; GPU-gated parity tests skip on a CPU-only box).
 - **Paused with clear open items** (see below) — nothing half-broken; the engine works.
 
@@ -92,7 +92,7 @@ the GPU path **correct** (it was producing a "hairy" artifact on the loop fiber)
 For a stranger picking this up cold:
 
 1. Build the environment and confirm health: follow **`RUNBOOK.md`** → run `python -m pytest
-   tests/ -q` (should be 102 green). "python" is the torch-enabled interpreter — beamline:
+   tests/ -q` (should be 110 green). "python" is the torch-enabled interpreter — beamline:
    `/programs/pytorch/envs/pt/bin/python`; local dev: a conda env with `torch==2.6.0+cu124`.
    On a CPU-only box the GPU parity tests skip, so green there proves less.
 2. Understand the design before editing: **`../CLAUDE.md`** is the deep engineering doc
@@ -104,7 +104,7 @@ For a stranger picking this up cold:
 4. **Beamline (TITAN V) readiness is now measured** — the 10 fps result reproduces on the
    real card (11.9 fps) *when the software stack is right* (RUNBOOK "Deploy on the TITAN V").
    The remaining work is packaging that stack, not proving the hardware.
-5. **Know which half of the project you are in.** The *renderer* is well verified — 102 tests,
+5. **Know which half of the project you are in.** The *renderer* is well verified — 110 tests,
    GPU matching the CPU reference (byte-identical on the geometric trace, ±1 grey level
    once the objective PSF is applied), and a dimensional check against physics. The
    *scenes* are not: they were never validated until 2026-07-28 and two known-wrong ones
@@ -376,6 +376,24 @@ those numbers don't have to be re-derived.
   shipped**; experiment scratch + perf harnesses.
 
 ## Work log (append-only)
+
+- **2026-08-06 (later still)** — Motion realism, and a race it uncovered. **COMMITTED**
+  (`ada9e41`, `471ce20`); suite **110**. Two commits: (1) a **pre-existing bug** —
+  `_run_animation` checked the animation generation and wrote the goniometer in separate
+  critical sections, and the settle block never checked at all, so a preempted move could
+  stamp its pose after a newer command had landed; both are now single critical sections,
+  and the payoff is that a cancelled animation provably touches nothing, which is what
+  will let scene switching skip quiescing the animator. (2) **Trapezoidal motion** —
+  `velocity_step` ramps to full speed over a fixed 0.15 s, holds, and brakes to arrive at
+  rest, with speed carried across a preempt so a burst of jog clicks is one continuous
+  motion rather than N accelerate-brake cycles. Measured: 149 → 170 → 143 °/s across a
+  180° move; pose never still longer than 38 ms through a 20-click burst. Stage rates
+  **halved** (4 s screen crossing, 180 °/s, zoom 2/s) — the old speeds were about twice
+  life-size, so what needed the dial at 0.5× is now 1.0×. The 0.25 s duration floor was
+  deleted as redundant once a real ramp exists. **Next: runtime scene switching** — a
+  plan exists (bundle/install split, `_scene_lock`, `/scenes` + `/scene` endpoints, tab
+  UI, preview libraries in an untracked root, no-GPU refusal); see DECISIONS.md
+  §2026-08-06 for the design constraints already established.
 
 - **2026-08-06 (later)** — Realism pass: the renderer gained the optics it was missing,
   and templates became lossless. **UNCOMMITTED, Jacob commits.** Driven by a simple

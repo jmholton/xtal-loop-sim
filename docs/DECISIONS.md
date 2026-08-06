@@ -8,6 +8,63 @@
 
 ## Decisions
 
+### 2026-08-06 — motion is a velocity profile, and the stage speeds were halved
+
+**A real stage accelerates.** `_run_animation` interpolated linearly: instant full
+speed, instant stop. Replaced with `velocity_step`, a trapezoidal profile — ramp up at a
+fixed acceleration, hold, brake so the stage arrives at rest. `DEFAULT_RAMP_S = 0.15 s`
+to full speed, **distance-independent** (fixed acceleration is what makes it a motor
+rather than an eased tween); moves too short to reach full speed come out triangular.
+Measured on a live 180° move, angular velocity by third: **149 → 170 → 143 °/s**.
+
+**Speed is state, not a function of elapsed time — and that is the whole design.** A
+preempted move hands its current speed *and heading* to its replacement. Deriving
+position from a clock instead would restart every profile at v = 0, so a burst of jog
+clicks would brake to a stop and re-accelerate at each one — the same per-click stutter
+the duration floor was added to hide, returning in a subtler form. Speed is inherited
+only when the new move continues the old heading; a reversal starts from rest, since it
+needs the braking anyway. The heading test is a dot product over mixed units (mm and
+degrees) — meaningless as a magnitude, correct as a *sign* for the same-axis case that
+matters. Measured across a 20-click burst: the pose never stands still longer than
+**38 ms**, and never once past 60 ms.
+
+**The 0.25 s `min_time` floor was removed.** It was a stand-in for the missing ramp; with
+a real profile a 15° jog is ~0.22 s on its own merits. Deleting it is a simplification,
+not a regression.
+
+**Rates halved** — `cross_time` 2→4 s, `rot_rate` 360→180 °/s, `zoom_rate` 4→2 /s. The
+old speeds were roughly twice what the real goniometer looks like, so what needed the
+speed dial at 0.5× is now 1.0×. Zoom was rescaled with the rest so the dial means one
+thing on every axis, even though zoom is the microscope rather than the goniometer.
+Note `move_duration` now returns the **constant-speed** time — the input to the stepper,
+not the wall-clock duration of the move.
+
+**Measurement note for whoever tunes this next.** The old jog harness counted MJPEG frame
+gaps over 80 ms, a threshold calibrated when the JPEG library rendered at ~35 ms/frame.
+The PNG library costs ~68 ms/frame through a slew, so that threshold now sits barely
+above the render cadence and the metric measures decode cost rather than motion. Sample
+the **pose** (`/motor`) instead — it isolates the animation from frame delivery and is
+the measurement that actually answers the question.
+
+### 2026-08-06 — a preempted animation could write its pose after losing the race
+
+`_run_animation` checked `_anim_gen` and wrote the goniometer in **two separate critical
+sections**, and the settle block had **no generation check at all**. A preempt landing
+between check and write stamped the loser's pose on top of the winner's. Reachable today
+by a `/motor` or a second `/move` at the wrong instant; it would become a guaranteed
+corruption under runtime scene switching, where the cancelled animation would write the
+old scene's pose onto the new scene's goniometer.
+
+Both are now single `_anim_cv` acquisitions (existing `_anim_cv > _gonio_lock` order
+preserved). The consequence is worth knowing because it simplifies everything built on
+top: **a cancelled animation provably touches nothing**, so a scene swap never has to
+join or quiesce the animator thread.
+
+Related, same class: the `camera_cfg` reads in `_animator_loop` and `_command_move` moved
+inside `_anim_cv`, and `_handle_recenter` now passes the click as a *fraction* for the
+server to scale under its own lock. A target can no longer be resolved against one
+scene's pixel size and another's axes.
+
 ### 2026-08-06 — realism pass: the objective PSF, and lossless templates
 
 The bar moved from *fast and self-consistent* to *realistic*. The original model is a
