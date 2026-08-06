@@ -198,21 +198,21 @@ def resolve_target(current, params, W, H, pixel_size, geometry=None):
 
 
 def move_duration(start, target, speed, W, pixel_size,
-                  cross_time=2.0, rot_rate=360.0, zoom_rate=4.0,
-                  min_time=0.25):
-    """Linear-interpolation duration (s) for a move.
+                  cross_time=4.0, rot_rate=180.0, zoom_rate=2.0):
+    """Cruise-speed duration (s) for a move: distance / maximum velocity.
 
     Translations cross the screen *width* in `cross_time` s (scene- and
-    zoom-aware via eff_px), rotations spin at `rot_rate` deg/s (360 = 60 rpm),
+    zoom-aware via eff_px), rotations spin at `rot_rate` deg/s (180 = 30 rpm),
     zoom changes at `zoom_rate` /s.  The move lasts as long as its slowest
     parameter needs, divided by the speed-dial multiplier (>1 faster).
 
-    `min_time` puts a floor under a *non-zero* move.  A 15 deg phi jog is only
-    42 ms at 360 deg/s -- about one frame -- so it arrives as a jump rather
-    than a move, and a burst of clicks reads as N separate jumps with a pause
-    between each.  With the floor a single click glides, and a click landing
-    while the previous is still running preempts and extends it, so a burst
-    becomes one continuous rotation.  A zero-distance move stays 0.
+    This is the time at CONSTANT full speed; the real move takes longer,
+    because `velocity_step` ramps in and out of it.  It is the input to that
+    stepper, not the wall-clock duration.
+
+    Rates were halved on 2026-08-06: the previous values (2 s screen crossing,
+    360 deg/s) were about twice as fast as the real goniometer looks, so what
+    used to need the speed dial at 0.5x is now 1.0x.
     """
     zoom0 = max(start.get("zoom", 1.0), 1e-6)
     eff_px = pixel_size / zoom0
@@ -223,10 +223,52 @@ def move_duration(start, target, speed, W, pixel_size,
     for k in ("rotx", "roty", "rotz"):
         durs.append(abs(target[k] - start[k]) / rot_rate)
     durs.append(abs(target.get("zoom", zoom0) - zoom0) / zoom_rate)
-    longest = max(durs)
-    if longest <= 0.0:
-        return 0.0
-    return max(longest, min_time) / max(speed, 1e-6)
+    return max(durs) / max(speed, 1e-6)
+
+
+# Time to reach full speed.  A real stage has a fixed acceleration, so this is
+# constant whatever the distance -- short moves simply never get there.  Kept
+# brief: enough to remove the instant start/stop, not enough to feel sluggish.
+DEFAULT_RAMP_S = 0.15
+# Control-loop tick.  Also the animation's step period.
+ANIM_DT = 0.02
+
+
+def velocity_step(pos, u, dt, linear_duration, ramp=DEFAULT_RAMP_S):
+    """Advance one control tick along a move, returning `(pos, u)`.
+
+    `pos` is the fraction of the move completed, 0..1.  `u` is the current
+    speed as a fraction of the maximum -- deliberately dimensionless, so it
+    survives being carried into a DIFFERENT move when one preempts another.
+
+    This is a velocity profile, not a position curve: speed ramps up at a
+    fixed acceleration, holds, then ramps down so the stage arrives stopped
+    (trapezoidal, or triangular when the move is too short to reach full
+    speed).  Braking starts when the distance left equals the distance needed
+    to stop, which is what makes the arrival land on the target rather than
+    past it.
+
+    Velocity is STATE rather than a function of elapsed time, and that is the
+    point: when a move is preempted -- the common case being a burst of jog
+    clicks -- the replacement starts from the speed the stage is actually
+    doing.  Recomputing a position curve from t=0 would silently decelerate to
+    a stop at every click, which is exactly the per-click stutter this whole
+    path exists to avoid.
+    """
+    D = linear_duration
+    if D <= 0.0 or pos >= 1.0:
+        return 1.0, 0.0
+    ramp = max(float(ramp), 1e-6)
+    # Distance still needed to brake to rest, in units of the move's length.
+    stop_dist = u * u * ramp / (2.0 * D)
+    if (1.0 - pos) <= stop_dist:
+        u = max(0.0, u - dt / ramp)
+    else:
+        u = min(1.0, u + dt / ramp)
+    pos = pos + u * dt / D
+    if pos >= 1.0:
+        return 1.0, 0.0
+    return pos, u
 
 
 def recenter_target(col, row, state, geometry, camera_cfg):
@@ -558,6 +600,10 @@ class CameraServer(ThreadingHTTPServer):
         # the target/generation/running-target-pose handshake.
         self._gonio_lock  = threading.Lock()
         self._anim_cv     = threading.Condition()
+        # Speed (fraction of maximum) and heading of the move in flight, handed
+        # to its replacement when one preempts it -- see _run_animation.
+        self._anim_u      = 0.0
+        self._anim_delta  = None
         self._anim_target = None             # pending target dict (consumed by animator)
         self._anim_speed  = 1.0
         self._anim_gen    = 0                # bumped on every new command (preempt signal)
@@ -872,11 +918,27 @@ class CameraServer(ThreadingHTTPServer):
             start = self._goniometer.get()
         duration = move_duration(start, target, speed, W, pixel_size)
 
+        delta = {k: target[k] - start[k] for k in start}
+        # Inherit the speed of the move this one replaced, so a burst of jog
+        # clicks is one continuous motion instead of N accelerate-brake cycles.
+        # Only when the new move continues the old direction: the sign test is
+        # a dot product over mixed units (mm and degrees), which is meaningless
+        # as a magnitude but correct as a sign for the same-axis case that
+        # matters.  A reversal starts from rest -- it needs the braking anyway.
+        u = 0.0
+        with self._anim_cv:
+            prev_u, prev_delta = self._anim_u, self._anim_delta
+            self._anim_u, self._anim_delta = 0.0, None
+        if prev_u > 0.0 and prev_delta:
+            dot = sum(prev_delta.get(k, 0.0) * delta.get(k, 0.0) for k in delta)
+            if dot > 0.0:
+                u = prev_u
+
         self._anim_active = True
-        t0 = time.monotonic()
+        pos = 0.0
         while True:
-            frac = 1.0 if duration <= 0 else min(1.0, (time.monotonic() - t0) / duration)
-            pose = {k: start[k] + (target[k] - start[k]) * frac for k in start}
+            frac = 1.0 if duration <= 0 else pos
+            pose = {k: start[k] + delta[k] * frac for k in start}
             # The generation check and the pose write are ONE critical section.
             # Split, a preempt landing between them stamps this animation's
             # stale pose on top of whatever the winner just committed -- a
@@ -884,13 +946,18 @@ class CameraServer(ThreadingHTTPServer):
             # installed a different goniometer.
             with self._anim_cv:
                 if self._anim_gen != gen:
-                    return                    # preempted → touch nothing
+                    # Preempted: hand the current speed and heading to whoever
+                    # won, so the replacement move picks up where this one is
+                    # rather than braking to a stop first.
+                    self._anim_u, self._anim_delta = u, delta
+                    return                    # preempted → touch nothing else
                 with self._gonio_lock:
                     self._goniometer.set(**pose)
             self._invalidate()
             if frac >= 1.0:
                 break
-            time.sleep(0.02)
+            time.sleep(ANIM_DT)
+            pos, u = velocity_step(pos, u, ANIM_DT, duration)
 
         # Settle: snap exactly to target and request one full-quality frame.
         # Gen-checked like every other write -- without it a preempt in the
@@ -899,6 +966,7 @@ class CameraServer(ThreadingHTTPServer):
             if self._anim_gen != gen:
                 return
             self._anim_active = False         # only the current owner clears it
+            self._anim_u, self._anim_delta = 0.0, None   # arrived: at rest
             with self._gonio_lock:
                 self._goniometer.set(**target)
         self._invalidate()

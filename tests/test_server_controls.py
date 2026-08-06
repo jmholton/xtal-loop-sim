@@ -26,6 +26,7 @@ from loop_sim.scene.materials import AIR
 from loop_sim.scene.scene import Scene
 from loop_sim.server.camera_server import (
     resolve_target, move_duration, recenter_target, CameraServer,
+    velocity_step, DEFAULT_RAMP_S, ANIM_DT,
 )
 
 GEOM = {
@@ -111,46 +112,39 @@ def test_resolve_pan_scales_with_zoom():
 # move_duration
 # ---------------------------------------------------------------------------
 
-def test_translation_crosses_screen_in_two_seconds():
+def test_translation_crosses_screen_in_four_seconds():
+    """Rates were halved on 2026-08-06: what needed the dial at 0.5x is 1.0x."""
     target = dict(REST, tx=FOV_W)        # pan exactly one screen width
+    assert move_duration(REST, target, 1.0, W, PX) == pytest.approx(4.0, rel=1e-9)
+
+
+def test_rotation_is_180_deg_per_second():
+    target = dict(REST, rotx=360.0)      # one full turn = 30 rpm
     assert move_duration(REST, target, 1.0, W, PX) == pytest.approx(2.0, rel=1e-9)
-
-
-def test_rotation_is_360_deg_per_second():
-    target = dict(REST, rotx=360.0)      # one full turn = 60 rpm
-    assert move_duration(REST, target, 1.0, W, PX) == pytest.approx(1.0, rel=1e-9)
 
 
 def test_speed_dial_scales_duration_inversely():
     target = dict(REST, tx=FOV_W)
-    assert move_duration(REST, target, 2.0, W, PX) == pytest.approx(1.0, rel=1e-9)   # faster
-    assert move_duration(REST, target, 0.5, W, PX) == pytest.approx(4.0, rel=1e-9)   # slow-mo
+    assert move_duration(REST, target, 2.0, W, PX) == pytest.approx(2.0, rel=1e-9)   # faster
+    assert move_duration(REST, target, 0.5, W, PX) == pytest.approx(8.0, rel=1e-9)   # slow-mo
+
+
+def test_zoom_rate_halved_too():
+    """Zoom is the microscope, not the goniometer, but it was rescaled with
+    everything else so the dial means one thing across all axes."""
+    assert move_duration(REST, dict(REST, zoom=3.0), 1.0, W, PX) == pytest.approx(1.0, rel=1e-9)
 
 
 def test_duration_is_slowest_parameter():
-    target = dict(REST, tx=FOV_W, rotx=360.0)   # 2.0 s vs 1.0 s → 2.0 s
-    assert move_duration(REST, target, 1.0, W, PX) == pytest.approx(2.0, rel=1e-9)
+    target = dict(REST, tx=FOV_W, rotx=360.0)   # 4.0 s vs 2.0 s → 4.0 s
+    assert move_duration(REST, target, 1.0, W, PX) == pytest.approx(4.0, rel=1e-9)
 
 
 # ---------------------------------------------------------------------------
 # recenter_target
 # ---------------------------------------------------------------------------
 
-def test_short_jog_gets_a_duration_floor():
-    """A 15 deg phi click is 42 ms at 360 deg/s -- about one frame, so it
-    lands as a jump and a burst of clicks reads as N separate jumps.  The
-    floor makes it a glide the next click can preempt and extend.
-    """
-    jog = dict(REST, rotx=15.0)
-    assert move_duration(REST, jog, 1.0, W, PX) == pytest.approx(0.25)
-    # the floor is a floor, not a fixed cost: long moves keep their own timing
-    assert move_duration(REST, dict(REST, rotx=360.0), 1.0, W, PX) == pytest.approx(1.0)
-    # and the speed dial still scales it
-    assert move_duration(REST, jog, 2.0, W, PX) == pytest.approx(0.125)
-
-
 def test_zero_distance_move_stays_zero():
-    """The floor must not make a no-op move animate for a quarter second."""
     assert move_duration(REST, dict(REST), 1.0, W, PX) == 0.0
 
 
@@ -271,3 +265,71 @@ def test_current_animation_still_reaches_its_target():
         assert srv._anim_active is False
     finally:
         srv.server_close()
+
+
+# ---------------------------------------------------------------------------
+# velocity_step: trapezoidal motion, and what happens across a preempt
+# ---------------------------------------------------------------------------
+
+def _run_profile(duration, ramp=DEFAULT_RAMP_S, dt=ANIM_DT, u0=0.0, max_steps=100000):
+    """Integrate a whole move, returning the (pos, u) trace."""
+    pos, u, trace = 0.0, u0, [(0.0, u0)]
+    for _ in range(max_steps):
+        if pos >= 1.0:
+            break
+        pos, u = velocity_step(pos, u, dt, duration, ramp)
+        trace.append((pos, u))
+    return trace
+
+
+def test_profile_is_trapezoidal():
+    """Speed must rise, hold, then fall -- not jump to full and stop dead."""
+    trace = _run_profile(2.0)
+    us = [u for _, u in trace]
+    peak = max(us)
+    assert peak == pytest.approx(1.0, abs=1e-9), "never reached full speed"
+    top = us.index(peak)
+    assert top > 1, "reached full speed instantly -- no acceleration"
+    assert us[-1] == 0.0, "did not come to rest"
+    # rising then falling, with a cruise in between for a move this long
+    assert all(us[i] <= us[i+1] + 1e-12 for i in range(top)), "speed dipped while ramping up"
+    assert us.count(peak) > 5, "no cruise phase on a 2 s move"
+
+
+def test_profile_arrives_exactly_and_stops():
+    for duration in (0.05, 0.2, 1.0, 5.0):
+        trace = _run_profile(duration)
+        assert trace[-1][0] == 1.0, f"{duration}s move did not arrive"
+        assert trace[-1][1] == 0.0, f"{duration}s move did not stop"
+
+
+def test_short_move_is_triangular():
+    """Too short to reach full speed: it accelerates then brakes, no cruise."""
+    trace = _run_profile(0.05)          # far below the 0.15 s ramp
+    us = [u for _, u in trace]
+    assert max(us) < 1.0, "a very short move should never reach full speed"
+    assert us[-1] == 0.0
+
+
+def test_ramp_time_is_distance_independent():
+    """Fixed acceleration: reaching full speed takes the same time whether the
+    move is short or long -- that is what makes it a real motor rather than an
+    eased tween."""
+    for duration in (1.0, 4.0):
+        trace = _run_profile(duration)
+        steps_to_full = next(i for i, (_, u) in enumerate(trace) if u >= 1.0)
+        assert steps_to_full * ANIM_DT == pytest.approx(DEFAULT_RAMP_S, abs=ANIM_DT)
+
+
+def test_carried_velocity_skips_the_ramp():
+    """A move that inherits speed from the one it preempted must not start
+    from rest -- that restart is exactly the per-click stutter this avoids."""
+    from_rest = _run_profile(1.0, u0=0.0)
+    at_speed  = _run_profile(1.0, u0=1.0)
+    assert at_speed[1][0] > from_rest[1][0], "inherited speed did not move sooner"
+    assert len(at_speed) < len(from_rest), "inherited speed did not finish sooner"
+    assert at_speed[-1][0] == 1.0 and at_speed[-1][1] == 0.0
+
+
+def test_zero_duration_is_instant():
+    assert velocity_step(0.0, 0.0, ANIM_DT, 0.0) == (1.0, 0.0)
