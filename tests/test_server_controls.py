@@ -219,3 +219,55 @@ def test_control_endpoints_smoke():
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+# ---------------------------------------------------------------------------
+# Animator preemption: a cancelled animation must not write anything
+# ---------------------------------------------------------------------------
+
+def test_preempted_animation_writes_nothing():
+    """A superseded animation must not stamp its pose after losing the race.
+
+    The generation check and the goniometer write used to sit in separate
+    critical sections, so a preempt landing between them wrote the loser's
+    pose on top of the winner's -- a newer /move, an instant /motor, or (once
+    scenes can be switched) a pose belonging to a different scene entirely.
+    Both the step loop and the settle block are now gen-checked.
+    """
+    scene = Scene([], GEOM, CAM, {}, background=AIR)
+    srv = CameraServer(scene, host="127.0.0.1", port=0, engine="numpy")
+    try:
+        # Park the stage somewhere unambiguous, then invalidate the generation
+        # the animation is about to run under -- exactly what a preempt does.
+        with srv._gonio_lock:
+            srv._goniometer.set(tx=0.5, ty=0.25, rotx=90.0)
+            before = srv._goniometer.get()
+        stale_gen = srv._anim_gen
+        srv._anim_gen += 1                       # someone else won
+
+        target = dict(before, tx=-9.0, ty=-9.0, rotx=-9.0)
+        srv._run_animation(target, 1.0, stale_gen, W, PX)
+
+        with srv._gonio_lock:
+            after = srv._goniometer.get()
+        assert after == before, (
+            f"a preempted animation moved the stage: {before} -> {after}")
+    finally:
+        srv.server_close()
+
+
+def test_current_animation_still_reaches_its_target():
+    """The guard must not break the normal case: an uncontested animation
+    still lands exactly on its target."""
+    scene = Scene([], GEOM, CAM, {}, background=AIR)
+    srv = CameraServer(scene, host="127.0.0.1", port=0, engine="numpy")
+    try:
+        target = dict(REST, tx=0.01, rotx=5.0)
+        srv._run_animation(target, 50.0, srv._anim_gen, W, PX)   # fast: no sleep-bound wait
+        with srv._gonio_lock:
+            after = srv._goniometer.get()
+        for k in ("tx", "rotx"):
+            assert after[k] == pytest.approx(target[k]), k
+        assert srv._anim_active is False
+    finally:
+        srv.server_close()

@@ -429,21 +429,22 @@ class _Handler(BaseHTTPRequestHandler):
         unreliable MJPEG <img>.naturalWidth).  px/py (native pixels) also work.
         """
         srv = self.server
-        cam = srv._scene.camera_cfg
-        W = int(cam.get("width", 640))
-        H = int(cam.get("height", 480))
         try:
             if "fx" in params:
-                col = float(params["fx"]) * W
-                row = float(params["fy"]) * H
+                # Pass the FRACTION down and let the server scale it under its
+                # own lock, so the resolution and the geometry come from the
+                # same scene.  Scaling here would read the camera outside any
+                # lock, one scene swap away from a mismatch.
+                frac = (float(params["fx"]), float(params["fy"]))
+                pixel = None
             else:
-                col = float(params["px"])
-                row = float(params["py"])
+                frac = None
+                pixel = (float(params["px"]), float(params["py"]))
             speed = float(params.get("speed", 1.0))
         except (KeyError, ValueError):
             self.send_error(400)
             return
-        target = srv._command_recenter(col, row, speed)
+        target = srv._command_recenter(speed, frac=frac, pixel=pixel)
         self._send_json(target)
 
     def _handle_index(self):
@@ -802,19 +803,26 @@ class CameraServer(ThreadingHTTPServer):
 
     def _command_move(self, params, speed):
         """Resolve a /move against the running target and animate toward it."""
-        cam = self._scene.camera_cfg
-        W = int(cam.get("width", 640))
-        H = int(cam.get("height", 480))
-        pixel_size = float(cam.get("pixel_size", 0.005))
         with self._anim_cv:
+            # Camera and geometry read inside the lock, so a target can never
+            # be resolved against one scene's pixel size and another's axes.
+            cam = self._scene.camera_cfg
+            W = int(cam.get("width", 640))
+            H = int(cam.get("height", 480))
+            pixel_size = float(cam.get("pixel_size", 0.005))
             target = resolve_target(self._target_pose, params, W, H, pixel_size,
                                     geometry=self._scene.geometry)
             target = self._servable(target)
             self._commit_target_locked(target, speed)
         return target
 
-    def _command_recenter(self, col, row, speed):
-        """Animate so the clicked pixel moves to the image centre.
+    def _command_recenter(self, speed, frac=None, pixel=None):
+        """Animate so the clicked point moves to the image centre.
+
+        Takes the click either as a FRACTION of the displayed image (`frac`,
+        the path the UI uses) or in native pixels (`pixel`).  A fraction is
+        scaled here rather than in the handler so the resolution, the geometry
+        and the camera config all come from one scene.
 
         Resolved against the LIVE displayed pose (what the user clicked on),
         not the running command target — so a click maps to the frame on screen.
@@ -822,8 +830,13 @@ class CameraServer(ThreadingHTTPServer):
         with self._gonio_lock:
             state = self._goniometer.get()
         with self._anim_cv:
-            target = recenter_target(col, row, state,
-                                     self._scene.geometry, self._scene.camera_cfg)
+            cam = self._scene.camera_cfg
+            if frac is not None:
+                col = frac[0] * int(cam.get("width", 640))
+                row = frac[1] * int(cam.get("height", 480))
+            else:
+                col, row = pixel
+            target = recenter_target(col, row, state, self._scene.geometry, cam)
             target = self._servable(target)
             self._commit_target_locked(target, speed)
         return target
@@ -845,36 +858,49 @@ class CameraServer(ThreadingHTTPServer):
                 target = self._anim_target
                 speed  = self._anim_speed
                 gen    = self._anim_gen
+                # Read the camera WITH the target, under the same lock: the
+                # geometry an animation is planned against must belong to the
+                # same scene as the target it is moving toward.
+                cam    = self._scene.camera_cfg
+                W          = int(cam.get("width", 640))
+                pixel_size = float(cam.get("pixel_size", 0.005))
                 self._anim_target = None
-            self._run_animation(target, speed, gen)
+            self._run_animation(target, speed, gen, W, pixel_size)
 
-    def _run_animation(self, target, speed, gen):
+    def _run_animation(self, target, speed, gen, W, pixel_size):
         with self._gonio_lock:
             start = self._goniometer.get()
-        cam = self._scene.camera_cfg
-        W = int(cam.get("width", 640))
-        pixel_size = float(cam.get("pixel_size", 0.005))
         duration = move_duration(start, target, speed, W, pixel_size)
 
         self._anim_active = True
         t0 = time.monotonic()
         while True:
-            with self._anim_cv:
-                if self._anim_gen != gen:
-                    return                    # preempted → outer loop takes over
             frac = 1.0 if duration <= 0 else min(1.0, (time.monotonic() - t0) / duration)
             pose = {k: start[k] + (target[k] - start[k]) * frac for k in start}
-            with self._gonio_lock:
-                self._goniometer.set(**pose)
+            # The generation check and the pose write are ONE critical section.
+            # Split, a preempt landing between them stamps this animation's
+            # stale pose on top of whatever the winner just committed -- a
+            # newer /move, an instant /motor, or a scene swap that has already
+            # installed a different goniometer.
+            with self._anim_cv:
+                if self._anim_gen != gen:
+                    return                    # preempted → touch nothing
+                with self._gonio_lock:
+                    self._goniometer.set(**pose)
             self._invalidate()
             if frac >= 1.0:
                 break
             time.sleep(0.02)
 
         # Settle: snap exactly to target and request one full-quality frame.
-        self._anim_active = False
-        with self._gonio_lock:
-            self._goniometer.set(**target)
+        # Gen-checked like every other write -- without it a preempt in the
+        # window between the loop breaking and this block would still land.
+        with self._anim_cv:
+            if self._anim_gen != gen:
+                return
+            self._anim_active = False         # only the current owner clears it
+            with self._gonio_lock:
+                self._goniometer.set(**target)
         self._invalidate()
 
     # ------------------------------------------------------------------
