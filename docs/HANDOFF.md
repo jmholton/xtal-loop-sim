@@ -500,6 +500,20 @@ those numbers don't have to be re-derived.
 
 ## Work log (append-only)
 
+- **2026-08-07 (pin joint)** — The stem now reaches the pin. `make_pin` places
+  the scored break face `bevel_offset_mm` (0.3) PAST `tip_pos`, but the stem
+  fibers were built to end AT `tip_pos` — a 0.3 mm air gap between nylon and
+  metal, visible as a floating stem on rotation. The fibers now run past the
+  tip and into the metal, so they emerge from the break face at every angle
+  (the overrun is swallowed by the opaque pin), and the validator gained a
+  mount-attachment check (stem endpoints must lie inside the pin CSG; the
+  truncated-stem corruption is tested to fail). The chisel tip itself is
+  deliberate — `pin_geometry.py` models a scored-and-snapped tube; `--pin-bevel
+  0` gives a flat cut if the real BL831 pins warrant it. `mitegen_mounts`
+  passes `make_pin` the same default score offset and was NOT touched — worth
+  checking its polymer mount against x = 0.3 the same way. Scene regenerated;
+  suite **169**.
+
 - **2026-08-07 (scene fidelity)** — The black-droplet bug was diagnosed by a
   four-member council session and fixed the same day; generated scenes are now
   validated mesh-back. Suite **167** (was 149). Root causes (both scene-side,

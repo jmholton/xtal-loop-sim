@@ -220,10 +220,17 @@ def build_hampton_scene(
     loop_pts = (R_rot @ loop_pts_canon.T).T
 
     # --- Stem (twisted pair): two helical fibers ---
+    # The stem is glued to the pin's scored break face.  make_pin puts that
+    # face bevel_offset past tip_pos (it crosses the stem axis exactly there),
+    # so the fibers must run PAST the tip and into the metal to emerge from
+    # the face at every angle — ending them at tip_pos leaves them floating
+    # 0.3 mm in front of it.  The overrun is swallowed by the opaque pin.
+    pin_bevel_offset = 0.3   # passed to make_pin below; keep the two in step
+    stem_run = stem_l + pin_bevel_offset + 2 * fd_mm
     R_helix = fd_mm / 2      # fibers touch: 2R = fd_mm (center-to-center = diameter)
     pitch   = pitch_r * fd_mm
-    stem1   = helix_path(R_helix, pitch, stem_l, n_points=40, phase_offset=0.0,    axis=sax)
-    stem2   = helix_path(R_helix, pitch, stem_l, n_points=40, phase_offset=np.pi,  axis=sax)
+    stem1   = helix_path(R_helix, pitch, stem_run, n_points=40, phase_offset=0.0,    axis=sax)
+    stem2   = helix_path(R_helix, pitch, stem_run, n_points=40, phase_offset=np.pi,  axis=sax)
 
     # Translate stem to attach at loop origin
     stem_offset = loop_pts[0]   # attachment point of loop (≈ origin after rotation)
@@ -232,7 +239,8 @@ def build_hampton_scene(
 
     # --- Pin: tip at stem far end; body extends in −pax direction from tip ---
     tip_pos = (stem_offset + sax * stem_l).tolist()
-    pin_shape = make_pin(pin_d, pin_l, pin_bv, tip_pos=tip_pos, axis=(-pax).tolist())
+    pin_shape = make_pin(pin_d, pin_l, pin_bv, bevel_offset_mm=pin_bevel_offset,
+                         tip_pos=tip_pos, axis=(-pax).tolist())
 
     # --- Solvent droplet: biconvex lens pinned in the loop aperture ---
     # Built in the canonical frame (loop in the z=0 plane) so the rim ray-cast

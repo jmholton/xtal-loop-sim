@@ -251,8 +251,46 @@ def validate_scene(scene, requested_volume_mm3=None, expect_droplet=True,
                     "this, but the renderer shows hard crystal/air "
                     "interfaces with no wetting film)")
 
+    # --- mount attachment: the stem must reach into the pin's metal ---
+    # The stem is glued to the pin's scored break face; a fiber that stops
+    # short of the bevel plane floats in mid-air (visible on rotation).
+    pin = by_name.get("pin")
+    if pin is not None:
+        for stem_name in ("stem_fiber_1", "stem_fiber_2"):
+            stem = by_name.get(stem_name)
+            if stem is None:
+                continue
+            end = np.asarray(stem[1]["shape"]["path"][-1], dtype=float)
+            if not _point_in_csg(end, pin[1]["shape"]):
+                failures.append(
+                    f"{stem_name} ends at {np.round(end, 4).tolist()} outside "
+                    "the pin — the mount is not attached to the metal")
+
     report["warnings"] = warnings
     if failures:
         raise SceneValidationError("scene validation failed: " +
                                    "; ".join(failures))
     return report
+
+
+def _point_in_csg(p, shape):
+    """Is point p inside a CSG intersection of cylinders and half-spaces?
+
+    Supports exactly the node types make_pin emits; unknown types count as
+    containing the point (so the check errs quiet, never spuriously loud).
+    """
+    t = shape.get("type")
+    if t == "intersection":
+        return all(_point_in_csg(p, c) for c in shape.get("children", []))
+    if t == "half_space":
+        return float(np.dot(shape["normal"], p)) <= shape["offset"] + 1e-9
+    if t == "cylinder":
+        c = np.asarray(shape["centre"], dtype=float)
+        ax = np.asarray(shape["axis"], dtype=float)
+        ax = ax / np.linalg.norm(ax)
+        d = p - c
+        axial = float(np.dot(d, ax))
+        radial = float(np.linalg.norm(d - axial * ax))
+        return (abs(axial) <= shape["height"] / 2.0 + 1e-9
+                and radial <= shape["radius"] + 1e-9)
+    return True

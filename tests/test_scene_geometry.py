@@ -233,6 +233,31 @@ def test_validator_catches_a_degenerate_fallback_shape(scene):
         validate_scene(_corrupt(scene, sphere), requested_volume_mm3=VOLUME)
 
 
+def test_stem_is_glued_into_the_pin(scene):
+    """The stem fibers must end inside the pin's metal (the break-face glue
+    joint) — the old generator left them floating 0.3 mm in front of it."""
+    from crystal_harvester.validate import _point_in_csg
+    pin = next(o for o in scene["objects"] if o["name"] == "pin")
+    for name in ("stem_fiber_1", "stem_fiber_2"):
+        stem = next(o for o in scene["objects"] if o["name"] == name)
+        end = np.asarray(stem["shape"]["path"][-1], dtype=float)
+        assert _point_in_csg(end, pin["shape"]), \
+            f"{name} ends at {end} outside the pin"
+
+
+def test_validator_catches_a_detached_stem(scene):
+    """Truncate the stems back to the pin tip — the old defect — and the
+    validator must name it."""
+    def truncate(sc):
+        for name in ("stem_fiber_1", "stem_fiber_2"):
+            o = next(x for x in sc["objects"] if x["name"] == name)
+            path = np.asarray(o["shape"]["path"], dtype=float)
+            keep = path[path[:, 0] <= 0.70]
+            o["shape"]["path"] = keep.tolist()
+    with pytest.raises(SceneValidationError, match="not attached"):
+        validate_scene(_corrupt(scene, truncate), requested_volume_mm3=VOLUME)
+
+
 def test_validator_catches_inverted_priority(scene):
     def swap(sc):
         sc["objects"][0], sc["objects"][1] = sc["objects"][1], sc["objects"][0]
