@@ -1,13 +1,16 @@
 {
   "scene": "scene_files/mitegen_200um.yaml",
   "scene_sha256": "06eaf2a107463ea607918fb114ca13748674ecad816baba37ff59ef3f67f005d",
-  "built_utc": "2026-08-03T18:54:25Z",
+  "built_utc": "2026-08-07T19:15:56Z",
   "axis": "rotx",
   "step_deg": 1.0,
   "n_cond": 7,
   "supersample": 1,
   "pan_mm": 0.6,
   "jpeg_quality": 90,
+  "format": "png",
+  "psf": true,
+  "psf_sigma_px": 1.155,
   "camera": {
     "width": 640,
     "height": 480,
@@ -32,1802 +35,1802 @@
     {
       "index": 0,
       "angle_deg": 0.0,
-      "file": "rot_0000.jpg"
+      "file": "rot_0000.png"
     },
     {
       "index": 1,
       "angle_deg": 1.0,
-      "file": "rot_0001.jpg"
+      "file": "rot_0001.png"
     },
     {
       "index": 2,
       "angle_deg": 2.0,
-      "file": "rot_0002.jpg"
+      "file": "rot_0002.png"
     },
     {
       "index": 3,
       "angle_deg": 3.0,
-      "file": "rot_0003.jpg"
+      "file": "rot_0003.png"
     },
     {
       "index": 4,
       "angle_deg": 4.0,
-      "file": "rot_0004.jpg"
+      "file": "rot_0004.png"
     },
     {
       "index": 5,
       "angle_deg": 5.0,
-      "file": "rot_0005.jpg"
+      "file": "rot_0005.png"
     },
     {
       "index": 6,
       "angle_deg": 6.0,
-      "file": "rot_0006.jpg"
+      "file": "rot_0006.png"
     },
     {
       "index": 7,
       "angle_deg": 7.0,
-      "file": "rot_0007.jpg"
+      "file": "rot_0007.png"
     },
     {
       "index": 8,
       "angle_deg": 8.0,
-      "file": "rot_0008.jpg"
+      "file": "rot_0008.png"
     },
     {
       "index": 9,
       "angle_deg": 9.0,
-      "file": "rot_0009.jpg"
+      "file": "rot_0009.png"
     },
     {
       "index": 10,
       "angle_deg": 10.0,
-      "file": "rot_0010.jpg"
+      "file": "rot_0010.png"
     },
     {
       "index": 11,
       "angle_deg": 11.0,
-      "file": "rot_0011.jpg"
+      "file": "rot_0011.png"
     },
     {
       "index": 12,
       "angle_deg": 12.0,
-      "file": "rot_0012.jpg"
+      "file": "rot_0012.png"
     },
     {
       "index": 13,
       "angle_deg": 13.0,
-      "file": "rot_0013.jpg"
+      "file": "rot_0013.png"
     },
     {
       "index": 14,
       "angle_deg": 14.0,
-      "file": "rot_0014.jpg"
+      "file": "rot_0014.png"
     },
     {
       "index": 15,
       "angle_deg": 15.0,
-      "file": "rot_0015.jpg"
+      "file": "rot_0015.png"
     },
     {
       "index": 16,
       "angle_deg": 16.0,
-      "file": "rot_0016.jpg"
+      "file": "rot_0016.png"
     },
     {
       "index": 17,
       "angle_deg": 17.0,
-      "file": "rot_0017.jpg"
+      "file": "rot_0017.png"
     },
     {
       "index": 18,
       "angle_deg": 18.0,
-      "file": "rot_0018.jpg"
+      "file": "rot_0018.png"
     },
     {
       "index": 19,
       "angle_deg": 19.0,
-      "file": "rot_0019.jpg"
+      "file": "rot_0019.png"
     },
     {
       "index": 20,
       "angle_deg": 20.0,
-      "file": "rot_0020.jpg"
+      "file": "rot_0020.png"
     },
     {
       "index": 21,
       "angle_deg": 21.0,
-      "file": "rot_0021.jpg"
+      "file": "rot_0021.png"
     },
     {
       "index": 22,
       "angle_deg": 22.0,
-      "file": "rot_0022.jpg"
+      "file": "rot_0022.png"
     },
     {
       "index": 23,
       "angle_deg": 23.0,
-      "file": "rot_0023.jpg"
+      "file": "rot_0023.png"
     },
     {
       "index": 24,
       "angle_deg": 24.0,
-      "file": "rot_0024.jpg"
+      "file": "rot_0024.png"
     },
     {
       "index": 25,
       "angle_deg": 25.0,
-      "file": "rot_0025.jpg"
+      "file": "rot_0025.png"
     },
     {
       "index": 26,
       "angle_deg": 26.0,
-      "file": "rot_0026.jpg"
+      "file": "rot_0026.png"
     },
     {
       "index": 27,
       "angle_deg": 27.0,
-      "file": "rot_0027.jpg"
+      "file": "rot_0027.png"
     },
     {
       "index": 28,
       "angle_deg": 28.0,
-      "file": "rot_0028.jpg"
+      "file": "rot_0028.png"
     },
     {
       "index": 29,
       "angle_deg": 29.0,
-      "file": "rot_0029.jpg"
+      "file": "rot_0029.png"
     },
     {
       "index": 30,
       "angle_deg": 30.0,
-      "file": "rot_0030.jpg"
+      "file": "rot_0030.png"
     },
     {
       "index": 31,
       "angle_deg": 31.0,
-      "file": "rot_0031.jpg"
+      "file": "rot_0031.png"
     },
     {
       "index": 32,
       "angle_deg": 32.0,
-      "file": "rot_0032.jpg"
+      "file": "rot_0032.png"
     },
     {
       "index": 33,
       "angle_deg": 33.0,
-      "file": "rot_0033.jpg"
+      "file": "rot_0033.png"
     },
     {
       "index": 34,
       "angle_deg": 34.0,
-      "file": "rot_0034.jpg"
+      "file": "rot_0034.png"
     },
     {
       "index": 35,
       "angle_deg": 35.0,
-      "file": "rot_0035.jpg"
+      "file": "rot_0035.png"
     },
     {
       "index": 36,
       "angle_deg": 36.0,
-      "file": "rot_0036.jpg"
+      "file": "rot_0036.png"
     },
     {
       "index": 37,
       "angle_deg": 37.0,
-      "file": "rot_0037.jpg"
+      "file": "rot_0037.png"
     },
     {
       "index": 38,
       "angle_deg": 38.0,
-      "file": "rot_0038.jpg"
+      "file": "rot_0038.png"
     },
     {
       "index": 39,
       "angle_deg": 39.0,
-      "file": "rot_0039.jpg"
+      "file": "rot_0039.png"
     },
     {
       "index": 40,
       "angle_deg": 40.0,
-      "file": "rot_0040.jpg"
+      "file": "rot_0040.png"
     },
     {
       "index": 41,
       "angle_deg": 41.0,
-      "file": "rot_0041.jpg"
+      "file": "rot_0041.png"
     },
     {
       "index": 42,
       "angle_deg": 42.0,
-      "file": "rot_0042.jpg"
+      "file": "rot_0042.png"
     },
     {
       "index": 43,
       "angle_deg": 43.0,
-      "file": "rot_0043.jpg"
+      "file": "rot_0043.png"
     },
     {
       "index": 44,
       "angle_deg": 44.0,
-      "file": "rot_0044.jpg"
+      "file": "rot_0044.png"
     },
     {
       "index": 45,
       "angle_deg": 45.0,
-      "file": "rot_0045.jpg"
+      "file": "rot_0045.png"
     },
     {
       "index": 46,
       "angle_deg": 46.0,
-      "file": "rot_0046.jpg"
+      "file": "rot_0046.png"
     },
     {
       "index": 47,
       "angle_deg": 47.0,
-      "file": "rot_0047.jpg"
+      "file": "rot_0047.png"
     },
     {
       "index": 48,
       "angle_deg": 48.0,
-      "file": "rot_0048.jpg"
+      "file": "rot_0048.png"
     },
     {
       "index": 49,
       "angle_deg": 49.0,
-      "file": "rot_0049.jpg"
+      "file": "rot_0049.png"
     },
     {
       "index": 50,
       "angle_deg": 50.0,
-      "file": "rot_0050.jpg"
+      "file": "rot_0050.png"
     },
     {
       "index": 51,
       "angle_deg": 51.0,
-      "file": "rot_0051.jpg"
+      "file": "rot_0051.png"
     },
     {
       "index": 52,
       "angle_deg": 52.0,
-      "file": "rot_0052.jpg"
+      "file": "rot_0052.png"
     },
     {
       "index": 53,
       "angle_deg": 53.0,
-      "file": "rot_0053.jpg"
+      "file": "rot_0053.png"
     },
     {
       "index": 54,
       "angle_deg": 54.0,
-      "file": "rot_0054.jpg"
+      "file": "rot_0054.png"
     },
     {
       "index": 55,
       "angle_deg": 55.0,
-      "file": "rot_0055.jpg"
+      "file": "rot_0055.png"
     },
     {
       "index": 56,
       "angle_deg": 56.0,
-      "file": "rot_0056.jpg"
+      "file": "rot_0056.png"
     },
     {
       "index": 57,
       "angle_deg": 57.0,
-      "file": "rot_0057.jpg"
+      "file": "rot_0057.png"
     },
     {
       "index": 58,
       "angle_deg": 58.0,
-      "file": "rot_0058.jpg"
+      "file": "rot_0058.png"
     },
     {
       "index": 59,
       "angle_deg": 59.0,
-      "file": "rot_0059.jpg"
+      "file": "rot_0059.png"
     },
     {
       "index": 60,
       "angle_deg": 60.0,
-      "file": "rot_0060.jpg"
+      "file": "rot_0060.png"
     },
     {
       "index": 61,
       "angle_deg": 61.0,
-      "file": "rot_0061.jpg"
+      "file": "rot_0061.png"
     },
     {
       "index": 62,
       "angle_deg": 62.0,
-      "file": "rot_0062.jpg"
+      "file": "rot_0062.png"
     },
     {
       "index": 63,
       "angle_deg": 63.0,
-      "file": "rot_0063.jpg"
+      "file": "rot_0063.png"
     },
     {
       "index": 64,
       "angle_deg": 64.0,
-      "file": "rot_0064.jpg"
+      "file": "rot_0064.png"
     },
     {
       "index": 65,
       "angle_deg": 65.0,
-      "file": "rot_0065.jpg"
+      "file": "rot_0065.png"
     },
     {
       "index": 66,
       "angle_deg": 66.0,
-      "file": "rot_0066.jpg"
+      "file": "rot_0066.png"
     },
     {
       "index": 67,
       "angle_deg": 67.0,
-      "file": "rot_0067.jpg"
+      "file": "rot_0067.png"
     },
     {
       "index": 68,
       "angle_deg": 68.0,
-      "file": "rot_0068.jpg"
+      "file": "rot_0068.png"
     },
     {
       "index": 69,
       "angle_deg": 69.0,
-      "file": "rot_0069.jpg"
+      "file": "rot_0069.png"
     },
     {
       "index": 70,
       "angle_deg": 70.0,
-      "file": "rot_0070.jpg"
+      "file": "rot_0070.png"
     },
     {
       "index": 71,
       "angle_deg": 71.0,
-      "file": "rot_0071.jpg"
+      "file": "rot_0071.png"
     },
     {
       "index": 72,
       "angle_deg": 72.0,
-      "file": "rot_0072.jpg"
+      "file": "rot_0072.png"
     },
     {
       "index": 73,
       "angle_deg": 73.0,
-      "file": "rot_0073.jpg"
+      "file": "rot_0073.png"
     },
     {
       "index": 74,
       "angle_deg": 74.0,
-      "file": "rot_0074.jpg"
+      "file": "rot_0074.png"
     },
     {
       "index": 75,
       "angle_deg": 75.0,
-      "file": "rot_0075.jpg"
+      "file": "rot_0075.png"
     },
     {
       "index": 76,
       "angle_deg": 76.0,
-      "file": "rot_0076.jpg"
+      "file": "rot_0076.png"
     },
     {
       "index": 77,
       "angle_deg": 77.0,
-      "file": "rot_0077.jpg"
+      "file": "rot_0077.png"
     },
     {
       "index": 78,
       "angle_deg": 78.0,
-      "file": "rot_0078.jpg"
+      "file": "rot_0078.png"
     },
     {
       "index": 79,
       "angle_deg": 79.0,
-      "file": "rot_0079.jpg"
+      "file": "rot_0079.png"
     },
     {
       "index": 80,
       "angle_deg": 80.0,
-      "file": "rot_0080.jpg"
+      "file": "rot_0080.png"
     },
     {
       "index": 81,
       "angle_deg": 81.0,
-      "file": "rot_0081.jpg"
+      "file": "rot_0081.png"
     },
     {
       "index": 82,
       "angle_deg": 82.0,
-      "file": "rot_0082.jpg"
+      "file": "rot_0082.png"
     },
     {
       "index": 83,
       "angle_deg": 83.0,
-      "file": "rot_0083.jpg"
+      "file": "rot_0083.png"
     },
     {
       "index": 84,
       "angle_deg": 84.0,
-      "file": "rot_0084.jpg"
+      "file": "rot_0084.png"
     },
     {
       "index": 85,
       "angle_deg": 85.0,
-      "file": "rot_0085.jpg"
+      "file": "rot_0085.png"
     },
     {
       "index": 86,
       "angle_deg": 86.0,
-      "file": "rot_0086.jpg"
+      "file": "rot_0086.png"
     },
     {
       "index": 87,
       "angle_deg": 87.0,
-      "file": "rot_0087.jpg"
+      "file": "rot_0087.png"
     },
     {
       "index": 88,
       "angle_deg": 88.0,
-      "file": "rot_0088.jpg"
+      "file": "rot_0088.png"
     },
     {
       "index": 89,
       "angle_deg": 89.0,
-      "file": "rot_0089.jpg"
+      "file": "rot_0089.png"
     },
     {
       "index": 90,
       "angle_deg": 90.0,
-      "file": "rot_0090.jpg"
+      "file": "rot_0090.png"
     },
     {
       "index": 91,
       "angle_deg": 91.0,
-      "file": "rot_0091.jpg"
+      "file": "rot_0091.png"
     },
     {
       "index": 92,
       "angle_deg": 92.0,
-      "file": "rot_0092.jpg"
+      "file": "rot_0092.png"
     },
     {
       "index": 93,
       "angle_deg": 93.0,
-      "file": "rot_0093.jpg"
+      "file": "rot_0093.png"
     },
     {
       "index": 94,
       "angle_deg": 94.0,
-      "file": "rot_0094.jpg"
+      "file": "rot_0094.png"
     },
     {
       "index": 95,
       "angle_deg": 95.0,
-      "file": "rot_0095.jpg"
+      "file": "rot_0095.png"
     },
     {
       "index": 96,
       "angle_deg": 96.0,
-      "file": "rot_0096.jpg"
+      "file": "rot_0096.png"
     },
     {
       "index": 97,
       "angle_deg": 97.0,
-      "file": "rot_0097.jpg"
+      "file": "rot_0097.png"
     },
     {
       "index": 98,
       "angle_deg": 98.0,
-      "file": "rot_0098.jpg"
+      "file": "rot_0098.png"
     },
     {
       "index": 99,
       "angle_deg": 99.0,
-      "file": "rot_0099.jpg"
+      "file": "rot_0099.png"
     },
     {
       "index": 100,
       "angle_deg": 100.0,
-      "file": "rot_0100.jpg"
+      "file": "rot_0100.png"
     },
     {
       "index": 101,
       "angle_deg": 101.0,
-      "file": "rot_0101.jpg"
+      "file": "rot_0101.png"
     },
     {
       "index": 102,
       "angle_deg": 102.0,
-      "file": "rot_0102.jpg"
+      "file": "rot_0102.png"
     },
     {
       "index": 103,
       "angle_deg": 103.0,
-      "file": "rot_0103.jpg"
+      "file": "rot_0103.png"
     },
     {
       "index": 104,
       "angle_deg": 104.0,
-      "file": "rot_0104.jpg"
+      "file": "rot_0104.png"
     },
     {
       "index": 105,
       "angle_deg": 105.0,
-      "file": "rot_0105.jpg"
+      "file": "rot_0105.png"
     },
     {
       "index": 106,
       "angle_deg": 106.0,
-      "file": "rot_0106.jpg"
+      "file": "rot_0106.png"
     },
     {
       "index": 107,
       "angle_deg": 107.0,
-      "file": "rot_0107.jpg"
+      "file": "rot_0107.png"
     },
     {
       "index": 108,
       "angle_deg": 108.0,
-      "file": "rot_0108.jpg"
+      "file": "rot_0108.png"
     },
     {
       "index": 109,
       "angle_deg": 109.0,
-      "file": "rot_0109.jpg"
+      "file": "rot_0109.png"
     },
     {
       "index": 110,
       "angle_deg": 110.0,
-      "file": "rot_0110.jpg"
+      "file": "rot_0110.png"
     },
     {
       "index": 111,
       "angle_deg": 111.0,
-      "file": "rot_0111.jpg"
+      "file": "rot_0111.png"
     },
     {
       "index": 112,
       "angle_deg": 112.0,
-      "file": "rot_0112.jpg"
+      "file": "rot_0112.png"
     },
     {
       "index": 113,
       "angle_deg": 113.0,
-      "file": "rot_0113.jpg"
+      "file": "rot_0113.png"
     },
     {
       "index": 114,
       "angle_deg": 114.0,
-      "file": "rot_0114.jpg"
+      "file": "rot_0114.png"
     },
     {
       "index": 115,
       "angle_deg": 115.0,
-      "file": "rot_0115.jpg"
+      "file": "rot_0115.png"
     },
     {
       "index": 116,
       "angle_deg": 116.0,
-      "file": "rot_0116.jpg"
+      "file": "rot_0116.png"
     },
     {
       "index": 117,
       "angle_deg": 117.0,
-      "file": "rot_0117.jpg"
+      "file": "rot_0117.png"
     },
     {
       "index": 118,
       "angle_deg": 118.0,
-      "file": "rot_0118.jpg"
+      "file": "rot_0118.png"
     },
     {
       "index": 119,
       "angle_deg": 119.0,
-      "file": "rot_0119.jpg"
+      "file": "rot_0119.png"
     },
     {
       "index": 120,
       "angle_deg": 120.0,
-      "file": "rot_0120.jpg"
+      "file": "rot_0120.png"
     },
     {
       "index": 121,
       "angle_deg": 121.0,
-      "file": "rot_0121.jpg"
+      "file": "rot_0121.png"
     },
     {
       "index": 122,
       "angle_deg": 122.0,
-      "file": "rot_0122.jpg"
+      "file": "rot_0122.png"
     },
     {
       "index": 123,
       "angle_deg": 123.0,
-      "file": "rot_0123.jpg"
+      "file": "rot_0123.png"
     },
     {
       "index": 124,
       "angle_deg": 124.0,
-      "file": "rot_0124.jpg"
+      "file": "rot_0124.png"
     },
     {
       "index": 125,
       "angle_deg": 125.0,
-      "file": "rot_0125.jpg"
+      "file": "rot_0125.png"
     },
     {
       "index": 126,
       "angle_deg": 126.0,
-      "file": "rot_0126.jpg"
+      "file": "rot_0126.png"
     },
     {
       "index": 127,
       "angle_deg": 127.0,
-      "file": "rot_0127.jpg"
+      "file": "rot_0127.png"
     },
     {
       "index": 128,
       "angle_deg": 128.0,
-      "file": "rot_0128.jpg"
+      "file": "rot_0128.png"
     },
     {
       "index": 129,
       "angle_deg": 129.0,
-      "file": "rot_0129.jpg"
+      "file": "rot_0129.png"
     },
     {
       "index": 130,
       "angle_deg": 130.0,
-      "file": "rot_0130.jpg"
+      "file": "rot_0130.png"
     },
     {
       "index": 131,
       "angle_deg": 131.0,
-      "file": "rot_0131.jpg"
+      "file": "rot_0131.png"
     },
     {
       "index": 132,
       "angle_deg": 132.0,
-      "file": "rot_0132.jpg"
+      "file": "rot_0132.png"
     },
     {
       "index": 133,
       "angle_deg": 133.0,
-      "file": "rot_0133.jpg"
+      "file": "rot_0133.png"
     },
     {
       "index": 134,
       "angle_deg": 134.0,
-      "file": "rot_0134.jpg"
+      "file": "rot_0134.png"
     },
     {
       "index": 135,
       "angle_deg": 135.0,
-      "file": "rot_0135.jpg"
+      "file": "rot_0135.png"
     },
     {
       "index": 136,
       "angle_deg": 136.0,
-      "file": "rot_0136.jpg"
+      "file": "rot_0136.png"
     },
     {
       "index": 137,
       "angle_deg": 137.0,
-      "file": "rot_0137.jpg"
+      "file": "rot_0137.png"
     },
     {
       "index": 138,
       "angle_deg": 138.0,
-      "file": "rot_0138.jpg"
+      "file": "rot_0138.png"
     },
     {
       "index": 139,
       "angle_deg": 139.0,
-      "file": "rot_0139.jpg"
+      "file": "rot_0139.png"
     },
     {
       "index": 140,
       "angle_deg": 140.0,
-      "file": "rot_0140.jpg"
+      "file": "rot_0140.png"
     },
     {
       "index": 141,
       "angle_deg": 141.0,
-      "file": "rot_0141.jpg"
+      "file": "rot_0141.png"
     },
     {
       "index": 142,
       "angle_deg": 142.0,
-      "file": "rot_0142.jpg"
+      "file": "rot_0142.png"
     },
     {
       "index": 143,
       "angle_deg": 143.0,
-      "file": "rot_0143.jpg"
+      "file": "rot_0143.png"
     },
     {
       "index": 144,
       "angle_deg": 144.0,
-      "file": "rot_0144.jpg"
+      "file": "rot_0144.png"
     },
     {
       "index": 145,
       "angle_deg": 145.0,
-      "file": "rot_0145.jpg"
+      "file": "rot_0145.png"
     },
     {
       "index": 146,
       "angle_deg": 146.0,
-      "file": "rot_0146.jpg"
+      "file": "rot_0146.png"
     },
     {
       "index": 147,
       "angle_deg": 147.0,
-      "file": "rot_0147.jpg"
+      "file": "rot_0147.png"
     },
     {
       "index": 148,
       "angle_deg": 148.0,
-      "file": "rot_0148.jpg"
+      "file": "rot_0148.png"
     },
     {
       "index": 149,
       "angle_deg": 149.0,
-      "file": "rot_0149.jpg"
+      "file": "rot_0149.png"
     },
     {
       "index": 150,
       "angle_deg": 150.0,
-      "file": "rot_0150.jpg"
+      "file": "rot_0150.png"
     },
     {
       "index": 151,
       "angle_deg": 151.0,
-      "file": "rot_0151.jpg"
+      "file": "rot_0151.png"
     },
     {
       "index": 152,
       "angle_deg": 152.0,
-      "file": "rot_0152.jpg"
+      "file": "rot_0152.png"
     },
     {
       "index": 153,
       "angle_deg": 153.0,
-      "file": "rot_0153.jpg"
+      "file": "rot_0153.png"
     },
     {
       "index": 154,
       "angle_deg": 154.0,
-      "file": "rot_0154.jpg"
+      "file": "rot_0154.png"
     },
     {
       "index": 155,
       "angle_deg": 155.0,
-      "file": "rot_0155.jpg"
+      "file": "rot_0155.png"
     },
     {
       "index": 156,
       "angle_deg": 156.0,
-      "file": "rot_0156.jpg"
+      "file": "rot_0156.png"
     },
     {
       "index": 157,
       "angle_deg": 157.0,
-      "file": "rot_0157.jpg"
+      "file": "rot_0157.png"
     },
     {
       "index": 158,
       "angle_deg": 158.0,
-      "file": "rot_0158.jpg"
+      "file": "rot_0158.png"
     },
     {
       "index": 159,
       "angle_deg": 159.0,
-      "file": "rot_0159.jpg"
+      "file": "rot_0159.png"
     },
     {
       "index": 160,
       "angle_deg": 160.0,
-      "file": "rot_0160.jpg"
+      "file": "rot_0160.png"
     },
     {
       "index": 161,
       "angle_deg": 161.0,
-      "file": "rot_0161.jpg"
+      "file": "rot_0161.png"
     },
     {
       "index": 162,
       "angle_deg": 162.0,
-      "file": "rot_0162.jpg"
+      "file": "rot_0162.png"
     },
     {
       "index": 163,
       "angle_deg": 163.0,
-      "file": "rot_0163.jpg"
+      "file": "rot_0163.png"
     },
     {
       "index": 164,
       "angle_deg": 164.0,
-      "file": "rot_0164.jpg"
+      "file": "rot_0164.png"
     },
     {
       "index": 165,
       "angle_deg": 165.0,
-      "file": "rot_0165.jpg"
+      "file": "rot_0165.png"
     },
     {
       "index": 166,
       "angle_deg": 166.0,
-      "file": "rot_0166.jpg"
+      "file": "rot_0166.png"
     },
     {
       "index": 167,
       "angle_deg": 167.0,
-      "file": "rot_0167.jpg"
+      "file": "rot_0167.png"
     },
     {
       "index": 168,
       "angle_deg": 168.0,
-      "file": "rot_0168.jpg"
+      "file": "rot_0168.png"
     },
     {
       "index": 169,
       "angle_deg": 169.0,
-      "file": "rot_0169.jpg"
+      "file": "rot_0169.png"
     },
     {
       "index": 170,
       "angle_deg": 170.0,
-      "file": "rot_0170.jpg"
+      "file": "rot_0170.png"
     },
     {
       "index": 171,
       "angle_deg": 171.0,
-      "file": "rot_0171.jpg"
+      "file": "rot_0171.png"
     },
     {
       "index": 172,
       "angle_deg": 172.0,
-      "file": "rot_0172.jpg"
+      "file": "rot_0172.png"
     },
     {
       "index": 173,
       "angle_deg": 173.0,
-      "file": "rot_0173.jpg"
+      "file": "rot_0173.png"
     },
     {
       "index": 174,
       "angle_deg": 174.0,
-      "file": "rot_0174.jpg"
+      "file": "rot_0174.png"
     },
     {
       "index": 175,
       "angle_deg": 175.0,
-      "file": "rot_0175.jpg"
+      "file": "rot_0175.png"
     },
     {
       "index": 176,
       "angle_deg": 176.0,
-      "file": "rot_0176.jpg"
+      "file": "rot_0176.png"
     },
     {
       "index": 177,
       "angle_deg": 177.0,
-      "file": "rot_0177.jpg"
+      "file": "rot_0177.png"
     },
     {
       "index": 178,
       "angle_deg": 178.0,
-      "file": "rot_0178.jpg"
+      "file": "rot_0178.png"
     },
     {
       "index": 179,
       "angle_deg": 179.0,
-      "file": "rot_0179.jpg"
+      "file": "rot_0179.png"
     },
     {
       "index": 180,
       "angle_deg": 180.0,
-      "file": "rot_0180.jpg"
+      "file": "rot_0180.png"
     },
     {
       "index": 181,
       "angle_deg": 181.0,
-      "file": "rot_0181.jpg"
+      "file": "rot_0181.png"
     },
     {
       "index": 182,
       "angle_deg": 182.0,
-      "file": "rot_0182.jpg"
+      "file": "rot_0182.png"
     },
     {
       "index": 183,
       "angle_deg": 183.0,
-      "file": "rot_0183.jpg"
+      "file": "rot_0183.png"
     },
     {
       "index": 184,
       "angle_deg": 184.0,
-      "file": "rot_0184.jpg"
+      "file": "rot_0184.png"
     },
     {
       "index": 185,
       "angle_deg": 185.0,
-      "file": "rot_0185.jpg"
+      "file": "rot_0185.png"
     },
     {
       "index": 186,
       "angle_deg": 186.0,
-      "file": "rot_0186.jpg"
+      "file": "rot_0186.png"
     },
     {
       "index": 187,
       "angle_deg": 187.0,
-      "file": "rot_0187.jpg"
+      "file": "rot_0187.png"
     },
     {
       "index": 188,
       "angle_deg": 188.0,
-      "file": "rot_0188.jpg"
+      "file": "rot_0188.png"
     },
     {
       "index": 189,
       "angle_deg": 189.0,
-      "file": "rot_0189.jpg"
+      "file": "rot_0189.png"
     },
     {
       "index": 190,
       "angle_deg": 190.0,
-      "file": "rot_0190.jpg"
+      "file": "rot_0190.png"
     },
     {
       "index": 191,
       "angle_deg": 191.0,
-      "file": "rot_0191.jpg"
+      "file": "rot_0191.png"
     },
     {
       "index": 192,
       "angle_deg": 192.0,
-      "file": "rot_0192.jpg"
+      "file": "rot_0192.png"
     },
     {
       "index": 193,
       "angle_deg": 193.0,
-      "file": "rot_0193.jpg"
+      "file": "rot_0193.png"
     },
     {
       "index": 194,
       "angle_deg": 194.0,
-      "file": "rot_0194.jpg"
+      "file": "rot_0194.png"
     },
     {
       "index": 195,
       "angle_deg": 195.0,
-      "file": "rot_0195.jpg"
+      "file": "rot_0195.png"
     },
     {
       "index": 196,
       "angle_deg": 196.0,
-      "file": "rot_0196.jpg"
+      "file": "rot_0196.png"
     },
     {
       "index": 197,
       "angle_deg": 197.0,
-      "file": "rot_0197.jpg"
+      "file": "rot_0197.png"
     },
     {
       "index": 198,
       "angle_deg": 198.0,
-      "file": "rot_0198.jpg"
+      "file": "rot_0198.png"
     },
     {
       "index": 199,
       "angle_deg": 199.0,
-      "file": "rot_0199.jpg"
+      "file": "rot_0199.png"
     },
     {
       "index": 200,
       "angle_deg": 200.0,
-      "file": "rot_0200.jpg"
+      "file": "rot_0200.png"
     },
     {
       "index": 201,
       "angle_deg": 201.0,
-      "file": "rot_0201.jpg"
+      "file": "rot_0201.png"
     },
     {
       "index": 202,
       "angle_deg": 202.0,
-      "file": "rot_0202.jpg"
+      "file": "rot_0202.png"
     },
     {
       "index": 203,
       "angle_deg": 203.0,
-      "file": "rot_0203.jpg"
+      "file": "rot_0203.png"
     },
     {
       "index": 204,
       "angle_deg": 204.0,
-      "file": "rot_0204.jpg"
+      "file": "rot_0204.png"
     },
     {
       "index": 205,
       "angle_deg": 205.0,
-      "file": "rot_0205.jpg"
+      "file": "rot_0205.png"
     },
     {
       "index": 206,
       "angle_deg": 206.0,
-      "file": "rot_0206.jpg"
+      "file": "rot_0206.png"
     },
     {
       "index": 207,
       "angle_deg": 207.0,
-      "file": "rot_0207.jpg"
+      "file": "rot_0207.png"
     },
     {
       "index": 208,
       "angle_deg": 208.0,
-      "file": "rot_0208.jpg"
+      "file": "rot_0208.png"
     },
     {
       "index": 209,
       "angle_deg": 209.0,
-      "file": "rot_0209.jpg"
+      "file": "rot_0209.png"
     },
     {
       "index": 210,
       "angle_deg": 210.0,
-      "file": "rot_0210.jpg"
+      "file": "rot_0210.png"
     },
     {
       "index": 211,
       "angle_deg": 211.0,
-      "file": "rot_0211.jpg"
+      "file": "rot_0211.png"
     },
     {
       "index": 212,
       "angle_deg": 212.0,
-      "file": "rot_0212.jpg"
+      "file": "rot_0212.png"
     },
     {
       "index": 213,
       "angle_deg": 213.0,
-      "file": "rot_0213.jpg"
+      "file": "rot_0213.png"
     },
     {
       "index": 214,
       "angle_deg": 214.0,
-      "file": "rot_0214.jpg"
+      "file": "rot_0214.png"
     },
     {
       "index": 215,
       "angle_deg": 215.0,
-      "file": "rot_0215.jpg"
+      "file": "rot_0215.png"
     },
     {
       "index": 216,
       "angle_deg": 216.0,
-      "file": "rot_0216.jpg"
+      "file": "rot_0216.png"
     },
     {
       "index": 217,
       "angle_deg": 217.0,
-      "file": "rot_0217.jpg"
+      "file": "rot_0217.png"
     },
     {
       "index": 218,
       "angle_deg": 218.0,
-      "file": "rot_0218.jpg"
+      "file": "rot_0218.png"
     },
     {
       "index": 219,
       "angle_deg": 219.0,
-      "file": "rot_0219.jpg"
+      "file": "rot_0219.png"
     },
     {
       "index": 220,
       "angle_deg": 220.0,
-      "file": "rot_0220.jpg"
+      "file": "rot_0220.png"
     },
     {
       "index": 221,
       "angle_deg": 221.0,
-      "file": "rot_0221.jpg"
+      "file": "rot_0221.png"
     },
     {
       "index": 222,
       "angle_deg": 222.0,
-      "file": "rot_0222.jpg"
+      "file": "rot_0222.png"
     },
     {
       "index": 223,
       "angle_deg": 223.0,
-      "file": "rot_0223.jpg"
+      "file": "rot_0223.png"
     },
     {
       "index": 224,
       "angle_deg": 224.0,
-      "file": "rot_0224.jpg"
+      "file": "rot_0224.png"
     },
     {
       "index": 225,
       "angle_deg": 225.0,
-      "file": "rot_0225.jpg"
+      "file": "rot_0225.png"
     },
     {
       "index": 226,
       "angle_deg": 226.0,
-      "file": "rot_0226.jpg"
+      "file": "rot_0226.png"
     },
     {
       "index": 227,
       "angle_deg": 227.0,
-      "file": "rot_0227.jpg"
+      "file": "rot_0227.png"
     },
     {
       "index": 228,
       "angle_deg": 228.0,
-      "file": "rot_0228.jpg"
+      "file": "rot_0228.png"
     },
     {
       "index": 229,
       "angle_deg": 229.0,
-      "file": "rot_0229.jpg"
+      "file": "rot_0229.png"
     },
     {
       "index": 230,
       "angle_deg": 230.0,
-      "file": "rot_0230.jpg"
+      "file": "rot_0230.png"
     },
     {
       "index": 231,
       "angle_deg": 231.0,
-      "file": "rot_0231.jpg"
+      "file": "rot_0231.png"
     },
     {
       "index": 232,
       "angle_deg": 232.0,
-      "file": "rot_0232.jpg"
+      "file": "rot_0232.png"
     },
     {
       "index": 233,
       "angle_deg": 233.0,
-      "file": "rot_0233.jpg"
+      "file": "rot_0233.png"
     },
     {
       "index": 234,
       "angle_deg": 234.0,
-      "file": "rot_0234.jpg"
+      "file": "rot_0234.png"
     },
     {
       "index": 235,
       "angle_deg": 235.0,
-      "file": "rot_0235.jpg"
+      "file": "rot_0235.png"
     },
     {
       "index": 236,
       "angle_deg": 236.0,
-      "file": "rot_0236.jpg"
+      "file": "rot_0236.png"
     },
     {
       "index": 237,
       "angle_deg": 237.0,
-      "file": "rot_0237.jpg"
+      "file": "rot_0237.png"
     },
     {
       "index": 238,
       "angle_deg": 238.0,
-      "file": "rot_0238.jpg"
+      "file": "rot_0238.png"
     },
     {
       "index": 239,
       "angle_deg": 239.0,
-      "file": "rot_0239.jpg"
+      "file": "rot_0239.png"
     },
     {
       "index": 240,
       "angle_deg": 240.0,
-      "file": "rot_0240.jpg"
+      "file": "rot_0240.png"
     },
     {
       "index": 241,
       "angle_deg": 241.0,
-      "file": "rot_0241.jpg"
+      "file": "rot_0241.png"
     },
     {
       "index": 242,
       "angle_deg": 242.0,
-      "file": "rot_0242.jpg"
+      "file": "rot_0242.png"
     },
     {
       "index": 243,
       "angle_deg": 243.0,
-      "file": "rot_0243.jpg"
+      "file": "rot_0243.png"
     },
     {
       "index": 244,
       "angle_deg": 244.0,
-      "file": "rot_0244.jpg"
+      "file": "rot_0244.png"
     },
     {
       "index": 245,
       "angle_deg": 245.0,
-      "file": "rot_0245.jpg"
+      "file": "rot_0245.png"
     },
     {
       "index": 246,
       "angle_deg": 246.0,
-      "file": "rot_0246.jpg"
+      "file": "rot_0246.png"
     },
     {
       "index": 247,
       "angle_deg": 247.0,
-      "file": "rot_0247.jpg"
+      "file": "rot_0247.png"
     },
     {
       "index": 248,
       "angle_deg": 248.0,
-      "file": "rot_0248.jpg"
+      "file": "rot_0248.png"
     },
     {
       "index": 249,
       "angle_deg": 249.0,
-      "file": "rot_0249.jpg"
+      "file": "rot_0249.png"
     },
     {
       "index": 250,
       "angle_deg": 250.0,
-      "file": "rot_0250.jpg"
+      "file": "rot_0250.png"
     },
     {
       "index": 251,
       "angle_deg": 251.0,
-      "file": "rot_0251.jpg"
+      "file": "rot_0251.png"
     },
     {
       "index": 252,
       "angle_deg": 252.0,
-      "file": "rot_0252.jpg"
+      "file": "rot_0252.png"
     },
     {
       "index": 253,
       "angle_deg": 253.0,
-      "file": "rot_0253.jpg"
+      "file": "rot_0253.png"
     },
     {
       "index": 254,
       "angle_deg": 254.0,
-      "file": "rot_0254.jpg"
+      "file": "rot_0254.png"
     },
     {
       "index": 255,
       "angle_deg": 255.0,
-      "file": "rot_0255.jpg"
+      "file": "rot_0255.png"
     },
     {
       "index": 256,
       "angle_deg": 256.0,
-      "file": "rot_0256.jpg"
+      "file": "rot_0256.png"
     },
     {
       "index": 257,
       "angle_deg": 257.0,
-      "file": "rot_0257.jpg"
+      "file": "rot_0257.png"
     },
     {
       "index": 258,
       "angle_deg": 258.0,
-      "file": "rot_0258.jpg"
+      "file": "rot_0258.png"
     },
     {
       "index": 259,
       "angle_deg": 259.0,
-      "file": "rot_0259.jpg"
+      "file": "rot_0259.png"
     },
     {
       "index": 260,
       "angle_deg": 260.0,
-      "file": "rot_0260.jpg"
+      "file": "rot_0260.png"
     },
     {
       "index": 261,
       "angle_deg": 261.0,
-      "file": "rot_0261.jpg"
+      "file": "rot_0261.png"
     },
     {
       "index": 262,
       "angle_deg": 262.0,
-      "file": "rot_0262.jpg"
+      "file": "rot_0262.png"
     },
     {
       "index": 263,
       "angle_deg": 263.0,
-      "file": "rot_0263.jpg"
+      "file": "rot_0263.png"
     },
     {
       "index": 264,
       "angle_deg": 264.0,
-      "file": "rot_0264.jpg"
+      "file": "rot_0264.png"
     },
     {
       "index": 265,
       "angle_deg": 265.0,
-      "file": "rot_0265.jpg"
+      "file": "rot_0265.png"
     },
     {
       "index": 266,
       "angle_deg": 266.0,
-      "file": "rot_0266.jpg"
+      "file": "rot_0266.png"
     },
     {
       "index": 267,
       "angle_deg": 267.0,
-      "file": "rot_0267.jpg"
+      "file": "rot_0267.png"
     },
     {
       "index": 268,
       "angle_deg": 268.0,
-      "file": "rot_0268.jpg"
+      "file": "rot_0268.png"
     },
     {
       "index": 269,
       "angle_deg": 269.0,
-      "file": "rot_0269.jpg"
+      "file": "rot_0269.png"
     },
     {
       "index": 270,
       "angle_deg": 270.0,
-      "file": "rot_0270.jpg"
+      "file": "rot_0270.png"
     },
     {
       "index": 271,
       "angle_deg": 271.0,
-      "file": "rot_0271.jpg"
+      "file": "rot_0271.png"
     },
     {
       "index": 272,
       "angle_deg": 272.0,
-      "file": "rot_0272.jpg"
+      "file": "rot_0272.png"
     },
     {
       "index": 273,
       "angle_deg": 273.0,
-      "file": "rot_0273.jpg"
+      "file": "rot_0273.png"
     },
     {
       "index": 274,
       "angle_deg": 274.0,
-      "file": "rot_0274.jpg"
+      "file": "rot_0274.png"
     },
     {
       "index": 275,
       "angle_deg": 275.0,
-      "file": "rot_0275.jpg"
+      "file": "rot_0275.png"
     },
     {
       "index": 276,
       "angle_deg": 276.0,
-      "file": "rot_0276.jpg"
+      "file": "rot_0276.png"
     },
     {
       "index": 277,
       "angle_deg": 277.0,
-      "file": "rot_0277.jpg"
+      "file": "rot_0277.png"
     },
     {
       "index": 278,
       "angle_deg": 278.0,
-      "file": "rot_0278.jpg"
+      "file": "rot_0278.png"
     },
     {
       "index": 279,
       "angle_deg": 279.0,
-      "file": "rot_0279.jpg"
+      "file": "rot_0279.png"
     },
     {
       "index": 280,
       "angle_deg": 280.0,
-      "file": "rot_0280.jpg"
+      "file": "rot_0280.png"
     },
     {
       "index": 281,
       "angle_deg": 281.0,
-      "file": "rot_0281.jpg"
+      "file": "rot_0281.png"
     },
     {
       "index": 282,
       "angle_deg": 282.0,
-      "file": "rot_0282.jpg"
+      "file": "rot_0282.png"
     },
     {
       "index": 283,
       "angle_deg": 283.0,
-      "file": "rot_0283.jpg"
+      "file": "rot_0283.png"
     },
     {
       "index": 284,
       "angle_deg": 284.0,
-      "file": "rot_0284.jpg"
+      "file": "rot_0284.png"
     },
     {
       "index": 285,
       "angle_deg": 285.0,
-      "file": "rot_0285.jpg"
+      "file": "rot_0285.png"
     },
     {
       "index": 286,
       "angle_deg": 286.0,
-      "file": "rot_0286.jpg"
+      "file": "rot_0286.png"
     },
     {
       "index": 287,
       "angle_deg": 287.0,
-      "file": "rot_0287.jpg"
+      "file": "rot_0287.png"
     },
     {
       "index": 288,
       "angle_deg": 288.0,
-      "file": "rot_0288.jpg"
+      "file": "rot_0288.png"
     },
     {
       "index": 289,
       "angle_deg": 289.0,
-      "file": "rot_0289.jpg"
+      "file": "rot_0289.png"
     },
     {
       "index": 290,
       "angle_deg": 290.0,
-      "file": "rot_0290.jpg"
+      "file": "rot_0290.png"
     },
     {
       "index": 291,
       "angle_deg": 291.0,
-      "file": "rot_0291.jpg"
+      "file": "rot_0291.png"
     },
     {
       "index": 292,
       "angle_deg": 292.0,
-      "file": "rot_0292.jpg"
+      "file": "rot_0292.png"
     },
     {
       "index": 293,
       "angle_deg": 293.0,
-      "file": "rot_0293.jpg"
+      "file": "rot_0293.png"
     },
     {
       "index": 294,
       "angle_deg": 294.0,
-      "file": "rot_0294.jpg"
+      "file": "rot_0294.png"
     },
     {
       "index": 295,
       "angle_deg": 295.0,
-      "file": "rot_0295.jpg"
+      "file": "rot_0295.png"
     },
     {
       "index": 296,
       "angle_deg": 296.0,
-      "file": "rot_0296.jpg"
+      "file": "rot_0296.png"
     },
     {
       "index": 297,
       "angle_deg": 297.0,
-      "file": "rot_0297.jpg"
+      "file": "rot_0297.png"
     },
     {
       "index": 298,
       "angle_deg": 298.0,
-      "file": "rot_0298.jpg"
+      "file": "rot_0298.png"
     },
     {
       "index": 299,
       "angle_deg": 299.0,
-      "file": "rot_0299.jpg"
+      "file": "rot_0299.png"
     },
     {
       "index": 300,
       "angle_deg": 300.0,
-      "file": "rot_0300.jpg"
+      "file": "rot_0300.png"
     },
     {
       "index": 301,
       "angle_deg": 301.0,
-      "file": "rot_0301.jpg"
+      "file": "rot_0301.png"
     },
     {
       "index": 302,
       "angle_deg": 302.0,
-      "file": "rot_0302.jpg"
+      "file": "rot_0302.png"
     },
     {
       "index": 303,
       "angle_deg": 303.0,
-      "file": "rot_0303.jpg"
+      "file": "rot_0303.png"
     },
     {
       "index": 304,
       "angle_deg": 304.0,
-      "file": "rot_0304.jpg"
+      "file": "rot_0304.png"
     },
     {
       "index": 305,
       "angle_deg": 305.0,
-      "file": "rot_0305.jpg"
+      "file": "rot_0305.png"
     },
     {
       "index": 306,
       "angle_deg": 306.0,
-      "file": "rot_0306.jpg"
+      "file": "rot_0306.png"
     },
     {
       "index": 307,
       "angle_deg": 307.0,
-      "file": "rot_0307.jpg"
+      "file": "rot_0307.png"
     },
     {
       "index": 308,
       "angle_deg": 308.0,
-      "file": "rot_0308.jpg"
+      "file": "rot_0308.png"
     },
     {
       "index": 309,
       "angle_deg": 309.0,
-      "file": "rot_0309.jpg"
+      "file": "rot_0309.png"
     },
     {
       "index": 310,
       "angle_deg": 310.0,
-      "file": "rot_0310.jpg"
+      "file": "rot_0310.png"
     },
     {
       "index": 311,
       "angle_deg": 311.0,
-      "file": "rot_0311.jpg"
+      "file": "rot_0311.png"
     },
     {
       "index": 312,
       "angle_deg": 312.0,
-      "file": "rot_0312.jpg"
+      "file": "rot_0312.png"
     },
     {
       "index": 313,
       "angle_deg": 313.0,
-      "file": "rot_0313.jpg"
+      "file": "rot_0313.png"
     },
     {
       "index": 314,
       "angle_deg": 314.0,
-      "file": "rot_0314.jpg"
+      "file": "rot_0314.png"
     },
     {
       "index": 315,
       "angle_deg": 315.0,
-      "file": "rot_0315.jpg"
+      "file": "rot_0315.png"
     },
     {
       "index": 316,
       "angle_deg": 316.0,
-      "file": "rot_0316.jpg"
+      "file": "rot_0316.png"
     },
     {
       "index": 317,
       "angle_deg": 317.0,
-      "file": "rot_0317.jpg"
+      "file": "rot_0317.png"
     },
     {
       "index": 318,
       "angle_deg": 318.0,
-      "file": "rot_0318.jpg"
+      "file": "rot_0318.png"
     },
     {
       "index": 319,
       "angle_deg": 319.0,
-      "file": "rot_0319.jpg"
+      "file": "rot_0319.png"
     },
     {
       "index": 320,
       "angle_deg": 320.0,
-      "file": "rot_0320.jpg"
+      "file": "rot_0320.png"
     },
     {
       "index": 321,
       "angle_deg": 321.0,
-      "file": "rot_0321.jpg"
+      "file": "rot_0321.png"
     },
     {
       "index": 322,
       "angle_deg": 322.0,
-      "file": "rot_0322.jpg"
+      "file": "rot_0322.png"
     },
     {
       "index": 323,
       "angle_deg": 323.0,
-      "file": "rot_0323.jpg"
+      "file": "rot_0323.png"
     },
     {
       "index": 324,
       "angle_deg": 324.0,
-      "file": "rot_0324.jpg"
+      "file": "rot_0324.png"
     },
     {
       "index": 325,
       "angle_deg": 325.0,
-      "file": "rot_0325.jpg"
+      "file": "rot_0325.png"
     },
     {
       "index": 326,
       "angle_deg": 326.0,
-      "file": "rot_0326.jpg"
+      "file": "rot_0326.png"
     },
     {
       "index": 327,
       "angle_deg": 327.0,
-      "file": "rot_0327.jpg"
+      "file": "rot_0327.png"
     },
     {
       "index": 328,
       "angle_deg": 328.0,
-      "file": "rot_0328.jpg"
+      "file": "rot_0328.png"
     },
     {
       "index": 329,
       "angle_deg": 329.0,
-      "file": "rot_0329.jpg"
+      "file": "rot_0329.png"
     },
     {
       "index": 330,
       "angle_deg": 330.0,
-      "file": "rot_0330.jpg"
+      "file": "rot_0330.png"
     },
     {
       "index": 331,
       "angle_deg": 331.0,
-      "file": "rot_0331.jpg"
+      "file": "rot_0331.png"
     },
     {
       "index": 332,
       "angle_deg": 332.0,
-      "file": "rot_0332.jpg"
+      "file": "rot_0332.png"
     },
     {
       "index": 333,
       "angle_deg": 333.0,
-      "file": "rot_0333.jpg"
+      "file": "rot_0333.png"
     },
     {
       "index": 334,
       "angle_deg": 334.0,
-      "file": "rot_0334.jpg"
+      "file": "rot_0334.png"
     },
     {
       "index": 335,
       "angle_deg": 335.0,
-      "file": "rot_0335.jpg"
+      "file": "rot_0335.png"
     },
     {
       "index": 336,
       "angle_deg": 336.0,
-      "file": "rot_0336.jpg"
+      "file": "rot_0336.png"
     },
     {
       "index": 337,
       "angle_deg": 337.0,
-      "file": "rot_0337.jpg"
+      "file": "rot_0337.png"
     },
     {
       "index": 338,
       "angle_deg": 338.0,
-      "file": "rot_0338.jpg"
+      "file": "rot_0338.png"
     },
     {
       "index": 339,
       "angle_deg": 339.0,
-      "file": "rot_0339.jpg"
+      "file": "rot_0339.png"
     },
     {
       "index": 340,
       "angle_deg": 340.0,
-      "file": "rot_0340.jpg"
+      "file": "rot_0340.png"
     },
     {
       "index": 341,
       "angle_deg": 341.0,
-      "file": "rot_0341.jpg"
+      "file": "rot_0341.png"
     },
     {
       "index": 342,
       "angle_deg": 342.0,
-      "file": "rot_0342.jpg"
+      "file": "rot_0342.png"
     },
     {
       "index": 343,
       "angle_deg": 343.0,
-      "file": "rot_0343.jpg"
+      "file": "rot_0343.png"
     },
     {
       "index": 344,
       "angle_deg": 344.0,
-      "file": "rot_0344.jpg"
+      "file": "rot_0344.png"
     },
     {
       "index": 345,
       "angle_deg": 345.0,
-      "file": "rot_0345.jpg"
+      "file": "rot_0345.png"
     },
     {
       "index": 346,
       "angle_deg": 346.0,
-      "file": "rot_0346.jpg"
+      "file": "rot_0346.png"
     },
     {
       "index": 347,
       "angle_deg": 347.0,
-      "file": "rot_0347.jpg"
+      "file": "rot_0347.png"
     },
     {
       "index": 348,
       "angle_deg": 348.0,
-      "file": "rot_0348.jpg"
+      "file": "rot_0348.png"
     },
     {
       "index": 349,
       "angle_deg": 349.0,
-      "file": "rot_0349.jpg"
+      "file": "rot_0349.png"
     },
     {
       "index": 350,
       "angle_deg": 350.0,
-      "file": "rot_0350.jpg"
+      "file": "rot_0350.png"
     },
     {
       "index": 351,
       "angle_deg": 351.0,
-      "file": "rot_0351.jpg"
+      "file": "rot_0351.png"
     },
     {
       "index": 352,
       "angle_deg": 352.0,
-      "file": "rot_0352.jpg"
+      "file": "rot_0352.png"
     },
     {
       "index": 353,
       "angle_deg": 353.0,
-      "file": "rot_0353.jpg"
+      "file": "rot_0353.png"
     },
     {
       "index": 354,
       "angle_deg": 354.0,
-      "file": "rot_0354.jpg"
+      "file": "rot_0354.png"
     },
     {
       "index": 355,
       "angle_deg": 355.0,
-      "file": "rot_0355.jpg"
+      "file": "rot_0355.png"
     },
     {
       "index": 356,
       "angle_deg": 356.0,
-      "file": "rot_0356.jpg"
+      "file": "rot_0356.png"
     },
     {
       "index": 357,
       "angle_deg": 357.0,
-      "file": "rot_0357.jpg"
+      "file": "rot_0357.png"
     },
     {
       "index": 358,
       "angle_deg": 358.0,
-      "file": "rot_0358.jpg"
+      "file": "rot_0358.png"
     },
     {
       "index": 359,
       "angle_deg": 359.0,
-      "file": "rot_0359.jpg"
+      "file": "rot_0359.png"
     }
   ]
 }

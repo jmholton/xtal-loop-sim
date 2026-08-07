@@ -1279,6 +1279,25 @@ class CameraServer(ThreadingHTTPServer):
             kw.update(PREVIEW_BUILD)
         return kw
 
+    def _grading_params(self, preview=False):
+        """The build parameters a library on disk is judged against.
+
+        `supersample` is dropped unless the operator explicitly asked for one.
+        It is the single build parameter documented as PER SCENE rather than as
+        policy: it follows each camera's own sampling against the objective's
+        Nyquist limit, which is 4 for hampton's 7.4 um pixel and 1 for mitegen's
+        1.0 um one (RUNBOOK "Frame libraries"). Grading every scene against one
+        server-wide default therefore guarantees a permanent false "stale" on
+        whichever scene does not happen to match it -- and it cannot be fixed by
+        rebuilding, because the correct value for that scene is the one being
+        called stale. Everything else here is global policy and is graded.
+        """
+        kw = self._build_kwargs(preview=preview)
+        params = build_params(**kw)
+        if "supersample" not in kw:
+            params.pop("supersample", None)     # -> library_diff skips the key
+        return params
+
     def _library_states(self, scene_path):
         """(full_status, full_diff, preview_status, preview_diff) for one scene.
 
@@ -1286,8 +1305,8 @@ class CameraServer(ThreadingHTTPServer):
         preview library is meant to be coarse, so grading it against the full
         build parameters would report every preview ever built as stale.
         """
-        full_kw = build_params(**self._build_kwargs())
-        prev_kw = build_params(**self._build_kwargs(preview=True))
+        full_kw = self._grading_params()
+        prev_kw = self._grading_params(preview=True)
         fdir = library_dir(scene_path, self._library_root)
         pdir = library_dir(scene_path, self._preview_root)
         return (library_status(scene_path, fdir, **full_kw),

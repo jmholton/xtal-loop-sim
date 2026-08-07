@@ -163,6 +163,19 @@ full-but-stale library beats a current preview when both exist: the preview is
 a coarse stand-in with a 1× zoom ceiling, and preferring it because a build key
 drifted would be a quality regression nobody asked for.
 
+**`supersample` is not graded unless the operator names one.** It is the only
+build parameter documented as *per scene* rather than as policy: it follows each
+camera's sampling against the objective's Nyquist limit, which is 4 for
+hampton's 7.4 µm pixel and 1 for mitegen's 1.0 µm one (RUNBOOK "Frame
+libraries"). The server holds a single `library_kwargs`, so grading every scene
+against one default put a permanent "stale" on whichever scene did not match —
+and it was unclearable by rebuilding, because the value being called stale is
+the correct one for that scene. Rebuilding mitegen at supersample 4 to satisfy
+the check would have been optically wrong, ~29 h, and ~430 MB in git. Everything
+else (`format`, `psf`, `n_cond`, `step_deg`, `pan_mm`, `axis`, `jpeg_quality`)
+is global policy and is still graded; an explicitly-passed `--supersample` is
+graded too, since naming one means meaning it.
+
 **CPU builds are refused, and only the CLI has an escape hatch.** A frame is
 ~179 s on CPU, so even a 72-frame preview is ~3.6 h. `python -m loop_sim.library
 --allow-cpu` exists because that is a deliberate act in a terminal you can

@@ -31,14 +31,16 @@ external dependency is the runtime itself: a torch+CUDA interpreter, unpinned �
 ## Known gaps
 
 - **Supersampled frame libraries are large, and every scene adds another one.** The 1×
-  library was 5.3 MB; `hampton_300um` at the `--supersample 4` default is **84.9 MB**
+  library was 5.3 MB; `hampton_300um` at the `--supersample 4` default is **28.7 MB**
   (360 frames of 5578×2570). It is tracked in git, so each rebuild writes a fresh copy
   into history and every `push-all` moves it. Options if this becomes a problem: drop to
   `--supersample 2` (4× cheaper, still resolves the fiber), track only the reference
   `hampton_300um` library and let the rest build on first use, or stop tracking them and
-  accept a slow first launch per scene. The repo currently ships two — `hampton_300um`
-  (84.9 MB at `--supersample 4`) and `mitegen_200um` (26.8 MB at `--supersample 1`), about
-  112 MB together.
+  accept a slow first launch per scene. The repo currently ships two, both PNG and both current since the
+  `mitegen_200um` rebuild on 2026-08-07 — `hampton_300um` (30 MB at `--supersample 4`)
+  and `mitegen_200um` (16 MB at `--supersample 1`), **45 MB together**. Note PNG came
+  out smaller than the JPEG it replaced in both cases, so the two rebuilds roughly
+  halved this figure rather than growing it.
 - **Benchmark baselines don't travel.** `bench_results/` is gitignored, so the numbers a
   perf claim rests on exist only on the machine that produced them. Comparing this
   machine's results against the beamline's TITAN V (voltron) requires committing a

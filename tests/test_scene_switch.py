@@ -676,6 +676,41 @@ def test_switch_progress_is_parsed_into_state(tmp_path):
         srv.server_close()
 
 
+def test_supersample_is_not_graded_unless_asked_for(tmp_path):
+    """supersample is per-scene, so it must not be graded against a global.
+
+    It follows each camera's sampling against the objective's Nyquist limit --
+    4 for hampton's 7.4 um pixel, 1 for mitegen's 1.0 um one. Grading both
+    against one server-wide default puts a permanent "stale" on whichever scene
+    does not match, and no rebuild can clear it: the value being called stale is
+    the correct one for that scene.
+    """
+    a = _write_scene(tmp_path / "a.yaml")
+    srv = _empty_server(scene_path=a, scene_dir=str(tmp_path))
+    try:
+        assert "supersample" not in srv._grading_params()
+        # ...but an operator who names one means it, and it is graded.
+        srv._library_kwargs = dict(srv._library_kwargs, supersample=2)
+        assert srv._grading_params()["supersample"] == 2
+        # A preview always states its own, so it is always graded.
+        assert srv._grading_params(preview=True)["supersample"] == \
+            cs.PREVIEW_BUILD["supersample"]
+    finally:
+        srv.server_close()
+
+
+def test_grading_still_catches_the_policy_parameters(tmp_path):
+    """Dropping supersample must not blunt the rest of the check."""
+    a = _write_scene(tmp_path / "a.yaml")
+    srv = _empty_server(scene_path=a, scene_dir=str(tmp_path))
+    try:
+        p = srv._grading_params()
+        for key in ("format", "psf", "n_cond", "step_deg", "pan_mm", "axis"):
+            assert p.get(key) is not None, f"{key} silently stopped being graded"
+    finally:
+        srv.server_close()
+
+
 def test_library_root_flag_does_not_break_staleness(tmp_path):
     """`root` must never reach the manifest comparison.
 

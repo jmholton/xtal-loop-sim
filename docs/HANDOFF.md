@@ -1,8 +1,8 @@
 ---
 project: loop-sim (xtal-loop-sim) — bright-field microscope + X-ray simulator for protein crystals in cryo-loops
 status: active — camera served from pre-computed templates (no GPU at runtime) and usable interactively; scene geometry/fidelity is the open front
-last_verified: 2026-08-06        # `pytest tests/` = 147 passed in 117 s on this tree (branch performance-correctness-optimizations, RTX 4080 SUPER)
-verify: python -m pytest tests/ -q        # 147 tests; "python" = the torch-enabled project interpreter (see docs/RUNBOOK.md "Environment")
+last_verified: 2026-08-06        # `pytest tests/` = 149 passed in 125 s on this tree (branch performance-correctness-optimizations, RTX 4080 SUPER)
+verify: python -m pytest tests/ -q        # 149 tests; "python" = the torch-enabled project interpreter (see docs/RUNBOOK.md "Environment")
 ---
 
 # HANDOFF — loop-sim (xtal-loop-sim)
@@ -86,11 +86,12 @@ the GPU path **correct** (it was producing a "hairy" artifact on the loop fiber)
 - **Scenes can now be switched at runtime** — `GET /scenes`, `POST /scene`, and a
   tab strip on the control page swap the served sample without a restart or a
   stream drop. A library that is complete but built with older settings is
-  **served as-is with a warning, never rebuilt implicitly**: `mitegen_200um` is
-  exactly that case, and an implicit rebuild would cost ~1.9 h on the first tab
-  click. See DECISIONS.md §2026-08-06 for the lock order and the deadlock this
-  work uncovered in the existing `_servable` path.
-- **Verify: `pytest tests/` = 147 tests, green** on the local torch env (needs a
+  **served as-is with a warning, never rebuilt implicitly** — `mitegen_200um`
+  was that case until it was rebuilt on 2026-08-07, and an implicit rebuild
+  would have cost ~1.9 h on the first tab click. Both shipped libraries now read
+  `current`. See DECISIONS.md §2026-08-06 for the lock order and the deadlock
+  this work uncovered in the existing `_servable` path.
+- **Verify: `pytest tests/` = 149 tests, green** on the local torch env (needs a
   torch+CUDA interpreter; GPU-gated parity tests skip on a CPU-only box).
 - **Paused with clear open items** (see below) — nothing half-broken; the engine works.
 
@@ -99,7 +100,7 @@ the GPU path **correct** (it was producing a "hairy" artifact on the loop fiber)
 For a stranger picking this up cold:
 
 1. Build the environment and confirm health: follow **`RUNBOOK.md`** → run `python -m pytest
-   tests/ -q` (should be 147 green). "python" is the torch-enabled interpreter — beamline:
+   tests/ -q` (should be 149 green). "python" is the torch-enabled interpreter — beamline:
    `/programs/pytorch/envs/pt/bin/python`; local dev: a conda env with `torch==2.6.0+cu124`.
    On a CPU-only box the GPU parity tests skip, so green there proves less.
 2. Understand the design before editing: **`../CLAUDE.md`** is the deep engineering doc
@@ -264,24 +265,18 @@ fallback **6.3 fps**. The three things that decide whether you get 11.9 or 6.3:
   *only* because compile works, which loops back to risk B.)
 
 **Other traps:**
-- **`mitegen_200um`'s library is still pre-PSF and JPEG, and startup and switching now
-  answer differently about it.** Only hampton was rebuilt on 2026-08-06; `format` and
-  `psf` are build parameters, so the server correctly sees mitegen's library as stale.
-  What happens next depends on how you got there, and the asymmetry is deliberate but
-  worth knowing:
-  - **Switching to it at runtime** (tab, or `POST /scene`) serves the existing 360
-    frames immediately and warns what differs. It never rebuilds — see DECISIONS.md
-    §"a stale frame library is served as-is".
-  - **Launching with `--scene scene_files/mitegen_200um.yaml`** still calls
-    `ensure_library` in `__init__` and will **silently rebuild (~1.9 h)** before the
-    socket binds. That is the older decision (the team should never have to run a build
-    step) and it was left alone rather than quietly changed.
+- **RESOLVED 2026-08-07 — `mitegen_200um` was rebuilt; both shipped libraries are now
+  current.** It is PNG with the objective PSF baked in, at `--supersample 1` (its own
+  optically-correct value, see the sampling table below): 360 frames, 1840×2296,
+  **16 MB**, 102 min at 17.0 s/frame. Like the hampton rebuild, PNG came out *smaller*
+  than the JPEG it replaced (16 vs 28 MB). Nothing ships stale any more.
 
-  So a fresh clone can be wedged for two hours by a launch flag but not by a tab click.
-  Either rebuild it deliberately before handing the project over —
-  `python -m loop_sim.library --scene scene_files/mitegen_200um.yaml` — or decide that
-  startup should behave like switching does. **Unresolved; it needs a decision, not a
-  patch.**
+  **The asymmetry it used to illustrate is still there, though, and still unresolved.**
+  Switching to a stale-but-complete library at runtime serves it as-is; launching with
+  `--scene <that scene>` still calls `ensure_library` in `__init__` and would rebuild
+  before the socket binds. No shipped scene triggers it today, so it is latent rather
+  than live — but the next scene built with older settings will hit it, and a fresh
+  clone can still be wedged for hours by a launch flag where a tab click would not.
 - **CPU/GPU parity is now "±1 grey level", not "byte-identical", once the PSF is on.**
   The two float64 traces always differed by ~3e-8 on ~0.7% of values; that was invisible
   while the image was near-binary and the PSF makes it visible at the quantisation
@@ -398,8 +393,8 @@ those numbers don't have to be re-derived.
   sweep plus a `manifest.json` per scene. The repo ignores `*.png` and `*.jpg` globally, so
   `.gitignore` carries explicit re-includes for both under this tree. **Currently shipped:
   `hampton_300um`** (360 frames, 1° steps, `--supersample 4`, 5578×2570 each, 28.7 MB PNG) and
-  **`mitegen_200um`** (360 frames, `--supersample 1`, 1840×2296, 26.8 MB) — both verified
-  against live renders at 0.00 px. The supersample differs because the two cameras sample
+  **`mitegen_200um`** (360 frames, `--supersample 1`, 1840×2296, 16 MB PNG, rebuilt
+  2026-08-07) — both verified against live renders at 0.00 px, and both now current. The supersample differs because the two cameras sample
   the same NA 0.10 optics very differently; RUNBOOK "Frame libraries" has the rule. Note
   library size in git (see DATA.md "Known gaps") — `--supersample 2` is 4× cheaper than 4
   if that matters for a future scene.
@@ -414,13 +409,30 @@ those numbers don't have to be re-derived.
 - `bench_frame.py` — warm-frame benchmark (`--compiled`, `--fp32`). `acceptance_voltron.py`
   — self-contained TITAN V acceptance test (fps + VRAM + compile check → GO/NO-GO +
   `acceptance_report.json`; auto-picks a free GPU). `run_gpu.slurm` — voltron GPU job (no
-  `--time`!). `tests/` — 147 tests (the verify command).
+  `--time`!). `tests/` — 149 tests (the verify command).
 - `README.md` — user guide (repo root). `CLAUDE.md` — deep engineering notes (repo root:
   architecture, precision, concurrency, the recentre bug). `docs/` — the handoff docs
   (this file + `RUNBOOK.md`, `DECISIONS.md`, `DATA.md`). `investigation/` — **not
   shipped**; experiment scratch + perf harnesses.
 
 ## Work log (append-only)
+
+- **2026-08-07 (later)** — `mitegen_200um` rebuilt; nothing ships stale any more.
+  Suite **149**. 360 PNG frames with the objective PSF, `--supersample 1` (its own
+  optically-correct value), 1840×2296, **16 MB**, 102 min at 17.0 s/frame — smaller
+  than the 28 MB JPEG library it replaced, the same way the hampton rebuild went.
+  **A grading flaw had to be fixed first, or no rebuild could have cleared the
+  warning:** the server graded every scene's `supersample` against one global
+  default, but supersample is per-scene by design (hampton 4, mitegen 1 — it
+  follows each camera's sampling against the objective's Nyquist limit). Whichever
+  scene did not match the default was permanently `stale`, and unclearably so,
+  since the value being called stale is the correct one for that scene; satisfying
+  it by rebuilding mitegen at 4 would have been optically wrong, ~29 h and ~430 MB.
+  It is now graded only when explicitly passed. Everything else stays graded.
+  Both shipped libraries now read `current` and switching to mitegen raises no
+  warning. **Left alone deliberately:** the `crystal_harvester` droplet defects
+  found earlier the same day (see the previous entry) — not diagnosed further, not
+  patched.
 
 - **2026-08-07** — First `crystal_harvester` scene generated, and it exposed that
   droplet scenes could not be rendered at all with default settings. Suite **147**.
