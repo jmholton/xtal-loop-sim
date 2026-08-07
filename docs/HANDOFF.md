@@ -1,8 +1,8 @@
 ---
 project: loop-sim (xtal-loop-sim) — bright-field microscope + X-ray simulator for protein crystals in cryo-loops
 status: active — camera served from pre-computed templates (no GPU at runtime) and usable interactively; scene geometry/fidelity is the open front
-last_verified: 2026-08-06        # `pytest tests/` = 110 passed in 100 s on this tree (branch performance-correctness-optimizations, RTX 4080 SUPER)
-verify: python -m pytest tests/ -q        # 110 tests; "python" = the torch-enabled project interpreter (see docs/RUNBOOK.md "Environment")
+last_verified: 2026-08-06        # `pytest tests/` = 139 passed in 108 s on this tree (branch performance-correctness-optimizations, RTX 4080 SUPER)
+verify: python -m pytest tests/ -q        # 139 tests; "python" = the torch-enabled project interpreter (see docs/RUNBOOK.md "Environment")
 ---
 
 # HANDOFF — loop-sim (xtal-loop-sim)
@@ -83,7 +83,14 @@ the GPU path **correct** (it was producing a "hairy" artifact on the loop fiber)
   + a modern compiler for `torch.compile`); the beamline's default stack falls back to eager
   at 6.3 fps. Settled/offline/`/xray` frames stay bit-exact f64. See RUNBOOK "Deploy on the
   TITAN V" for the exact recipe and DECISIONS.md.
-- **Verify: `pytest tests/` = 110 tests, green** on the local torch env (needs a
+- **Scenes can now be switched at runtime** — `GET /scenes`, `POST /scene`, and a
+  tab strip on the control page swap the served sample without a restart or a
+  stream drop. A library that is complete but built with older settings is
+  **served as-is with a warning, never rebuilt implicitly**: `mitegen_200um` is
+  exactly that case, and an implicit rebuild would cost ~1.9 h on the first tab
+  click. See DECISIONS.md §2026-08-06 for the lock order and the deadlock this
+  work uncovered in the existing `_servable` path.
+- **Verify: `pytest tests/` = 139 tests, green** on the local torch env (needs a
   torch+CUDA interpreter; GPU-gated parity tests skip on a CPU-only box).
 - **Paused with clear open items** (see below) — nothing half-broken; the engine works.
 
@@ -92,7 +99,7 @@ the GPU path **correct** (it was producing a "hairy" artifact on the loop fiber)
 For a stranger picking this up cold:
 
 1. Build the environment and confirm health: follow **`RUNBOOK.md`** → run `python -m pytest
-   tests/ -q` (should be 110 green). "python" is the torch-enabled interpreter — beamline:
+   tests/ -q` (should be 139 green). "python" is the torch-enabled interpreter — beamline:
    `/programs/pytorch/envs/pt/bin/python`; local dev: a conda env with `torch==2.6.0+cu124`.
    On a CPU-only box the GPU parity tests skip, so green there proves less.
 2. Understand the design before editing: **`../CLAUDE.md`** is the deep engineering doc
@@ -244,13 +251,24 @@ fallback **6.3 fps**. The three things that decide whether you get 11.9 or 6.3:
   *only* because compile works, which loops back to risk B.)
 
 **Other traps:**
-- **`mitegen_200um`'s library is still pre-PSF and JPEG.** Only hampton was rebuilt on
-  2026-08-06. `format` and `psf` are build parameters, so the server correctly sees
-  mitegen's library as stale — and, by design, will **silently rebuild it (~1.9 h)** on
-  first use. That is the intended behaviour (the team should never have to run a build),
-  but rebuild it deliberately before handing the project over so nobody pays the
-  wall-clock by surprise:
-  `python -m loop_sim.library --scene scene_files/mitegen_200um.yaml`.
+- **`mitegen_200um`'s library is still pre-PSF and JPEG, and startup and switching now
+  answer differently about it.** Only hampton was rebuilt on 2026-08-06; `format` and
+  `psf` are build parameters, so the server correctly sees mitegen's library as stale.
+  What happens next depends on how you got there, and the asymmetry is deliberate but
+  worth knowing:
+  - **Switching to it at runtime** (tab, or `POST /scene`) serves the existing 360
+    frames immediately and warns what differs. It never rebuilds — see DECISIONS.md
+    §"a stale frame library is served as-is".
+  - **Launching with `--scene scene_files/mitegen_200um.yaml`** still calls
+    `ensure_library` in `__init__` and will **silently rebuild (~1.9 h)** before the
+    socket binds. That is the older decision (the team should never have to run a build
+    step) and it was left alone rather than quietly changed.
+
+  So a fresh clone can be wedged for two hours by a launch flag but not by a tab click.
+  Either rebuild it deliberately before handing the project over —
+  `python -m loop_sim.library --scene scene_files/mitegen_200um.yaml` — or decide that
+  startup should behave like switching does. **Unresolved; it needs a decision, not a
+  patch.**
 - **CPU/GPU parity is now "±1 grey level", not "byte-identical", once the PSF is on.**
   The two float64 traces always differed by ~3e-8 on ~0.7% of values; that was invisible
   while the image was near-binary and the PSF makes it visible at the quantisation
@@ -316,6 +334,10 @@ fallback **6.3 fps**. The three things that decide whether you get 11.9 or 6.3:
 - **Frame-library coverage.** The sweep covers rotation; `zoom` and `tz` are not free the
   way lateral translation is and would need their own sweeps or a live render. Decide
   whether the AXIS consumer needs them before treating the library as complete.
+- **Should launching on a stale-library scene behave like switching to one?** Runtime
+  switching serves a stale-but-complete library as-is; `CameraServer.__init__` still
+  rebuilds it. Both behaviours are defensible on their own and they now disagree with
+  each other — see the `mitegen_200um` trap above.
 - **Push/merge decision for `performance-correctness-optimizations`** — owner: James. Until
   pushed, the branch lives only on this tree + the gateway mirror.
 - **Package the TITAN V software stack.** The 11.9 fps result needs torch 2.6 + a modern
@@ -346,8 +368,10 @@ those numbers don't have to be re-derived.
 - `loop_sim/` — the package: `scene/` (YAML loader, `next_interface`, primitives, `tube.py`,
   `surface_mesh.py`, `thin_shell.py`, CSG), `motors/goniometer.py`, `renderer/`
   (`microscope.py` numpy reference tracer, `beam.py` X-ray, **`engine_torch.py`**
-  GPU-resident engine), `server/camera_server.py` (AXIS HTTP server + control page),
+  GPU-resident engine), `server/camera_server.py` (AXIS HTTP server + control page +
+  runtime scene switching),
   **`library/`** (pre-computed rotation sweeps — `build_library` / `ensure_library`,
+  `library_status` / `library_diff` (current/stale/missing, and what differs),
   `frame_for_angle`, `pose_crop`, `zoom_limits`; CLI `python -m loop_sim.library`).
 - `frame_library/<scene>/` — **tracked deliverable**, not build output: a rendered 360°
   sweep plus a `manifest.json` per scene. The repo ignores `*.png` and `*.jpg` globally, so
@@ -369,13 +393,48 @@ those numbers don't have to be re-derived.
 - `bench_frame.py` — warm-frame benchmark (`--compiled`, `--fp32`). `acceptance_voltron.py`
   — self-contained TITAN V acceptance test (fps + VRAM + compile check → GO/NO-GO +
   `acceptance_report.json`; auto-picks a free GPU). `run_gpu.slurm` — voltron GPU job (no
-  `--time`!). `tests/` — 86 tests (the verify command).
+  `--time`!). `tests/` — 139 tests (the verify command).
 - `README.md` — user guide (repo root). `CLAUDE.md` — deep engineering notes (repo root:
   architecture, precision, concurrency, the recentre bug). `docs/` — the handoff docs
   (this file + `RUNBOOK.md`, `DECISIONS.md`, `DATA.md`). `investigation/` — **not
   shipped**; experiment scratch + perf harnesses.
 
 ## Work log (append-only)
+
+- **2026-08-06 (latest)** — Runtime scene switching, and a live deadlock found on
+  the way. Suite **139** (was 110). The server held one scene for the life of the
+  process; it now has `GET /scenes`, `GET /scene`, `POST /scene?path=&build=` and
+  a **tab strip** on the control page, and swaps scenes without restarting or
+  dropping the stream. Design: `_build_bundle` does everything fallible off-lock
+  and writes nothing to `self`; `_install_bundle` writes `self` and cannot raise,
+  so a failed switch is structurally a no-op with no rollback path.
+  **Three defects fixed in passing, all pre-existing.** (1) A genuine two-thread
+  **deadlock**: `_servable` reads `_templates` and is called from inside
+  `_gonio_lock`, so scene-guarding `_templates` naively would invert against
+  `_render_now` and hang the whole server on one `/motor` during one render.
+  `_servable` now acquires nothing and `_set_pose_instant` hoists `_scene_lock`
+  outside `_gonio_lock`; `tests/test_server_lock_order.py` checks the order
+  statically (verified by reintroducing the bug into a copy — it names it).
+  (2) `_snapshot_gonio` read the pose under `_gonio_lock` and `_scene.geometry`
+  *after* releasing it, and `_command_recenter` had the same split — both would
+  pair one scene's pose with another's axes. (3) `--engine torch --templates on`
+  built a `TorchScene` nothing ever calls (the guard tested `engine == "auto"`).
+  **`mitegen_200um` is served stale, deliberately and permanently.** Its manifest
+  predates the `format` and `psf` build keys, so `is_current` is false — but its
+  360 frames are fine and `ensure_library` would have started a ~1.9 h rebuild on
+  the first tab click. New `library_status` splits the answer into
+  `current`/`stale`/`missing`; the switch path never calls `ensure_library`, and
+  `library_diff` names what differs ("stored as jpeg, not png; built without the
+  objective PSF; 1× supersample, so zoom is capped at 1×"). Verified that nothing
+  in the serving path reads `format`/`psf`, so a legacy manifest cannot KeyError.
+  Builds are explicit only, go to a separate untracked `frame_library_preview/`
+  root (building in place would overwrite frames the live `TemplateSource` caches
+  by filename), and are **refused without CUDA** — `--allow-cpu` on the library
+  CLI is the sole escape hatch. Driven end to end against the real server: the
+  picture changes, a switch mid-slew cancels the animation without writing
+  (pose lands at home, not the 33° it had reached), the stream keeps flowing, and
+  the stage still responds afterwards. **Next:** scene geometry correctness —
+  the fidelity block under Hazards is still the highest-value open work.
 
 - **2026-08-06 (later still)** — Motion realism, and a race it uncovered. **COMMITTED**
   (`ada9e41`, `471ce20`); suite **110**. Two commits: (1) a **pre-existing bug** —

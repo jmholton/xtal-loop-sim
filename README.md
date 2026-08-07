@@ -197,8 +197,10 @@ library, building it first if absent; off = raytrace every frame live),
 refining to the exact frame on settle; off = every frame exact full quality),
 `--compile-preview {on,off}` (on = preview frames render through a
 `torch.compile`d trace for ~10+ fps motion; compiles once at startup, ~20 s),
-and `--settle-delay` (seconds of pose quiet after an instant `/motor` set
-before the exact full-quality frame renders, default 0.5).  Instant `/motor`
+`--settle-delay` (seconds of pose quiet after an instant `/motor` set
+before the exact full-quality frame renders, default 0.5),
+and — for runtime scene switching — `--scene-dir` (which scenes are offered),
+`--library-root` and `--preview-root`.  Instant `/motor`
 sets — how AXIS-style consumers such as MxCuBE/EPICS drive the goniometer —
 count as motion too: streams of `/motor` updates get fast preview frames, and
 one exact frame renders automatically once the pose settles.
@@ -242,7 +244,9 @@ for the build flags.
 Open **`http://<host>:<port>/`** in a browser for a live control panel: the
 MJPEG view with a centre crosshair, a jog pad, zoom buttons, a speed dial,
 **click-in-image-to-recentre**, and a **goniometer target** panel — type X, Y, Z
-(mm) and φ (degrees), press **GO**, and the stage slews there.  Moves are
+(mm) and φ (degrees), press **GO**, and the stage slews there.  A **tab strip**
+above the image switches between the scenes in `scene_files/` without
+restarting the server (see "Switching scenes" below).  Moves are
 **animated** — the sample interpolates linearly to the target instead of
 teleporting (≈4 s to cross the screen, 30 rpm for the spindle, scaled by the
 speed dial).  Motion follows a trapezoidal velocity profile — it accelerates
@@ -261,6 +265,9 @@ moves like a real stage rather than snapping between poses.
 | `GET /recenter?px=400&py=300` | Animated move bringing a pixel to the centre |
 | `GET /beam` | X-ray illuminated volumes + Beer-Lambert attenuation (JSON) |
 | `GET /xray` | X-ray transmission map / radiograph (grayscale PNG) |
+| `GET /scenes` | Switchable scenes and the state of each one's frame library (JSON) |
+| `GET /scene` | The scene being served, plus progress/errors of any switch in flight |
+| `POST /scene?path=<scene>&build=preview\|full` | Switch scenes at runtime (see below) |
 
 **Motor parameters:** `tx`, `ty`, `tz` (mm), `rotx`, `roty`, `rotz` (degrees),
 `zoom` (dimensionless; `zoom=2` halves pixel size).
@@ -269,6 +276,50 @@ moves like a real stage rather than snapping between poses.
 `dzoom`, …), screen-fraction pan (`panx`, `pany`; ±1 = one field of view), and
 `speed` (`>1` faster, `<1` slow-motion).  Unlike `/motor`, `/move` animates the
 transition; `/motor` stays instant for AXIS back-compatibility.
+
+### Switching scenes without restarting
+
+The control page has a **tab per scene** in `scene_files/`; clicking one swaps
+the served sample live, with no restart and without dropping the MJPEG stream.
+The pose resets to home on a switch — a millimetre does not mean the same thing
+in two scenes with different pixel sizes.
+
+Each tab is badged with the state of that scene's frame library:
+
+| badge | meaning | clicking the tab |
+|---|---|---|
+| *(none)* | library matches the current build settings | switches immediately |
+| `stale` | complete and servable, but built with different settings | switches immediately, and says what differs |
+| `preview` | only a coarse on-demand library exists | switches immediately, at 5° steps and 1× zoom |
+| `no library` | nothing to serve | offers a **preview** (~72 frames, minutes) or **full** (360 frames) build |
+
+**A stale library is served as-is, never rebuilt behind your back.** The shipped
+`mitegen_200um` library is the example: it predates the `format` and `psf` build
+keys, so it does not match current settings, but its 360 frames are perfectly
+usable and reproducing them costs ~1.9 h. Switching to it is instant and the
+page names the differences.
+
+Builds are refused without a GPU — on CPU a frame takes ~179 s, so even a
+72-frame preview is ~3.6 h. Build on a GPU host instead:
+
+```bash
+python -m loop_sim.library --scene scene_files/<scene>.yaml            # full
+python -m loop_sim.library --scene scene_files/<scene>.yaml --preview  # coarse
+```
+
+From the command line rather than the browser:
+
+```bash
+curl -X POST 'http://host:8080/scene?path=mitegen_200um'   # 202, or 409/503
+curl -s http://host:8080/scene                             # progress + errors
+```
+
+`POST /scene` returns **202** and does the work on a background thread (a build
+outlasts any browser timeout); **409** if a switch is already running or the
+scene has no library and you did not pick a build; **503** if a build was asked
+for with no CUDA; **400** for an unknown scene. Only scenes the server itself
+enumerates can be selected, so the `path` you send is a lookup key and never
+touches the filesystem. A switch that fails leaves the running scene untouched.
 
 **Beam response example:**
 ```json

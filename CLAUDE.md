@@ -166,6 +166,33 @@ streamed sample glides instead of teleporting.  Non-obvious bits:
   pure module-level functions (unit-tested in `tests/test_server_controls.py`).
   Note `move_duration` returns the CONSTANT-SPEED time — the input to the
   stepper, not the wall-clock duration.
+- **Scene switching is a build/install split under a ranked lock order.**
+  `_build_bundle` does every fallible thing (YAML load, library resolve-or-build,
+  `TorchScene`, goniometer) **off-lock and writes nothing to `self`**;
+  `_install_bundle` writes `self` and **cannot raise**. A failed switch therefore
+  leaves the old scene bit-for-bit intact and there is no rollback path.
+  The order is **`_anim_cv > _scene_lock > _gonio_lock`, with `_frame_cv` a
+  leaf**, and the install nests: `/move`, `/recenter` and the animator read the
+  scene's camera *and* `_target_pose` under `_anim_cv`, so both must become new
+  in one instant (hampton 0.0074 mm/px vs mitegen 0.001 — a torn read is a 7.4×
+  error, silently clamped). `_scene_lock` is an **RLock** (`_snapshot_gonio` is
+  called both inside and outside `_render_now`'s hold) and is taken in
+  `_render_now`, **never** in `_render_frame`, which the single-flight tests
+  replace wholesale. **`_servable` acquires nothing — its caller must hold
+  `_scene_lock`**: `_set_pose_instant` calls it from inside `_gonio_lock`, so a
+  self-locking version deadlocks against the renderer.
+  `tests/test_server_lock_order.py` enforces the order **statically**, because
+  the inversions are call-mediated and `threading.Condition` wraps an `RLock`
+  (so a re-entrant `_anim_cv` would silently succeed rather than hang).
+  The goniometer is **rebuilt, never reassigned** — it captures `scene.geometry`
+  by reference — and `_scene_gen` stops a cancelled animation's speed/heading
+  handoff (the one thing it does write) crossing into the new scene.
+- **A stale frame library is served, not rebuilt.** `library_status` splits
+  `is_current`'s single bool into `current` / `stale` / `missing`; the switch
+  path never calls `ensure_library`, because that rebuilds anything not current
+  and `mitegen_200um` is stale only by two build keys — a ~1.9 h rebuild of
+  frames already on disk. Builds happen only on an explicit `build=preview|full`
+  and are refused without CUDA.
 - **Click-to-recentre:** the browser sends the click as a **fraction** `fx,fy ∈
   [0,1]` of the displayed image (taken from `cam.getBoundingClientRect()`); the
   server scales by the true camera W/H.  Do **not** map clicks via

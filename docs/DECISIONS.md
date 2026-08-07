@@ -8,6 +8,124 @@
 
 ## Decisions
 
+### 2026-08-06 — runtime scene switching: build off-lock, install under lock
+
+The server held one scene for the life of the process, so comparing the two
+shipped scenes meant a restart and a reconnect of every MJPEG consumer. It can
+now be switched live. Five decisions are worth keeping:
+
+**The split is the safety argument.** `_build_bundle` does everything that can
+fail — load the YAML, resolve or build the library, allocate the `TorchScene`,
+construct the goniometer — **off-lock**, and writes nothing to `self`.
+`_install_bundle` writes `self` and cannot raise: ~20 stores and a dict copy, no
+I/O, no allocation, not even a `print` (which takes the stdout lock and blocks
+on a full pipe). So a failed switch leaves the running scene bit-for-bit as it
+was, and there is **no rollback path to get wrong**. The outgoing objects are
+stashed in a local and `del`d after the locks release, so CUDA frees do not run
+inside the critical section.
+
+**Lock order is `_anim_cv > _scene_lock > _gonio_lock`, with `_frame_cv` a
+leaf, and the install NESTS.** `_command_move`, `_command_recenter` and
+`_animator_loop` read `self._scene`'s camera and geometry under `_anim_cv`
+(that is what §"a preempted animation…" below established), and `_target_pose`
+lives under `_anim_cv` too — so the swap has to make both new in the same
+instant. Writing them under separate locks *is* the race. It is not a subtle
+one: hampton is 0.0074 mm/px against mitegen's 0.001, so a torn read is a
+**7.4× error** in every pan and recentre, silently clamped by `servable_pose`,
+with no exception and no log line. This repo already carries one unresolved
+non-deterministic pose-offset bug (click-to-recentre); a second independent
+source of the same symptom would make the first undebuggable.
+
+**A second cycle was found while doing it, and it was live.** `_servable` reads
+`self._templates`, and `_set_pose_instant` calls it from *inside* `_gonio_lock`.
+Giving `_servable` a lock of its own — the obvious move once `_templates` is
+scene-guarded — creates `_gonio_lock → _scene_lock`, which deadlocks against
+`_render_now` holding `_scene_lock` and then wanting `_gonio_lock` via
+`_snapshot_gonio`. Two threads, one `/motor` during one background render, and
+the whole server hangs with the socket still accepting. Fixed by making
+`_servable` acquire nothing (documented "caller holds `_scene_lock`") and
+hoisting `_scene_lock` outside `_gonio_lock` in `_set_pose_instant`.
+`tests/test_server_lock_order.py` checks the order **statically**, because both
+halves of this are invisible at runtime: the inversion is call-mediated and
+shows in neither function's own body, and `threading.Condition` wraps an
+`RLock`, so an accidentally re-entrant `_anim_cv` would silently succeed rather
+than hang. Verified by reintroducing the bug into a copy: the checker names it.
+
+**`_scene_lock` is acquired in `_render_now`, not `_render_frame`**, because
+`tests/test_server_singleflight.py` subclasses the server and replaces
+`_render_frame` wholesale — a lock in there would be bypassed by the very tests
+that exercise the concurrency. Cost: a switch waits at most one in-flight frame.
+Measured worst cases: ~70 ms on the shipped template path, ~1 s for a
+`--templates off` settle frame, 18 s on `--templates off --engine numpy` (where
+the stream is already one frame per 18 s, so a one-frame wait is proportionate).
+No mitigation; the alternative — render unlocked and discard on a generation
+change — relies on a fragile property of the current renderer and does not fix
+the pose/geometry pairing in `_snapshot_gonio`.
+
+**The animator needs no quiescing, with one exception that had to be closed.**
+A cancelled animation provably does not touch the goniometer (§below), so the
+swap just bumps `_anim_gen`. But `_run_animation`'s preempt branch *does* write
+two fields — it hands its speed and heading to whoever won — and it writes them
+after the install has released `_anim_cv`, so clearing them in the install is
+always undone. A `_scene_gen` counter, frozen into each animation the way
+`W`/`pixel_size` already were, makes the handoff skip when the scene changed
+underneath. Otherwise the first jog in the new scene starts at speed, at a
+different mm-per-pixel, on a stage that was just reset to home.
+
+Also: `_compiled_ok` is reset (the trace was built against the old `TorchScene`)
+and deliberately **not** re-warmed, because `_warmup_compiled_preview` must run
+single-threaded and by switch time the server is not — so a
+`--templates off --engine torch` server runs eager previews (6.3 vs 11.9 fps)
+after its first switch, and says so on stdout rather than degrading silently.
+`_frame_gen` is **not** bumped on install: MJPEG consumers hold no scene state,
+and `_jpeg_cache` still holds the old scene's frame at that instant, so bumping
+would push every client one duplicate stale part for no new information.
+`_invalidate()` alone is the right signal.
+
+### 2026-08-06 — a stale frame library is served as-is, never silently rebuilt
+
+`is_current()` returns one bool for two very different situations, and the
+switch path needs them separated:
+
+- **missing** — no manifest, frames absent or damaged, or the scene YAML has
+  changed since the build (those frames show a different object). Nothing to
+  serve.
+- **stale** — a *complete* library that simply was not built the way we would
+  build it now. It serves perfectly well.
+
+`frame_library/mitegen_200um` is the live example: 360 usable JPEG frames the
+server streamed at 19.8 ms/frame on 2026-08-03, whose only sin is a manifest
+older than the `format` and `psf` build keys. `ensure_library` rebuilds whenever
+`is_current` is false, so a switch that used it would have started a **~1.9 h
+rebuild of frames already on disk** — and with only two bundled scenes, that is
+the *first* thing anyone would hit on tabbing across. So the switch path never
+calls `ensure_library`; it uses a non-building `library_status` / `_pick_library`
+and reads the manifest that is actually there, and `library_diff` names what
+differs so the operator gets *"stored as jpeg, not png; built without the
+objective PSF; 1× supersample, so zoom is capped at 1×"* rather than "stale".
+Building is only ever explicit, via `build=preview|full`.
+
+Verified before relying on it: **nothing in the serving path reads `format`,
+`psf` or `psf_sigma_px`**. The keys a manifest is read for are `axis`,
+`rendered`, `frames`, `supersample`, `step_deg`, `camera` and `window_mm`, all
+of which the legacy manifest has — so serving it cannot `KeyError`.
+
+**Preview libraries go to a separate root** (`frame_library_preview/`, untracked)
+rather than into the live one. Building in place would overwrite frames the
+serving `TemplateSource` is decoding and caching *by filename*, so a viewer
+would keep showing whichever mixture of old and new bytes its cache held. A
+full-but-stale library beats a current preview when both exist: the preview is
+a coarse stand-in with a 1× zoom ceiling, and preferring it because a build key
+drifted would be a quality regression nobody asked for.
+
+**CPU builds are refused, and only the CLI has an escape hatch.** A frame is
+~179 s on CPU, so even a 72-frame preview is ~3.6 h. `python -m loop_sim.library
+--allow-cpu` exists because that is a deliberate act in a terminal you can
+Ctrl-C; the viewer offers nothing equivalent, because a wedged daemon thread
+with no cancel endpoint is a far worse place to discover you meant something
+else. The refusal is checked per scene *after* the already-current
+short-circuit, so a no-op run still succeeds on a GPU-less box.
+
 ### 2026-08-06 — motion is a velocity profile, and the stage speeds were halved
 
 **A real stage accelerates.** `_run_animation` interpolated linearly: instant full

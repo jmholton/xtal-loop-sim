@@ -52,12 +52,35 @@
   .val { font-variant-numeric: tabular-nums; opacity:.85; }
   .hint { font-size:11px; opacity:.5; margin-top:10px; line-height:1.5; }
   #state { font-size:11px; opacity:.7; white-space:pre; margin-top:8px; }
+
+  /* scene tabs */
+  .tabs { display:flex; gap:6px; margin:0 0 8px; flex-wrap:wrap; }
+  .tab { border-radius:6px 6px 0 0; padding:6px 12px; opacity:.7; }
+  .tab[aria-selected="true"] { border-color:var(--accent); background:#333a47; opacity:1; }
+  .tab[disabled] { opacity:.4; cursor:default; }
+  .tab .badge { font-size:10px; margin-left:6px; opacity:.85; }
+  .tab.stale .badge, .tab.preview .badge { color:#e8c46a; }
+  .tab.missing .badge { color:#e88a6a; }
+  .ask { border:1px solid var(--accent); border-radius:6px; padding:10px 12px;
+         margin:0 0 8px; font-size:12px; line-height:1.7; max-width:620px; }
+  .ask button { padding:4px 8px; min-width:0; font-size:11px; }
+  /* A SECOND status line, owned solely by the scene code.  poll() rewrites
+     #state wholesale every 600 ms from /motor, so anything long-lived -- a
+     stale-library warning, build progress, a failed switch -- has to live
+     outside it or it flickers once and is gone. */
+  #notice { font-size:11px; white-space:pre-wrap; line-height:1.5; margin-top:8px; }
+  #notice:empty { display:none; }
+  #notice.warn { color:#e8c46a; }
+  #notice.err  { color:#ff8a7a; }
+  #notice.busy { color:var(--accent); }
 </style>
 </head>
 <body>
 <div class="wrap">
   <div>
     <h1>LOOP-SIM &nbsp;·&nbsp; live view</h1>
+    <div class="tabs" id="tabs" role="tablist"></div>
+    <div class="ask" id="ask" hidden></div>
     <div class="view" id="view">
       <img id="cam" src="/axis-cgi/mjpg/video.cgi" alt="camera">
       <div class="cross"><div class="dot"></div></div>
@@ -116,6 +139,7 @@
     </div>
 
     <div id="state"></div>
+    <div id="notice"></div>
     <div id="dbg" class="hint" style="white-space:pre"></div>
   </div>
 </div>
@@ -320,6 +344,149 @@ fmtSpeed();
   try { applyState(await (await fetch("/motor")).json()); } catch (e) {}
 })();
 setInterval(poll, 600);
+
+// ---------------------------------------------------------------------------
+// Scenes: tab strip, build dialogue, switch banner.
+//
+// Everything here writes to #notice, never #state: poll() above rewrites
+// #state from /motor every 600 ms, so a build banner or a stale-library
+// warning parked there would survive less than a second.  Two elements, two
+// owners -- #state is the live pose, #notice is everything that must persist.
+// ---------------------------------------------------------------------------
+let SCENES = [], CAN_BUILD = true, BUILD_REFUSAL = "";
+let SWITCHING = false, switchTimer = null;
+
+function notice(text, kind) {
+  $("notice").textContent = text || "";
+  $("notice").className   = text ? (kind || "") : "";
+}
+
+function renderTabs() {
+  $("tabs").innerHTML = SCENES.map(s => {
+    const st = s.serving_from === "preview" ? "preview"
+             : (s.can_serve ? (s.library.status === "stale" ? "stale" : "ok")
+                            : "missing");
+    const label = { ok: "", stale: "stale", preview: "preview", missing: "no library" }[st];
+    const tip = (s.warning || (st === "missing" ? "no frame library yet" : ""))
+                  .replace(/"/g, "&quot;");
+    return `<button class="tab ${st}" role="tab" data-scene="${s.path}"`
+         + ` data-serve="${s.can_serve}" aria-selected="${s.is_current_scene}"`
+         + `${SWITCHING ? " disabled" : ""} title="${tip}">${s.name}`
+         + (label ? `<span class="badge">${label}</span>` : "") + `</button>`;
+  }).join("");
+}
+
+// ONE delegated listener, bound once.  The tabs are re-rendered wholesale on
+// every /scenes refresh, so per-button listeners would have to be re-bound
+// each time -- the same reason the translate pad uses [data-pan].
+$("tabs").addEventListener("click", e => {
+  const b = e.target.closest(".tab");
+  if (!b || SWITCHING || b.getAttribute("aria-selected") === "true") return;
+  $("ask").hidden = true;
+  const s = SCENES.find(x => x.path === b.dataset.scene);
+  if (!s) return;
+  if (s.can_serve) switchTo(s.path, null);   // stale IS servable: no dialogue
+  else askBuild(s);
+});
+
+// The build dialogue: an inline strip, not a modal.  This page has no dialog
+// or overlay pattern and one scene switch does not justify inventing one.
+function askBuild(s) {
+  const el = $("ask");
+  el.innerHTML =
+    `<b>${s.name}</b> has no frame library yet. Building one renders a 360&deg; `
+  + `sweep once; every frame after that is replayed with no GPU.`
+  + `<div style="margin-top:8px">`
+  +   `<button data-build="preview">build preview &mdash; 72 frames, coarse</button> `
+  +   `<button data-build="full">build full &mdash; 360 frames, up to ~1 h</button> `
+  +   `<button data-build="">cancel</button>`
+  + `</div>`
+  + (CAN_BUILD ? "" : `<div style="margin-top:8px;opacity:.75">${BUILD_REFUSAL}</div>`);
+  el.hidden = false;
+  el.querySelectorAll("button").forEach(b => {
+    if (b.dataset.build && !CAN_BUILD) b.disabled = true;
+    b.addEventListener("click", () => {
+      el.hidden = true;
+      if (b.dataset.build) switchTo(s.path, b.dataset.build);
+    });
+  });
+  const first = el.querySelector('button[data-build="preview"]');
+  if (first && !first.disabled) first.focus();      // preview is the default
+}
+
+async function switchTo(path, build) {
+  SWITCHING = true; renderTabs();
+  notice(build ? `starting ${build} build…` : "switching…", "busy");
+  let r, j;
+  try {
+    const q = new URLSearchParams({ path });
+    if (build) q.set("build", build);
+    r = await fetch("/scene?" + q, { method: "POST" });
+    j = await r.json();
+  } catch (e) {
+    SWITCHING = false; renderTabs(); notice("switch request failed", "err");
+    return;
+  }
+  if (r.status !== 202) {
+    SWITCHING = false; renderTabs();
+    // needs_build means the scene is fine, it just has no library: offer the
+    // choice rather than reporting it as an error.
+    if (j.needs_build) { const s = SCENES.find(x => x.path === path); if (s) askBuild(s); }
+    else notice(j.error || `switch refused (${r.status})`, "err");
+    return;
+  }
+  pollSwitch();
+}
+
+// Self-terminating poller: it re-arms only while a switch is actually running,
+// so an idle viewer makes one /scene call at load and none after.
+function pollSwitch() {
+  if (switchTimer) return;
+  switchTimer = setInterval(async () => {
+    let j;
+    try { j = await (await fetch("/scene")).json(); } catch (e) { return; }
+    const sw = j.switch;
+    if (["validating", "building", "installing"].includes(sw.status)) {
+      SWITCHING = true;
+      const pct = sw.percent === null ? "" : `  ${sw.percent.toFixed(0)}%`;
+      notice(`${sw.build ? sw.build + " build" : "switching"} → `
+           + `${(sw.scene || "").split("/").pop()}\n${sw.phase}${pct}`
+           + (sw.message ? `\n${sw.message}` : ""), "busy");
+      return;
+    }
+    clearInterval(switchTimer); switchTimer = null;
+    SWITCHING = false;
+    if (sw.status === "error") {
+      // Nothing changed: a failed switch leaves the old scene installed.
+      notice(`switch FAILED: ${sw.error}\nstill serving ${j.name}`, "err");
+    } else {
+      notice(j.warning, "warn");     // stale-library warning, or cleared
+    }
+    await refreshScenes();
+    poll();                          // re-seed the boxes against the new clamps
+  }, 800);
+}
+
+async function refreshScenes() {
+  try {
+    const j = await (await fetch("/scenes")).json();
+    SCENES = j.scenes;
+    CAN_BUILD = j.can_build; BUILD_REFUSAL = j.build_refusal || "";
+  } catch (e) { return; }
+  renderTabs();
+}
+
+// Boot: draw the tabs, and pick up a switch already running (or one that
+// failed) if the page was loaded or reloaded mid-flight.
+(async () => {
+  await refreshScenes();
+  try {
+    const j = await (await fetch("/scene")).json();
+    if (["validating", "building", "installing"].includes(j.switch.status)) pollSwitch();
+    else if (j.switch.status === "error") notice(`switch FAILED: ${j.switch.error}`, "err");
+    else notice(j.warning, "warn");
+  } catch (e) {}
+})();
 </script>
 </body>
 </html>

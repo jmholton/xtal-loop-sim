@@ -1,13 +1,18 @@
 """Pre-computed frame libraries (rotation sweeps) for replay without rendering."""
 from .frame_library import (          # noqa: F401
+    CPU_BUILD_REFUSAL,
     DEFAULT_ROOT,
     DEFAULT_SUPERSAMPLE,
     build_library,
+    build_params,
     content_window,
+    cuda_available,
     ensure_library,
     frame_for_angle,
     is_current,
+    library_diff,
     library_dir,
+    library_status,
     load_manifest,
     plan_window,
     pose_crop,

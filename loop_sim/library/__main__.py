@@ -15,11 +15,13 @@ import glob
 import os
 import sys
 
-from .frame_library import (DEFAULT_FORMAT, DEFAULT_N_COND, DEFAULT_PAN_MM,
+from .frame_library import (CPU_BUILD_REFUSAL, DEFAULT_FORMAT, DEFAULT_N_COND,
+                            DEFAULT_PAN_MM, DEFAULT_PREVIEW_ROOT,
                             DEFAULT_QUALITY, DEFAULT_ROOT, DEFAULT_STEP_DEG,
                             DEFAULT_SUPERSAMPLE, DEFAULT_VRAM_FRACTION,
-                            build_library, build_params, is_current,
-                            library_dir, zoom_limits)
+                            PREVIEW_BUILD, build_library, build_params,
+                            cuda_available, is_current, library_dir,
+                            zoom_limits)
 
 
 def main(argv=None):
@@ -61,6 +63,19 @@ def main(argv=None):
     p.add_argument("--device", default=None,
                    help="cuda or cpu (default: cuda when available)")
     p.add_argument("--force", action="store_true", help="rebuild even if current")
+    p.add_argument("--preview", action="store_true",
+                   help="build the same coarse library the camera server builds "
+                        "when you switch it to an unbuilt scene "
+                        f"({PREVIEW_BUILD['step_deg']:g}deg steps, "
+                        f"{PREVIEW_BUILD['supersample']}x supersample, "
+                        f"n_cond {PREVIEW_BUILD['n_cond']}), into "
+                        "frame_library_preview/. Minutes instead of the best "
+                        "part of an hour; zoom is capped at 1x")
+    p.add_argument("--allow-cpu", action="store_true",
+                   help="build even with no CUDA device. A CPU build runs at "
+                        "roughly 179 s/frame -- ~3.6 h for a 72-frame preview "
+                        "and ~18 h for a full library -- so it is refused "
+                        "unless you ask for it explicitly")
     args = p.parse_args(argv)
 
     scenes = list(args.scene)
@@ -69,20 +84,41 @@ def main(argv=None):
     if not scenes:
         p.error("give --scene FILE or --all")
 
+    # Would an actual build run on the CPU?  Checked per scene below, AFTER the
+    # already-current short-circuit, so that on a GPU-less box a run with
+    # nothing to do still succeeds instead of refusing a no-op.  --device cpu
+    # counts: there is exactly one way to say "yes, I mean it on CPU", and it is
+    # --allow-cpu.  This is the only escape hatch anywhere -- the live server
+    # never offers one, because a wedged daemon thread with no cancel endpoint
+    # is a far worse place to discover you meant something else.
+    refuse_cpu = (not args.allow_cpu) and (
+        args.device == "cpu" or (args.device is None and not cuda_available()))
+
     tile = None if args.tile_size == "auto" else int(args.tile_size)
     opts = dict(axis=args.axis, step_deg=args.step, supersample=args.supersample,
                 pan_mm=args.pan_mm, n_cond=args.n_cond, quality=args.quality,
                 format=args.format, psf=args.psf == "on")
+    root = args.root
+    if args.preview:
+        # One definition of what a preview is, shared with the server, so a
+        # library built here is byte-for-byte one the server accepts as current.
+        opts.update(PREVIEW_BUILD)
+        if root == DEFAULT_ROOT:
+            root = DEFAULT_PREVIEW_ROOT
 
     rc = 0
     for s in scenes:
-        lib = library_dir(s, args.root)
+        lib = library_dir(s, root)
         if not args.force and is_current(s, lib, **build_params(**opts)):
             print(f"[frame-library] {s}: already current -> {lib}")
             continue
+        if refuse_cpu:
+            print(f"[frame-library] {s}: {CPU_BUILD_REFUSAL}", file=sys.stderr)
+            rc = 2
+            continue
         print(f"[frame-library] building {s} -> {lib}")
         try:
-            man = build_library(s, root=args.root, tile_size=tile,
+            man = build_library(s, root=root, tile_size=tile,
                                 vram_fraction=args.vram_fraction,
                                 device=args.device, **opts)
         except RuntimeError as exc:

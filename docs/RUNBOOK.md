@@ -157,6 +157,56 @@ Notes:
   on disk. Under WSL2 there is no OOM to catch (the driver spills to host RAM instead), so
   the builder also warns when frames slow down persistently; see "Dev-environment caveat".
 
+### Switching scenes on a running server
+
+The control page carries a tab per scene in `scene_files/`; clicking one swaps
+the sample live without restarting or dropping the MJPEG stream. The pose resets
+to home — a millimetre does not mean the same thing in two scenes whose pixel
+sizes differ 7.4×. Same thing from a terminal:
+
+```bash
+curl -X POST 'http://host:8080/scene?path=mitegen_200um'   # 202 accepted
+curl -s http://host:8080/scene                             # progress + errors
+curl -s http://host:8080/scenes                            # library state of each
+```
+
+Each tab is badged with that scene's library state, and only one of them stops a
+switch:
+
+- **(no badge)** — matches current build settings; switches immediately.
+- **`stale`** — complete and servable, built with different settings. **Switches
+  immediately**, and the page names what differs. This is normal, not a fault:
+  `mitegen_200um` ships stale because its manifest predates the `format` and
+  `psf` build keys, and its 360 frames are fine. **It is never rebuilt
+  automatically** — that would cost ~1.9 h nobody asked for.
+- **`preview`** — only a coarse on-demand library exists (5° steps, 1× zoom).
+- **`no library`** — nothing to serve; the page offers a preview or full build.
+
+**Builds are refused without CUDA** (~179 s/frame → ~3.6 h for a preview), in
+the viewer *and* the CLI. The viewer has no override by design; build offline on
+a GPU host instead, then switch:
+
+```bash
+python -m loop_sim.library --scene scene_files/<scene>.yaml            # full, ~45 min
+python -m loop_sim.library --scene scene_files/<scene>.yaml --preview  # coarse, minutes
+python -m loop_sim.library --scene <scene>.yaml --allow-cpu            # if you really mean it
+```
+
+Two consequences worth knowing:
+
+- **A switch waits for the in-flight frame**, so the stage briefly stops
+  responding: ~70 ms on the default template path, up to ~1 s with
+  `--templates off`, and one whole frame (~18 s) on `--templates off --engine
+  numpy`, where the stream is already that slow.
+- **`--templates off --engine torch` loses the compiled preview after the first
+  switch** (6.3 fps eager instead of 11.9). `torch.compile` warmup has to run
+  single-threaded, which is only true at startup; the server prints a
+  `[compile-preview]` line saying so rather than degrading silently. Restart to
+  get it back. The default template path is unaffected — it holds no GPU state.
+- **With `--templates off`, a switch holds both the old and the new `TorchScene`
+  until the install completes**, so peak VRAM is the sum. That is the price of
+  having no rollback path; it does not arise on the default path.
+
 ### On voltron (the beamline GPU node)
 
 GPU rendering requires CUDA, which lives on voltron. Submit from the local machine:
@@ -210,6 +260,9 @@ server, whose `/motor` endpoint takes all seven axes.
 | `--supersample` | builder default (4) | *rebuilds library* |
 | `--template-format` | builder default (`png`) | *rebuilds library* |
 | `--template-quality` | builder default (90) | JPEG quality of **stored** templates; ignored for png. *rebuilds library* |
+| `--scene-dir` | repo `scene_files/` | which `*.yaml` are offered for runtime switching on `/scenes` |
+| `--library-root` | repo `frame_library/` | frame-library root to serve from and report on |
+| `--preview-root` | repo `frame_library_preview/` | where on-demand **preview** libraries are written. Separate from `--library-root` deliberately — building into the live root overwrites frames the serving `TemplateSource` is caching by filename |
 
 ### `python -m loop_sim.library` — build a frame library
 
@@ -229,6 +282,8 @@ server, whose `/motor` endpoint takes all seven axes.
 | `--vram-fraction` | 0.80 | share of free VRAM the auto tile may use. Does not change pixels |
 | `--device` | auto | `cuda` when available |
 | `--force` | off | rebuild even if current |
+| `--preview` | off | build the same coarse library the camera server builds on demand (5° steps, 1× supersample, n_cond 1 → 72 frames) into `frame_library_preview/`. Minutes instead of ~45 min; zoom capped at 1× |
+| `--allow-cpu` | off | permit a build with no CUDA. Without it a CPU build is **refused**: ~179 s/frame is ~3.6 h for a preview and ~18 h for a full library. `--device cpu` needs this flag too |
 
 ### Scene YAML — `camera:` block
 

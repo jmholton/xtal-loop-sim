@@ -11,6 +11,16 @@
 !frame_library/**/*.jpg
 !frame_library/**/manifest.json
 
+# Coarse PREVIEW libraries the camera server builds on demand when you switch
+# it to a scene that has none.  Disposable build output, NOT a deliverable --
+# the opposite of frame_library/ above.  Their images are already ignored by
+# the *.png / *.jpg rules, but manifest.json matches no rule at all, so without
+# this line every preview manifest would be tracked while its frames were not.
+# Deliberately a file pattern rather than a `frame_library_preview/` directory
+# rule: git does not descend into an excluded directory, so a directory rule
+# would make any later `!` re-include beneath it silently impossible.
+frame_library_preview/**/manifest.json
+
 # Generated scene files (built by the pipeline)
 scene.yaml
 loop.yaml

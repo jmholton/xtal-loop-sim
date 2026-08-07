@@ -58,6 +58,17 @@ import numpy as np
 # the wrong directory is a silently missing deliverable, since it has to land in git.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DEFAULT_ROOT = os.path.join(_REPO_ROOT, "frame_library")
+# Coarse stand-in libraries, built on demand when someone switches the live
+# server to a scene that has none.  They go in a SEPARATE root because building
+# into the live one would overwrite frames the serving TemplateSource is
+# decoding and caching by filename -- the reader would keep serving whichever
+# mixture of old and new bytes its cache happened to hold.  Untracked, unlike
+# frame_library/: these are disposable, not a deliverable.
+DEFAULT_PREVIEW_ROOT = DEFAULT_ROOT + "_preview"
+# ~72 frames instead of 360, at the camera's own pitch and a single condenser
+# ray: minutes rather than the best part of an hour, at the cost of 5deg
+# rotation granularity and a zoom ceiling of 1x.
+PREVIEW_BUILD = {"step_deg": 5.0, "supersample": 1, "n_cond": 1}
 DEFAULT_STEP_DEG = 1.0
 DEFAULT_SUPERSAMPLE = 4
 DEFAULT_PAN_MM = 0.6
@@ -149,23 +160,15 @@ def build_params(axis="rotx", step_deg=DEFAULT_STEP_DEG, n_cond=DEFAULT_N_COND,
             "jpeg_quality": quality, "format": format, "psf": bool(psf)}
 
 
-def is_current(scene_path, lib_dir, **params):
-    """True when a complete library matching the scene AND the requested build
-    parameters is on disk.
+def _frames_complete(lib_dir, man):
+    """True when every frame the manifest lists is on disk and undamaged.
 
-    Comparing the scene hash alone is not enough: asking for a different
-    supersample or step and silently getting the old library back would be
-    indistinguishable from a correct build.
+    Split out because `is_current` and `library_status` both need it and must
+    agree: if they ever disagreed, a library could read as 'stale' (servable)
+    while actually being half-written.
     """
-    man = load_manifest(lib_dir)
-    if man is None:
+    if not man.get("frames"):
         return False
-    if man.get("scene_sha256") != scene_fingerprint(scene_path):
-        return False
-    for key in _BUILD_KEYS:
-        want = params.get(key)
-        if want is not None and man.get(key) != want:
-            return False
     if not all(os.path.exists(os.path.join(lib_dir, f["file"]))
                for f in man["frames"]):
         return False
@@ -182,6 +185,110 @@ def is_current(scene_path, lib_dir, **params):
     except Exception:
         return False
     return True
+
+
+def _stored_format(man):
+    """The format a manifest's templates are actually stored in.
+
+    A library built before `format` became a build key does not record it, so
+    the file extension is the ground truth -- and it is also what the operator
+    sees on disk.  Reporting "unset" instead would make the staleness warning
+    useless precisely for the libraries that need it.
+    """
+    fmt = man.get("format")
+    if fmt:
+        return fmt
+    ext = os.path.splitext(man["frames"][0]["file"])[1].lower()
+    return "jpeg" if ext in (".jpg", ".jpeg") else "png"
+
+
+def library_diff(scene_path, lib_dir, **params):
+    """Which BUILD PARAMETERS a library on disk disagrees with `params` about.
+
+    Returns {key: {"have":…, "want":…}}, empty when they match.  `is_current`
+    only answers yes/no; anything that serves a mismatched library anyway has to
+    tell the operator WHAT differs, and re-deriving that in the caller is how
+    the two would drift apart.
+
+    A key absent from the manifest reads as None and so differs from any
+    concrete request -- exactly `frame_library/mitegen_200um`, written before
+    `format` and `psf` existed.  The scene fingerprint is deliberately NOT
+    considered here: a changed scene means the frames show a different object,
+    which is `library_status`'s "missing", not a difference of degree.
+    """
+    man = load_manifest(lib_dir)
+    if man is None or not man.get("frames"):
+        return {}
+    out = {}
+    for key in _BUILD_KEYS:
+        want = params.get(key)
+        if want is None:
+            continue                    # not asked about -- not a difference
+        have = _stored_format(man) if key == "format" else man.get(key)
+        if have != want:
+            out[key] = {"have": have, "want": want}
+    return out
+
+
+def library_status(scene_path, lib_dir, **params):
+    """'current' | 'stale' | 'missing' for a library on disk.
+
+    Splits the single bool `is_current` returns, because its two failure modes
+    need opposite answers:
+
+      missing — nothing usable: no manifest, frames absent or damaged, or the
+                scene YAML has changed since the build (those frames are of a
+                different object, so serving them would be a lie).
+      stale   — a COMPLETE, servable library that simply was not built the way
+                we would build it now.  `frame_library/mitegen_200um` is exactly
+                this: 360 usable frames, ~1.9 h to reproduce, whose only sin is
+                a manifest older than the `format` and `psf` build keys.
+                Refusing to serve it -- or silently rebuilding -- would cost far
+                more than the warning it deserves.  `library_diff` says what
+                differs.
+    """
+    man = load_manifest(lib_dir)
+    if man is None:
+        return "missing"
+    if man.get("scene_sha256") != scene_fingerprint(scene_path):
+        return "missing"
+    if not _frames_complete(lib_dir, man):
+        return "missing"
+    return "stale" if library_diff(scene_path, lib_dir, **params) else "current"
+
+
+def is_current(scene_path, lib_dir, **params):
+    """True when a complete library matching the scene AND the requested build
+    parameters is on disk.  See `library_status` for the three-way answer.
+
+    Comparing the scene hash alone is not enough: asking for a different
+    supersample or step and silently getting the old library back would be
+    indistinguishable from a correct build.
+    """
+    return library_status(scene_path, lib_dir, **params) == "current"
+
+
+CPU_BUILD_REFUSAL = (
+    "no CUDA device -- refusing to build a frame library. On CPU this renders "
+    "at roughly 179 s/frame: a 72-frame preview is ~3.6 h and a 360-frame "
+    "library is ~18 h. Build it on a GPU host with `python -m loop_sim.library "
+    "--scene <scene>`, then switch to it; pass --allow-cpu to that command if "
+    "you really do mean to build on CPU.")
+
+
+def cuda_available():
+    """True when a build would actually run on a GPU.
+
+    One definition, so the server and the CLI refuse on identical grounds, and
+    one place for a test to monkeypatch.  A torch import failure reads as "no
+    CUDA" rather than propagating: the answer to "can we build fast?" is no
+    either way.
+    """
+    try:
+        import torch
+        return bool(torch.cuda.is_available())
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -382,6 +489,11 @@ def build_library(scene_path, root=DEFAULT_ROOT, axis="rotx",
     cam["width"], cam["height"], cam["pixel_size"] = RW, RH, tpl_px
 
     angles = [round(i * step_deg, 6) for i in range(int(round(360.0 / step_deg)))]
+    # Report ~20 times whatever the frame count, rather than every 20th frame:
+    # a coarse 72-frame preview built for the live scene switcher would
+    # otherwise emit 5 lines, and the server's progress bar is only as good as
+    # this.  A 360-frame build reports 20 times, as it already did.
+    prog_every = max(1, len(angles) // 20)
     frames = []
     t_start = time.time()
     baseline = []
@@ -437,7 +549,7 @@ def build_library(scene_path, root=DEFAULT_ROOT, axis="rotx",
             Image.fromarray(arr, mode="RGB").save(
                 os.path.join(lib_dir, name), format="JPEG", quality=quality)
         frames.append({"index": i, "angle_deg": ang, "file": name})
-        if progress and (i % 20 == 0 or i == len(angles) - 1):
+        if progress and (i % prog_every == 0 or i == len(angles) - 1):
             el = time.time() - t_start
             progress(f"    {i+1}/{len(angles)} frames  {el:6.1f}s elapsed "
                      f"({el/(i+1):.2f}s/frame)")
