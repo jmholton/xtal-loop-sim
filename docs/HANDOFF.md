@@ -1,8 +1,8 @@
 ---
 project: loop-sim (xtal-loop-sim) — bright-field microscope + X-ray simulator for protein crystals in cryo-loops
-status: active — camera served from pre-computed templates (no GPU at runtime) and usable interactively; scene geometry/fidelity is the open front
-last_verified: 2026-08-07        # `pytest tests/` = 149 passed in 114 s on this tree (branch performance-correctness-optimizations, RTX 4080 SUPER)
-verify: python -m pytest tests/ -q        # 149 tests; "python" = the torch-enabled project interpreter (see docs/RUNBOOK.md "Environment")
+status: active — camera served from pre-computed templates (no GPU at runtime) and usable interactively; generated scenes now carry a real, validated droplet; the camera-calibration fork is the open front
+last_verified: 2026-08-07        # `pytest tests/` = 167 passed in 143 s on this tree (branch performance-correctness-optimizations, RTX 4080 SUPER)
+verify: python -m pytest tests/ -q        # 167 tests; "python" = the torch-enabled project interpreter (see docs/RUNBOOK.md "Environment")
 ---
 
 # HANDOFF — loop-sim (xtal-loop-sim)
@@ -62,14 +62,19 @@ the GPU path **correct** (it was producing a "hairy" artifact on the loop fiber)
   Tiles are now sized at runtime against free VRAM, and rays are built one condenser
   sample at a time. A 14.34 Mpx template renders at **4.7 GB peak** where the old path
   needed ~14 GiB and spilled. **This retires risk A** (see Hazards).
-- **Scene fidelity is the weak half of the project, and as of 2026-08-07 there is no
-  trustworthy droplet at all.** The imaging chain is dimensionally correct (a 700.0 µm pin
-  measures 703.0 µm in the image), but the bundled benchmark scene contains no droplet and
-  no crystal; droplets render opaque for a non-physical reason; and the *generator* that
-  was supposed to be the way out silently substitutes a hemisphere for the solved droplet,
-  ignoring the volume and contact angle it was given, and places it outside the loop. So
-  both routes to a realistic sample are currently blocked. See "Scene fidelity" below —
-  this is the highest-value open work, ahead of any further performance tuning.
+- **The black-droplet mystery is SOLVED and the generator now produces a trustworthy,
+  validated droplet (2026-08-07, later).** Two scene-side mechanisms, no renderer bug:
+  the solvent's `color` was secretly a strong absorber (color IS an absorption spectrum
+  in this renderer — the ~0.26 brightness ceiling in the old NA sweep), and the silently
+  substituted hemisphere was the worst possible lens shape for the NA gate. The solver
+  was replaced with the closed-form spherical-cap lens `add_droplet.py` already had, the
+  droplet now sits **in the loop aperture** straddling the loop plane, the crystal is
+  centred in it, and every generated scene is measured back by
+  `crystal_harvester/validate.py` (volume, rim-on-fiber, watertightness — run by the CLI,
+  guarded by `tests/test_scene_geometry.py`). The regenerated
+  `hampton_300um_realistic.yaml` renders a near-background-bright drop with a dark rim
+  (core 0.67 vs background 0.93 at NA 0.10, was 0.04). Full detail in DECISIONS.md
+  §2026-08-07 (later). What remains open is the **camera calibration fork** (below).
 - **Correctness: DONE + committed.** The float32 "hairy/spikey fiber" GPU artifact is
   fixed — the CUDA intersection quadratic now runs in float64, and the GPU **geometric
   trace is byte-identical to the float64 CPU reference**. With the objective PSF enabled
@@ -115,25 +120,27 @@ For a stranger picking this up cold:
 4. **Beamline (TITAN V) readiness is now measured** — the 10 fps result reproduces on the
    real card (11.9 fps) *when the software stack is right* (RUNBOOK "Deploy on the TITAN V").
    The remaining work is packaging that stack, not proving the hardware.
-5. **Know which half of the project you are in.** The *renderer* is well verified — 110 tests,
-   GPU matching the CPU reference (byte-identical on the geometric trace, ±1 grey level
-   once the objective PSF is applied), and a dimensional check against physics. The
-   *scenes* are not: they were never validated until 2026-07-28 and two known-wrong ones
-   ship. Speed work is essentially done; fidelity work has barely started. If you are
-   deciding where to spend a week, spend it on "Scene fidelity" under Hazards.
+5. **Know which half of the project you are in.** The *renderer* is well verified — GPU
+   matching the CPU reference (byte-identical on the geometric trace, ±1 grey level once
+   the objective PSF is applied), and a dimensional check against physics. *Generated
+   scenes* are now validated mesh-back too (2026-08-07 later). The bundled
+   `hampton_300um.yaml` remains deliberately bare (perf baseline);
+   `hampton_300um_realistic.yaml` is the fidelity scene. The open fidelity question is
+   the camera calibration, not the geometry.
 6. **For the AXIS-camera use case, look at `frame_library/` before touching the renderer.**
    Delivery has shifted to pre-computed rotation sweeps replayed at request time, which
    sidesteps the frame-rate problem rather than fighting it (RUNBOOK "Frame libraries").
 
 The highest-value open engineering items, in rough priority:
-- **Scene fidelity** — the physics is validated but the scenes are not (see "Scene
-  fidelity" under Hazards). Settle the camera calibration, decide what the bundled
-  `hampton_300um` loop is meant to be, and work out why droplets render opaque. This
-  outranks further performance work: the frame rate is already met, the pictures are not
-  yet known to be right.
-- **Give `TSurfaceMesh` the AABB cull that `TTube` has** — now blocking, not cosmetic. It
-  is what stands between the project and rendering *any* scene with a solvent droplet at
-  full resolution (risk A below).
+- **Settle the camera calibration** — the one question still gating fidelity. NA sets how
+  bright a correct drop renders (a 2 nL drop passes ~17% of its area at NA 0.10, ~100%
+  at NA 0.28), and three calibrations still circulate. Two leads (DECISIONS §2026-08-07
+  later): they may be **two zoom settings of one objective** (they are Abbe-consistent;
+  note `eff_px` scales with zoom but NA does not), and one **photograph of a real 300 µm
+  loop carrying a drop** on the beamline camera (up during the shutdown; Jacob captures)
+  would ground both the NA and the volume default.
+- **Give `TSurfaceMesh` the AABB cull that `TTube` has** — a speed optimisation for mesh
+  scenes (they render, but slowly; the fidelity scene is ~5.5k faces now).
 - **Package the TITAN V deployment** (the recipe is measured; see RUNBOOK "Deploy on the
   TITAN V"): a torch-2.6 env + a modern compiler for `torch.compile`, plus making the
   silent-fallback-to-eager failure loud so a mis-set stack can't quietly miss 10 fps.
@@ -153,9 +160,11 @@ The highest-value open engineering items, in rough priority:
 
 ## Hazards & gotchas
 
-**Scene fidelity — the renderer is validated, the scenes are not.** Until 2026-07-28 all
-verification was self-consistency (GPU render vs CPU render of the same scene), which
-cannot detect a wrong *scene*. What is now measured:
+**Scene fidelity — the renderer is validated, and generated scenes now are too.** Until
+2026-07-28 all verification was self-consistency (GPU render vs CPU render of the same
+scene), which cannot detect a wrong *scene*; since 2026-08-07 (later) every generated
+scene is measured back against what was requested (`crystal_harvester/validate.py`).
+What is measured:
 
 - **The physics and imaging chain are sound.** The pin's ground-truth diameter is 700.0 µm
   and it measures **703.0 µm** in the rendered image at four independent columns — 0.4%,
@@ -173,13 +182,18 @@ cannot detect a wrong *scene*. What is now measured:
   -o scene_files/hampton_300um_realistic.yaml`. Do not simply fill the droplet in: that
   makes the scene unrenderable at full resolution (risk A) and invalidates every fps
   number taken on it.
-- **Solvent droplets render essentially opaque, and it is not absorption.** Solvent is
-  defined with `mu_optical: 0.00`, yet the drop core renders at a mean brightness of
-  **0.0405**. Sweeping the objective NA: 0.10 → 0.0405, 0.25 → 0.2005, 0.50 → 0.2613,
-  0.90 → 0.2633. A five-fold brightening that saturates by NA 0.5 means the rays are being
-  discarded by the **NA collection gate** after refracting through the drop's curvature. A
-  real bright-field drop is near background brightness with a dark rim. Two candidates:
-  the scenes' low NA values, and `MAX_DEPTH` bounce exhaustion in `microscope.py`.
+- **RESOLVED 2026-08-07 (later) — the opaque droplet was two scene-side mechanisms**, and
+  the trap that caused half of it is still live for scene authors: **material `color` is
+  an absorption spectrum, not a display tint** — `mu_per_ch = mu_optical + 30·(1−color)`
+  per mm (`microscope.py`), so the old solvent color `[0.2,0.4,0.8]` absorbed at
+  (24,18,6)/mm despite `mu_optical: 0.00`. That was the ~0.26 ceiling the NA sweep
+  saturated at (and why it could not reach ~1.0 at NA 0.90); the rest was the fallback
+  hemisphere's flat-bottomed shape refracting ~92% of the drop's area past the NA gate.
+  Any colored material is a strongly absorbing material — keep water-like solvents
+  near-white. `MAX_DEPTH` bounce exhaustion was **exonerated**: an exhausted ray keeps
+  its partial product and skips the NA test entirely, so it errs *bright* and cannot
+  blacken anything. TIR-as-absorption is what draws the dark rim and is correct. See
+  DECISIONS.md §2026-08-07 (later) for all measurements.
 - **Three different cameras are in circulation.** `template.yaml` — which DATA.md calls the
   authoritative calibration — specifies 0.82 µm pixels and NA 0.28/0.17, but **no shipped
   scene uses it**: the Hampton scenes use 7.4 µm and NA 0.10/0.07, `mitegen_200um` uses
@@ -188,49 +202,35 @@ cannot detect a wrong *scene*. What is now measured:
 - **The fiber is beaded at the default sampling.** Tubes become `n_samples - 1` capsules;
   at the default `n_samples=50` a 300 µm loop yields 19.3 µm segments against a 20.0 µm
   fiber — capsules as long as they are wide. Raise `n_samples` for fidelity renders.
-- **`crystal_harvester` gets the hardware right and the droplet wrong — CORRECTED
-  2026-08-07.** This entry previously read "`crystal_harvester` is the trustworthy source
-  of scenes", citing a droplet mesh spanning 300 × 300 × 150 µm. That measurement was of a
-  **fallback hemisphere, not a solved droplet**, and the distinction was invisible until
-  someone generated a scene and rendered it. What still holds: its loop, fiber, stem and
-  pin are dimensionally correct (300 µm loop, 20 µm fiber, pin exactly 700 µm), and the
-  hand-built bundled scenes remain the outlier for *that* geometry. What does not hold is
-  the droplet — see the next entry. Treat `crystal_harvester` as trustworthy for the
-  mount and untrustworthy for the solvent until the solver is fixed.
-- **The droplet solver silently fails and substitutes a hemisphere.**
-  `crystal_harvester/droplet.py::bashforth_adams` integrates the meniscus profile outward
-  and looks for where it crosses the loop radius. For a 300 µm loop it never gets there at
-  **any** pressure in its own bracket: the profile's widest point peaks at ~78 µm against
-  the 150 µm needed, then the surface turns vertical (ψ = π/2) and stops. Measured, on the
-  CLI's own defaults:
-
-  | dP | max radius reached | reaches R_loop = 150 µm? |
-  |---|---|---|
-  | 3.3 (bracket low) | 0.0 µm | no |
-  | 33 | 78 µm | no |
-  | 267 (bracket high) | 9.6 µm | no |
-  | 800 (past the bracket) | diverges (5.9 × 10⁵ mm) | — |
-
-  The first guard therefore fires and it returns `_hemisphere_mesh(R_loop)` with no
-  warning. Three consequences, all silent: **`--solvent-volume` is ignored** (0.002 mm³
-  requested, 0.00707 delivered — the hemisphere's own volume, 3.5× larger);
-  **`--contact-angle` is ignored** (nothing downstream of the failed solve reads it); and
-  the drop is a **flat-bottomed dome spanning z = [0, +150] µm**, sitting *on* the loop
-  plane instead of straddling it as a lens pinned at the rim. The radius shortfall is not
-  a bracket you can widen — the maximum peaks mid-bracket and falls off on both sides,
-  which points at a scaling or non-dimensionalisation error in the ODE rather than a
-  search-range problem. **Deliberately not fixed** (owner's call, 2026-08-07): it is
-  physics work on the generator with a real risk of producing something plausible and
-  still wrong, and it wants a validation check — drop volume and rim radius measured back
-  off the mesh — as part of it.
-- **The generated droplet and crystal are not in the loop.** In
-  `scene_files/hampton_300um_realistic.yaml` the loop aperture is centred at
-  **x = −248 µm** (the loop path spans x ∈ [−504, 0] µm, the stem x ∈ [0, +700] µm) while
-  the droplet and crystal are centred at **x = 0** — the loop/stem junction. So the
-  aperture renders empty and the drop hangs off the stem. Every dimension is correct;
-  only the position is wrong, and there is no CLI option for drop position, so it is
-  generator behaviour rather than a mis-set flag. Separate from the solver failure above,
-  though a single missing "place the drop in the loop's frame" step would explain both.
+- **`crystal_harvester` is now trustworthy for the mount AND the solvent — and it
+  proves it on every run.** The mount was always dimensionally correct (300 µm loop,
+  20 µm fiber, pin exactly 700 µm). The solvent is now a closed-form spherical-cap lens
+  pinned in the loop aperture, and the CLI measures every emitted scene back
+  (`crystal_harvester/validate.py`): divergence-theorem volume within 2% of
+  `--solvent-volume`, rim on the fiber, watertight, plane-straddling, crystal centred
+  and priority-ordered. A scene that fails ships nothing — there is no fallback shape
+  in the generator any more. Note `--contact-angle` is deprecated and ignored: with the
+  rim pinned at the loop, contact angle is an output of volume + rim radius.
+- **RESOLVED 2026-08-07 (later) — the Bashforth-Adams solver was deleted, not fixed.**
+  Its defect was found (the azimuthal-curvature term used the wrong angle convention,
+  `sin(ψ)/r` where its ψ-from-vertical frame needs `cos(ψ)/r`, which is exactly why the
+  profile peaked mid-bracket and could never reach the loop radius) — but the deeper
+  answer is that the ODE solves a problem with a closed form: at Bo ≈ 0.003 the pinned
+  zero-gravity surface is *exactly* a spherical cap, and `add_droplet.py` already
+  implemented the two-cap biconvex lens correctly. One shared implementation now lives in
+  `crystal_harvester/droplet.py`, used by both the generator and `add_droplet.py`. The
+  validation check the owner required (volume + rim measured back off the mesh) shipped
+  with it and runs on every generated scene. DECISIONS.md §2026-08-07 (later) has the
+  full reasoning; the superseded diagnosis with its measurements is preserved below it.
+- **RESOLVED 2026-08-07 (later) — droplet and crystal are now in the loop.** The
+  generator was writing solver vertices into the YAML verbatim (origin-centred, at the
+  loop/stem junction). The droplet is now built in the loop's canonical frame, pinned on
+  the inner fiber edge all the way around the aperture (measured 6.8–10 µm from the
+  10 µm-radius fiber axis), straddles the loop plane, and rotates with the loop for any
+  `loop_axis`. The crystal sits at the droplet's volume centroid. Note the crystal
+  (±50 µm) is thicker than a 2 nL drop (±21 µm) and pokes out — a real mount does this
+  too, but the renderer shows hard crystal/air interfaces with no wetting film; the
+  validator reports it as a warning.
 - Reusable harnesses for all of the above live **outside this repo** (they are analysis
   scratch, not a deliverable) at
   `/home/jadoughty/projects/loop_sim_MINE/investigation/2026-07_scene_and_perf_harnesses/`:
@@ -397,39 +397,37 @@ fallback **6.3 fps**. The three things that decide whether you get 11.9 or 6.3:
 
 - **Which camera calibration is real?** `template.yaml` (0.82 µm px, NA 0.28/0.17), the
   Hampton scenes (7.4 µm, NA 0.10/0.07), and `mitegen_200um` (1.0 µm) disagree, and DATA.md
-  names `template.yaml` authoritative although nothing uses it. NA drives the opaque-droplet
-  result, so this gates fidelity work. Needs a measurement against the real beamline camera.
+  names `template.yaml` authoritative although nothing uses it. NA sets how bright a
+  correct drop renders (~17% of a 2 nL drop's area passes at NA 0.10, ~100% at 0.28), so
+  this is now the question gating fidelity. Two leads (DECISIONS §2026-08-07 later): the
+  calibrations are Abbe-consistent as **two zoom settings of one objective** rather than
+  three cameras — and note `eff_px` divides by `zoom` while `na_objective` does not, which
+  cannot be right for a zoom microscope; and the cheapest ground truth is **one photograph
+  of a real 300 µm loop carrying a drop** on the beamline camera (up during the shutdown;
+  Jacob captures — it also calibrates the drop-volume default, since near-background
+  brightness at NA 0.10 needs h ≲ 11 µm). Cost any switch to NA 0.28 first: the
+  supersample ceiling moves and both frame libraries rebuild.
 - **Is the bundled `hampton_300um` loop mislabelled, or digitized at another size?** Its
   waypoints span 69 × 200 µm, not ~300 µm. Worth comparing against the physical part before
   assuming the geometry is wrong rather than the name.
-- **Why do droplets go opaque?** The NA sweep shows rays being culled by the collection
-  gate rather than absorbed, but even at NA 0.90 the drop only reaches 0.26 brightness —
-  so there is likely a second loss mechanism. `MAX_DEPTH` bounce exhaustion in
-  `microscope.py` is the first candidate to rule out.
+- ~~Why do droplets go opaque?~~ **ANSWERED 2026-08-07 (later)**: colour-as-absorption
+  was the 0.26 ceiling, the fallback hemisphere's shape was the NA-gate floor, and
+  `MAX_DEPTH` was exonerated (it errs bright). See DECISIONS.md.
 - **Should the dimensional check become a test?** The 700 µm → 703.0 µm pin measurement is
   architecture-independent and would close the "no golden reference / gates are
   architecture-blind" gap DATA.md records. It needs no committed image, only the assertion.
 - **Frame-library coverage.** The sweep covers rotation; `zoom` and `tz` are not free the
   way lateral translation is and would need their own sweeps or a live render. Decide
   whether the AXIS consumer needs them before treating the library as complete.
-- **Why can the Bashforth-Adams profile never reach the loop radius?** Its widest point
-  peaks at ~78 µm against the 150 µm a 300 µm loop needs, and falls off on both sides of
-  the bracket, so widening the search will not help — the numbers point at a scaling or
-  non-dimensionalisation error in the ODE. Until it is answered, every generated droplet
-  is the fallback hemisphere and `--solvent-volume`/`--contact-angle` do nothing. The
-  first thing to check is the units of the gravity/capillary term in `_ba_rhs` against
-  the `dP` the bracket supplies. **Any fix needs a validation check that measures drop
-  volume and rim radius back off the generated mesh** — the current failure is invisible
-  precisely because nothing does that.
-- **Why does `crystal_harvester` place the droplet and crystal at the loop/stem junction
-  rather than in the loop aperture?** Loop aperture centred at x = −248 µm, drop centred
-  at x = 0, so the aperture renders empty. Every dimension is right, only the position is
-  wrong, and there is no CLI flag for it. Possibly the same root cause as the solver
-  failure — a missing "place the drop in the loop's frame" step would explain the wrong
-  position *and* the drop sitting on the loop plane rather than straddling it. Together
-  these two block using generated scenes for fidelity work, which is the whole point of
-  generating them. To see it: `python render.py
-  scene_files/hampton_300um_realistic.yaml --device cuda` and look at the loop.
+- ~~Why can the Bashforth-Adams profile never reach the loop radius?~~ **ANSWERED
+  2026-08-07 (later)**: a curvature-term convention error (`sin(ψ)/r` for `cos(ψ)/r`).
+  The solver was deleted for the closed-form spherical-cap lens, with the mesh-back
+  validation the fix was required to carry. See DECISIONS.md.
+- ~~Why does `crystal_harvester` place the droplet at the loop/stem junction?~~
+  **ANSWERED 2026-08-07 (later)**: it wrote solver vertices into the YAML verbatim with
+  no translation. The droplet is now pinned in the aperture and the crystal centred in
+  the droplet; `python render.py scene_files/hampton_300um_realistic.yaml --device cuda`
+  now shows exactly that.
 - **Should launching on a stale-library scene behave like switching to one?** Runtime
   switching serves a stale-but-complete library as-is; `CameraServer.__init__` still
   rebuilds it. Both behaviours are defensible on their own and they now disagree with
@@ -479,11 +477,12 @@ those numbers don't have to be re-derived.
   library size in git (see DATA.md "Known gaps") — `--supersample 2` is 4× cheaper than 4
   if that matters for a future scene.
 - `crystal_harvester/` — scene *generator* (James's original geometry code: elastica loop
-  mechanics, Bashforth-Adams droplets, crystal habits, pin geometry). Builds a complete
-  scene from physical parameters — 8 Hampton loop sizes × 3 shapes, 9 MiTeGen models.
-  Dimensionally correct for the **mount**; its droplet solver silently falls back to a
-  hemisphere and its droplet placement is wrong (see "Scene fidelity"). Still preferable
-  to hand-editing YAML for the loop/stem/pin.
+  mechanics, crystal habits, pin geometry; the droplet is a closed-form spherical-cap
+  lens in `droplet.py`, shared with `add_droplet.py`). Builds a complete scene from
+  physical parameters — 8 Hampton loop sizes × 3 shapes, 9 MiTeGen models — and
+  **`validate.py` measures every emitted scene back** (volume, rim-on-fiber,
+  watertightness, crystal placement; the CLI runs it on every build). Dimensionally
+  correct for the mount *and* the solvent since 2026-08-07 (later).
 - `digitize_fiber.py → add_stem.py → add_droplet.py → add_crystal.py → generate_scene.py`
   — the pipeline that builds a scene from a real loop image (README).
 - `scene_files/` — complete example scenes (`hampton_300um.yaml` tube-based;
@@ -500,6 +499,32 @@ those numbers don't have to be re-derived.
   `/home/jadoughty/projects/loop_sim_MINE/investigation/`.
 
 ## Work log (append-only)
+
+- **2026-08-07 (scene fidelity)** — The black-droplet bug was diagnosed by a
+  four-member council session and fixed the same day; generated scenes are now
+  validated mesh-back. Suite **167** (was 149). Root causes (both scene-side,
+  renderer untouched): the solvent's `color` was secretly a (24,18,6)/mm absorber
+  (`color` IS an absorption spectrum — the ~0.26 ceiling the old NA sweep
+  saturated at; falsified by changing only that field: NA-0.90 core
+  0.2633 → 0.6436), and the silently-substituted hemisphere was a flat-bottomed
+  plano-convex lens refracting ~92% of the drop's area past the NA gate.
+  `MAX_DEPTH` was exonerated (exhaustion errs bright). Fixes: the Bashforth-Adams
+  ODE (curvature-term convention error, `sin(ψ)/r` for `cos(ψ)/r`) was **deleted**
+  for the closed-form biconvex spherical-cap lens `add_droplet.py` already had —
+  one shared implementation in `crystal_harvester/droplet.py`; the droplet is
+  pinned in the loop aperture (rim measured 6.8–10 µm from the fiber axis),
+  straddles the loop plane, rotates with `loop_axis`, and hits `--solvent-volume`
+  to 0.002%; the crystal sits at the droplet's volume centroid;
+  `--contact-angle` is deprecated (pinned rim ⇒ contact angle is an output); all
+  silent fallbacks are deleted and `crystal_harvester/validate.py` measures every
+  generated scene back (18 new tests, corruption variants proven to fail).
+  Also fixed: all five root scripts imported **James's old tree** ahead of the
+  repo wherever `/home/jamesh/...` resolves (this workspace does) — the repo now
+  wins. `hampton_300um_realistic.yaml` regenerated: drop core **0.67 at NA 0.10**
+  against a 0.93 background (was 0.04), dark rim, crystal centred.
+  `hampton_300um.yaml`, both frame libraries, and `loop_sim/` untouched.
+  **Next:** the camera-calibration fork (see Open questions) — the zoom-lens
+  hypothesis and a reference photograph of a real loop with a drop.
 
 - **2026-08-07 (sync)** — Documentation catch-up on the day's three commits (`13d42b7`,
   `b0b89bf`, `3cceb47`), plus two corrections that matter more than the additions.

@@ -8,6 +8,128 @@
 
 ## Decisions
 
+### 2026-08-07 (later) — the black droplet was two scene-side mechanisms; the
+### solver is replaced by the closed form and scenes are validated mesh-back
+
+**This supersedes "recorded, not repaired" below** — the prerequisite that
+entry demanded (a validation check measuring volume and rim radius back off
+the generated mesh) now exists, so the repair happened the same day. Decided
+by a four-member council session (Architect/Skeptic/Pragmatist/Researcher,
+independently peer-reviewed); the load-bearing findings and choices:
+
+**Why droplets rendered black — two independent mechanisms, both measured,
+neither a renderer bug.** (1) **Material `color` is an absorption spectrum,
+not a tint**: `mu_per_ch = mu_optical + 30·(1−color)` per mm
+(`microscope.py`, `_COLOR_MU`). The generator's solvent color `[0.2,0.4,0.8]`
+therefore absorbed at (24,18,6)/mm despite `mu_optical: 0` — a hard
+brightness ceiling of ~0.26 through the drop, which is exactly why the
+2026-07-28 NA sweep saturated at 0.2633 instead of approaching 1.0 (a purely
+geometric gate opened to NA 0.90 must pass nearly everything). Falsification
+measurement, changing only the color field to `[0.97,0.98,1.0]`
+(`template.yaml`'s own solvent value): NA 0.90 drop-core 0.2633 → 0.6436;
+the baseline reproduced the HANDOFF sweep to four decimals first. Corollary:
+**every NA experiment run before the color fix was uninterpretable** — the
+ceiling capped them all. (2) **The fallback hemisphere was the worst possible
+lens**: flat-bottomed plano-convex, f = R/(n−1) = 441 µm, so at NA 0.10 only
+the inner 29% of radius (9% of area) clears the collection gate — the
+documented 29%/92% figures reproduce from paraxial algebra. The correct
+biconvex lens is ~3× flatter (ρ ≈ 0.42 mm at 2 nL) and passes most of the
+aperture. With both fixed, the regenerated scene's drop core measures
+**0.67 at NA 0.10** against a 0.93 background — near-background-bright with
+a dark rim, the real bright-field appearance.
+
+**Exonerations, recorded so nobody chases them:** `MAX_DEPTH` exhaustion
+returns the accumulated partial product and never sees the NA test — it errs
+BRIGHT and cannot cause blackness (the HANDOFF open question had it
+backwards). TIR-as-total-absorption is desirable: it is what draws the dark
+rim. The binary NA gate is correct behaviour for this imaging model and was
+not touched; nothing in `loop_sim/renderer/` changed.
+
+**The color fix is data-side only (owner's call):** generator solvent color
+is now near-white in `hampton_loops.py`/`mitegen_mounts.py`, with a comment
+at each site naming the trap. Splitting `color` from a per-channel
+`mu_rgb` in both engines was considered (a backward-compatible opt-in field)
+and deliberately not done — `microscope.py` is frozen ground truth; the
+overload is now documented instead. Revisit only if a scene needs a colored
+but weakly-absorbing material.
+
+**The Bashforth-Adams ODE was deleted, not fixed.** Two independent reasons.
+(a) Its specific defect: `_ba_rhs` mixed angle conventions — `dr/dz = tan ψ`
+is ψ-from-vertical, but the azimuthal curvature was coded `sin(ψ)/r`, the
+ψ-from-horizontal form (should be `cos(ψ)/r` in that convention). At the apex
+it produced κ₂ = 0 instead of 1/r, so the profile flattened and turned over —
+which is precisely the measured "peaks at 78 µm mid-bracket, falls off both
+sides" signature (a correct CMC profile is monotone and cannot have an
+interior maximum), and the non-monotone array then silently broke the
+`searchsorted` crossing detection. (b) The deeper point: the ODE solves a
+problem whose answer is closed-form. Bo ≈ 0.003, so the zero-gravity
+Young-Laplace surface pinned on a rim is *exactly* a spherical cap; a loop
+droplet is two caps sharing the rim circle, h solved analytically from the
+volume. `add_droplet.py` already implemented this correctly
+(`_biconvex_lens_profile`); the implementation moved to
+`crystal_harvester/droplet.py` and both callers now share it. Consequences:
+`--solvent-volume` is honoured **by construction**; `--contact-angle` is
+deprecated and ignored, loudly — with a pinned contact line the contact angle
+is an output of (volume, rim radius), not an input, so the old CLI promised
+something no solver could deliver; the unread `gravity_ms2` parameter is
+gone; and an unpinnable volume **raises** — all three silent hemisphere
+guards and the silent sphere fallback in `hampton_loops.py` are deleted.
+There is no fallback shape any more, anywhere.
+
+**Placement: the droplet is built in the loop's canonical frame and moved to
+the aperture.** The old generator wrote solver vertices into the YAML
+verbatim, so the drop sat origin-centred at the loop/stem junction while the
+aperture is at x ≈ −0.25 mm. The rim now follows the actual loop outline
+(ray-cast against a dense elastica polygon, pinned at the inner fiber edge —
+measured 6.8–10 µm from the 10 µm-radius fiber axis, all the way around),
+straddles the loop plane symmetrically, and rotates with the loop for any
+`loop_axis` (previously only the loop rotated — a latent non-coplanarity for
+any non-default axis). The crystal is placed at the droplet's **volume
+centroid**, not the waypoint centroid: on a teardrop aperture the liquid body
+sits toward the wide side, and the first validator run measured the 25 µm
+difference between the two.
+
+**Every generated scene is now validated mesh-back**
+(`crystal_harvester/validate.py`, run by the CLI on every build; 18 tests in
+`tests/test_scene_geometry.py`): watertightness with no zero-area triangles
+(the old apex fans were degenerate), divergence-theorem volume within 2% of
+requested, rim pinned on the fiber, plane-straddling (a one-sided dome is the
+fallback signature), crystal centred and listed before solvent. The corrupted
+variants are each tested to FAIL — the validator provably catches the exact
+defects that shipped. A crystal thicker than the drop is a **warning**, not a
+failure: a real mount's crystal does poke out of the film, but this renderer
+shows hard crystal/air interfaces with no wetting film, so the condition is
+worth knowing about and wrong to forbid.
+
+**Root pipeline scripts prefer the repo over the legacy path.** All five root
+scripts (`render.py`, `add_*.py`, `generate_scene.py`) carry a historical
+`sys.path.insert(0, '/home/jamesh/projects/loop_sim/claude')`; on any machine
+where that path resolves (this workspace does, via the mirror symlinks) they
+silently imported **James's old copy of `loop_sim` and `crystal_harvester`**
+instead of the repo they sit in. Each now inserts its own directory ahead of
+the legacy path. The legacy line is kept deliberately — on machines where the
+repo layout differs it is still the fallback that makes the tools run.
+
+**What did NOT change:** `scene_files/hampton_300um.yaml` (the bare perf
+baseline — every fps number depends on it staying dropletless),
+`mitegen_200um.yaml`, both frame libraries, and everything under
+`loop_sim/`. Suite 149 → **167**, all green.
+
+**Open, and now the gating question: which camera is real.** NA drives how
+bright a correct drop renders (paraxial: a 2 nL biconvex drop passes ~17% of
+its area at NA 0.10 and ~100% at NA 0.28), so fidelity judgments still hang
+on the calibration fork (`template.yaml` 0.82 µm/NA 0.28 vs the Hampton
+scenes' 7.4 µm/NA 0.10). Two leads from the council: the circulating
+calibrations are Abbe-consistent as **two zoom settings of one objective**
+rather than rival cameras (note `eff_px` scales with zoom while NA does not —
+worth a look); and the cheapest ground truth is **one photograph of a real
+300 µm loop carrying a drop** on the beamline camera (up during the
+shutdown; Jacob captures it — also note a real drop's thickness ~h must
+satisfy h ≲ a·NA/(4(n−1)) ≈ 11 µm to read near-background-bright at NA 0.10,
+so the photo also calibrates the volume default). Costing before any switch
+to NA 0.28: supersample ceiling moves (~1.37× at 0.82 µm px) and both frame
+libraries would need rebuilds.
+
 ### 2026-08-07 — the droplet generator's failure is recorded, not repaired
 
 `crystal_harvester`'s Bashforth-Adams solver silently substitutes a hemisphere for
