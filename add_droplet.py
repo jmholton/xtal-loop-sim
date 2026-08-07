@@ -43,11 +43,14 @@ Full pipeline
 """
 import sys, os, argparse
 sys.path.insert(0, '/home/jamesh/projects/loop_sim/claude')
+# This repo's own packages must win over the legacy path above.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import numpy as np
 import yaml
-from scipy.optimize import brentq
 from loop_sim.scene.tube import neville_sample
+from crystal_harvester.droplet import (biconvex_lens_profile, loop_rim_radii,
+                                       revolve_biconvex)
 
 
 _DEFAULT_OUTPUT = os.path.join(os.path.dirname(__file__), 'droplet.yaml')
@@ -72,173 +75,9 @@ def parse_args():
 
 
 # ---------------------------------------------------------------------------
-# Spherical cap geometry
+# Geometry lives in crystal_harvester.droplet (shared with the scene
+# generator — one implementation, two callers).
 # ---------------------------------------------------------------------------
-
-def _cap_volume(h, R):
-    """Volume of spherical cap with dome height h and base radius R."""
-    return np.pi * h * (3 * R**2 + h**2) / 6.0
-
-
-def _loop_rim_radii(centroid_xy, poly_xy, fiber_radius, phi_angles):
-    """
-    For each azimuthal angle, ray-cast from centroid to the loop polygon
-    and return the effective rim radius (polygon distance minus fiber_radius).
-
-    centroid_xy : (2,) center point
-    poly_xy     : (N, 2) closed polygon vertices (fiber axis positions)
-    phi_angles  : (n_phi,) array of angles in radians
-    """
-    cx, cy = centroid_xy
-    poly = np.asarray(poly_xy, dtype=float)
-    # Ensure closed
-    if not np.allclose(poly[0], poly[-1]):
-        poly = np.vstack([poly, poly[0]])
-
-    n_phi  = len(phi_angles)
-    radii  = np.full(n_phi, np.inf)
-
-    for k, phi in enumerate(phi_angles):
-        dx, dy = np.cos(phi), np.sin(phi)
-        for i in range(len(poly) - 1):
-            ex = poly[i + 1, 0] - poly[i, 0]
-            ey = poly[i + 1, 1] - poly[i, 1]
-            denom = dx * ey - dy * ex
-            if abs(denom) < 1e-12:
-                continue
-            rx = poly[i, 0] - cx
-            ry = poly[i, 1] - cy
-            t  = (rx * ey - ry * ex) / denom
-            s  = (rx * dy - ry * dx) / denom
-            if t > 1e-9 and -1e-9 <= s <= 1.0 + 1e-9:
-                if t < radii[k]:
-                    radii[k] = t
-
-    # Fall back to a small positive value if no intersection found
-    miss = ~np.isfinite(radii)
-    if np.any(miss):
-        print(f"  WARNING: {miss.sum()} phi directions missed the loop polygon; "
-              "using fallback radius.", file=sys.stderr)
-        radii[miss] = fiber_radius * 2.0
-
-    return np.maximum(radii - fiber_radius, fiber_radius * 0.1)
-
-
-def _biconvex_lens_profile(R_loop, volume, n_z):
-    """
-    Return (r_profile, z_profile) for a symmetric biconvex lens.
-
-    The droplet wets the nylon all the way around the hoop and bulges
-    symmetrically on both sides of the loop plane (z=0).  With gravity
-    negligible (Bond number << 1), the equilibrium shape is two identical
-    spherical caps sharing the rim circle.  Each cap holds half the total
-    volume.
-
-    Returns arrays of length 2*n_z - 1:
-      index 0        : top apex    (r = 0,      z = +h)
-      index n_z - 1  : rim         (r = R_loop, z =  0)
-      index 2*n_z-2  : bottom apex (r = 0,      z = -h)
-    """
-    V_half = volume / 2.0
-    V_hemi = (2.0 / 3.0) * np.pi * R_loop**3
-    if V_half >= V_hemi:
-        if V_half > V_hemi * 1.001:
-            print(f"  WARNING: half-volume {V_half:.6f} mm³ exceeds hemisphere "
-                  f"({V_hemi:.6f} mm³); clamped.", file=sys.stderr)
-        V_half = V_hemi * 0.999
-
-    h_opt = brentq(lambda h: _cap_volume(h, R_loop) - V_half,
-                   1e-9, R_loop, xtol=1e-10, rtol=1e-10)
-
-    rho = (R_loop**2 + h_opt**2) / (2.0 * h_opt)   # sphere radius
-
-    # Top-cap half: z' from 0 (apex) to h_opt (rim)
-    z_prime = np.linspace(0.0, h_opt, n_z)
-    r_half = np.sqrt(np.maximum(z_prime * (2.0 * rho - z_prime), 0.0))
-    r_half[0] = 0.0
-    z_half = h_opt - z_prime   # apex at +h, rim at 0
-
-    # Full lens: top half + mirrored bottom half (skip shared rim)
-    r_profile = np.concatenate([r_half, r_half[-2::-1]])    # (2*n_z-1,)
-    z_profile = np.concatenate([z_half, -z_half[-2::-1]])   # mirrored z
-
-    return r_profile, z_profile, h_opt, rho
-
-
-# ---------------------------------------------------------------------------
-# Mesh revolution
-# ---------------------------------------------------------------------------
-
-def _revolve_biconvex(r_profile, z_profile, n_phi, R_phi=None, R_mean=None,
-                      phi_angles=None):
-    """
-    Revolve a biconvex-lens meridional profile around the Z-axis.
-
-    profile index 0       → top apex    (r = 0, z = +h)
-    profile index n_z-1   → rim         (r = R_mean, z = 0)
-    profile index 2*n_z-2 → bottom apex (r = 0, z = -h)
-
-    R_phi  : (n_phi,) per-angle rim radii.  If given, each phi column is
-             scaled so the rim lands at R_phi[j] rather than R_mean, letting
-             the droplet follow a non-circular loop outline.
-    R_mean : scalar — the R_loop value used to build r_profile (the rim
-             value in the profile).  Required when R_phi is given.
-
-    Returns (vertices, faces) for a closed surface mesh.
-    """
-    n_pts = len(r_profile)
-    if phi_angles is not None:
-        phi = np.asarray(phi_angles)
-        n_phi = len(phi)
-    else:
-        phi = np.linspace(0.0, 2.0 * np.pi, n_phi, endpoint=False)
-    cos_phi = np.cos(phi)
-    sin_phi = np.sin(phi)
-
-    # Per-column scale factor: 1 everywhere if R_phi not supplied
-    if R_phi is not None and R_mean is not None and R_mean > 0:
-        scale = R_phi / R_mean          # (n_phi,)
-    else:
-        scale = np.ones(n_phi)
-
-    # Main body vertices: (n_pts, n_phi, 3)
-    verts = np.zeros((n_pts, n_phi, 3))
-    for i in range(n_pts):
-        verts[i, :, 0] = r_profile[i] * scale * cos_phi
-        verts[i, :, 1] = r_profile[i] * scale * sin_phi
-        verts[i, :, 2] = z_profile[i]
-    vertices = verts.reshape(-1, 3)
-
-    # Body quads → 2 triangles each (includes degenerate quads at apices,
-    # which are zero-area and harmless)
-    faces = []
-    for i in range(n_pts - 1):
-        for j in range(n_phi):
-            j1  = (j + 1) % n_phi
-            v00 = i       * n_phi + j
-            v01 = i       * n_phi + j1
-            v10 = (i + 1) * n_phi + j
-            v11 = (i + 1) * n_phi + j1
-            faces.append([v00, v10, v01])
-            faces.append([v10, v11, v01])
-
-    # Top apex cap: fan from separate apex vertex to row 0 (degenerate ring)
-    apex_top = len(vertices)
-    vertices  = np.vstack([vertices, [[0.0, 0.0, z_profile[0]]]])
-    for j in range(n_phi):
-        j1 = (j + 1) % n_phi
-        faces.append([apex_top, j, j1])
-
-    # Bottom apex cap: fan from separate apex vertex to last row, reversed winding
-    apex_bot  = len(vertices)
-    last_ring = (n_pts - 1) * n_phi
-    vertices  = np.vstack([vertices, [[0.0, 0.0, z_profile[-1]]]])
-    for j in range(n_phi):
-        j1 = (j + 1) % n_phi
-        faces.append([apex_bot, last_ring + j1, last_ring + j])
-
-    return vertices, np.array(faces, dtype=int)
-
 
 # ---------------------------------------------------------------------------
 # Main
@@ -290,7 +129,7 @@ def main():
                              unique_pts[:, 0] - cx2) % (2 * np.pi)
     phi_angles  = np.unique(np.concatenate([phi_uniform, vertex_phis]))
 
-    R_phi  = _loop_rim_radii(centroid[:2], poly_xy, fiber_radius, phi_angles)
+    R_phi  = loop_rim_radii(centroid[:2], poly_xy, fiber_radius, phi_angles)
     R_mean = float(R_phi.mean())
 
     print(f"Hoop centroid: ({centroid[0]:+.4f}, {centroid[1]:+.4f}, "
@@ -304,10 +143,10 @@ def main():
     # h_opt is solved for R_mean; each phi column is then scaled by R_phi/R_mean
     # so the rim follows the actual (non-circular) loop outline.
     # ------------------------------------------------------------------
-    r_profile, z_profile, h_opt, rho = _biconvex_lens_profile(
-        R_mean, args.volume, args.n_z)
+    r_profile, z_profile, h_opt, rho = biconvex_lens_profile(
+        R_mean, args.volume, args.n_z, clamp=True)
 
-    vertices, faces = _revolve_biconvex(
+    vertices, faces = revolve_biconvex(
         r_profile, z_profile, len(phi_angles),
         R_phi=R_phi, R_mean=R_mean, phi_angles=phi_angles)
 

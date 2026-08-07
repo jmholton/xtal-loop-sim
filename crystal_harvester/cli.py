@@ -29,6 +29,7 @@ import yaml
 
 from .hampton_loops  import build_hampton_scene, HAMPTON_PRESETS
 from .mitegen_mounts import build_mitegen_scene, list_models
+from .validate       import validate_scene
 
 
 def _parse_args(argv=None):
@@ -81,8 +82,10 @@ def _parse_args(argv=None):
     sg = p.add_argument_group("Solvent options")
     sg.add_argument("--solvent-volume", type=float, default=0.002, metavar="MM3",
                     help="Solvent volume in mm³ (default: 0.002)")
-    sg.add_argument("--contact-angle", type=float, default=30.0, metavar="DEG",
-                    help="Solvent-on-nylon contact angle in degrees (default: 30)")
+    sg.add_argument("--contact-angle", type=float, default=None, metavar="DEG",
+                    help="DEPRECATED and ignored: the droplet rim is pinned at "
+                         "the loop, so the contact angle is determined by "
+                         "--solvent-volume and the loop radius")
 
     # --- Crystal options ---
     cg = p.add_argument_group("Crystal options")
@@ -136,6 +139,11 @@ def main(argv=None):
     if args.pin_bevel is not None:
         pin_kwargs["pin_bevel_deg"] = args.pin_bevel
 
+    if args.contact_angle is not None:
+        print("WARNING: --contact-angle is ignored — the droplet rim is pinned "
+              "at the loop, so the contact angle follows from --solvent-volume "
+              "and the loop radius.", file=sys.stderr)
+
     if args.loop_type == "hampton":
         hampton_kwargs = {}
         if args.fiber_diameter is not None:
@@ -168,6 +176,22 @@ def main(argv=None):
             lattice_abc     = lattice_abc,
             **pin_kwargs,
         )
+
+    # Measure the emitted geometry back before shipping it (fails loudly;
+    # see crystal_harvester/validate.py and docs/DECISIONS.md 2026-08-07).
+    report = validate_scene(
+        scene_dict,
+        requested_volume_mm3=(args.solvent_volume
+                              if args.loop_type == "hampton" else None),
+        expect_droplet=(args.loop_type == "hampton"),
+    )
+    if args.loop_type == "hampton":
+        print(f"Validated: droplet volume {report['volume_mm3']:.6f} mm^3, "
+              f"rim on fiber within "
+              f"{report['rim_to_fiber_mm']['max']:.4f} mm, "
+              f"thickness +{report['h_above_mm']:.4f}/-{report['h_below_mm']:.4f} mm")
+    for w in report.get("warnings", []):
+        print(f"WARNING: {w}", file=sys.stderr)
 
     with open(args.output, "w") as f:
         yaml.dump(scene_dict, f, default_flow_style=False, sort_keys=False)

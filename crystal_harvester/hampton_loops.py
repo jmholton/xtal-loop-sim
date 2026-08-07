@@ -31,7 +31,7 @@ import numpy as np
 import yaml
 
 from .nylon_mechanics import helix_path, elastica_loop
-from .droplet          import bashforth_adams
+from .droplet          import droplet_in_loop
 from .crystal_shapes   import make_crystal
 from .pin_geometry     import make_pin
 
@@ -123,7 +123,10 @@ DEFAULT_BEAM = {
 
 DEFAULT_MATERIALS = {
     "crystal": {"n": 1.52, "mu_optical": 0.02, "mu_xray": 2.1,  "color": [0.7, 0.9, 1.0]},
-    "solvent": {"n": 1.34, "mu_optical": 0.00, "mu_xray": 0.3,  "color": [0.2, 0.4, 0.8]},
+    # color is an ABSORPTION spectrum in the renderer (mu_per_ch = mu_optical
+    # + 30*(1-color) per mm, microscope.py) — NOT a display tint.  A saturated
+    # color makes the material strongly absorbing; water must be near-white.
+    "solvent": {"n": 1.34, "mu_optical": 0.00, "mu_xray": 0.3,  "color": [0.97, 0.98, 1.0]},
     "nylon":   {"n": 1.53, "mu_optical": 0.10, "mu_xray": 0.1,  "color": [0.9, 0.8, 0.6]},
     "metal":   {"n": 2.50, "mu_optical": 500., "mu_xray": 100., "color": [0.7, 0.7, 0.8]},
     "air":     {"n": 1.00, "mu_optical": 0.00, "mu_xray": 0.0,  "color": [1.0, 1.0, 1.0]},
@@ -161,6 +164,10 @@ def build_hampton_scene(
     Build a complete scene dict for a Hampton CryoLoop assembly.
 
     Returns a dict that can be passed directly to yaml.dump().
+
+    contact_angle_deg is accepted for API compatibility but IGNORED: the
+    droplet rim is pinned at the loop fiber, so the contact angle is
+    determined by volume and rim radius, not prescribable.
     """
     # --- Resolve preset ---
     preset = HAMPTON_PRESETS.get(loop_diameter_um)
@@ -209,8 +216,8 @@ def build_hampton_scene(
     # elastica_loop generates the loop in the canonical frame: loop extends in −X,
     # attachment at origin, loop in XY plane.  Rotate to align with lax.
     loop_pts_canon = elastica_loop(fd_mm, ld_mm, E_gpa, shape, n_points=30)
-    R_loop = _rotation_from_to(np.array([-1., 0., 0.]), lax)
-    loop_pts = (R_loop @ loop_pts_canon.T).T
+    R_rot = _rotation_from_to(np.array([-1., 0., 0.]), lax)
+    loop_pts = (R_rot @ loop_pts_canon.T).T
 
     # --- Stem (twisted pair): two helical fibers ---
     R_helix = fd_mm / 2      # fibers touch: 2R = fd_mm (center-to-center = diameter)
@@ -227,25 +234,29 @@ def build_hampton_scene(
     tip_pos = (stem_offset + sax * stem_l).tolist()
     pin_shape = make_pin(pin_d, pin_l, pin_bv, tip_pos=tip_pos, axis=(-pax).tolist())
 
-    # --- Solvent droplet ---
-    R_loop = ld_mm / 2.0
-    try:
-        sol_verts, sol_faces = bashforth_adams(
-            R_loop, solvent_volume_mm3, contact_angle_deg, n_z=30, n_phi=48
-        )
-        solvent_shape = {
-            "type":     "surface_mesh",
-            "vertices": sol_verts.tolist(),
-            "faces":    sol_faces.tolist(),
-        }
-    except Exception:
-        # Fallback: rough sphere
-        r_s = (3 * solvent_volume_mm3 / (4 * np.pi)) ** (1/3)
-        solvent_shape = {
-            "type":   "sphere",
-            "centre": [0.0, 0.0, 0.0],
-            "radius": round(r_s, 5),
-        }
+    # --- Solvent droplet: biconvex lens pinned in the loop aperture ---
+    # Built in the canonical frame (loop in the z=0 plane) so the rim ray-cast
+    # is 2-D, then rotated by the same R_rot as the loop so the droplet stays
+    # coplanar with it for any loop_axis.  The rim follows the actual loop
+    # outline via a dense elastica polygon (the 30 tube waypoints undershoot
+    # the curved fiber between samples).  An unpinnable volume raises — there
+    # is deliberately no fallback shape (contact_angle_deg is ignored: with
+    # the rim pinned at the loop, contact angle is an output of volume + rim
+    # radius, not an input).
+    dense_canon = elastica_loop(fd_mm, ld_mm, E_gpa, shape, n_points=240)
+    sol_verts_c, sol_faces, drop_info = droplet_in_loop(
+        loop_pts_canon, fd_mm, solvent_volume_mm3,
+        n_z=30, n_phi=48, dense_poly_xy=dense_canon[:, :2])
+    sol_verts = (R_rot @ sol_verts_c.T).T
+    # Crystal goes at the droplet's VOLUME centroid, not the waypoint
+    # centroid: on an asymmetric (teardrop) aperture the liquid body's centre
+    # sits toward the wide side, and that is where a crystal would rest.
+    aperture_centre = R_rot @ np.asarray(drop_info["volume_centroid"], dtype=float)
+    solvent_shape = {
+        "type":     "surface_mesh",
+        "vertices": [[round(float(x), 5) for x in row] for row in sol_verts],
+        "faces":    sol_faces.tolist(),
+    }
 
     # --- Crystal ---
     objects = []
@@ -264,6 +275,11 @@ def build_hampton_scene(
         xtal_shape, xtal_lattice = make_crystal(
             crystal_preset, crystal_dims_mm, lattice_abc
         )
+        # Place the crystal at the aperture centre, inside the droplet: a
+        # half-space translates by offset += normal . centre.
+        for hs in xtal_shape["children"]:
+            n_hs = np.asarray(hs["normal"], dtype=float)
+            hs["offset"] = round(float(hs["offset"] + n_hs @ aperture_centre), 8)
         objects.append({
             "name":     "crystal",
             "material": "crystal",

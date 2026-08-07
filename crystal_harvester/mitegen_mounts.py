@@ -168,7 +168,9 @@ DEFAULT_BEAM = {
 
 DEFAULT_MATERIALS = {
     "crystal": {"n": 1.52, "mu_optical": 0.02, "mu_xray": 2.1,   "color": [0.7, 0.9, 1.0]},
-    "solvent": {"n": 1.34, "mu_optical": 0.00, "mu_xray": 0.3,   "color": [0.2, 0.4, 0.8]},
+    # color is an ABSORPTION spectrum in the renderer (mu_per_ch = mu_optical
+    # + 30*(1-color) per mm, microscope.py) — NOT a display tint.
+    "solvent": {"n": 1.34, "mu_optical": 0.00, "mu_xray": 0.3,   "color": [0.97, 0.98, 1.0]},
     "kapton":  {"n": 1.70, "mu_optical": 0.08, "mu_xray": 0.005, "color": [0.9, 0.7, 0.2]},
     "metal":   {"n": 2.50, "mu_optical": 500., "mu_xray": 100.,  "color": [0.7, 0.7, 0.8]},
     "air":     {"n": 1.00, "mu_optical": 0.00, "mu_xray": 0.0,   "color": [1.0, 1.0, 1.0]},
