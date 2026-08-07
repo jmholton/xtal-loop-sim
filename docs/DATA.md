@@ -57,7 +57,9 @@ external dependency is the runtime itself: a torch+CUDA interpreter, unpinned �
   image at all. A feature of known physical size must span `size / pixel_size` pixels; the
   pin measures 703.0 µm against a ground truth of 700.0 µm. That check is
   architecture-independent and would catch a class of error the parity gates cannot. See
-  `investigation/scene_dimcheck.py` and `docs/HANDOFF.md` "Scene fidelity".
+  `scene_dimcheck.py` (in the analysis tree outside this repo,
+  `/home/jadoughty/projects/loop_sim_MINE/investigation/2026-07_scene_and_perf_harnesses/`)
+  and `docs/HANDOFF.md` "Scene fidelity".
 
 - **The scene inputs themselves were never validated until 2026-07-28, and two are wrong.**
   `scene_files/hampton_300um.yaml` carries a zero-radius solvent sphere (no droplet) and a

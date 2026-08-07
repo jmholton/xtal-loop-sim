@@ -337,8 +337,10 @@ job (`sbatch run_gpu.slurm` renders CPU+GPU at n_cond 1 and 7 and reports diff s
 `../CLAUDE.md` "Comparison workflow" carries the acceptable thresholds.
 
 Benchmarking: `bench_frame.py` (flags `--compiled`, `--fp32`); soak the live server with
-`investigation/soak_server.py`. Note `investigation/` is Jacob's analysis tree — excluded
-from the beamline mirror, so it may not be present in a copy you receive.
+`soak_server.py`, which lives **outside this repo** in the analysis tree at
+`/home/jadoughty/projects/loop_sim_MINE/investigation/2026-07_scene_and_perf_harnesses/`.
+That tree is mirrored to the gateway alongside the repo but is **not versioned**, so it
+will not come with a `git clone` — the repo is complete without it.
 
 ## Deploy
 

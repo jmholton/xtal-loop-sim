@@ -62,8 +62,10 @@ here — its CUDA-graph capture is not thread-safe in this threaded server).
 **fp32 preview was tried and REJECTED** (commit fb38fdb: ~2× SLOWER compiled —
 the f32↔f64 casts at the deliberately-float64 tube-kernel boundary outweigh
 the bandwidth saving; do not re-propose).  Benchmark with `bench_frame.py`
-(`--compiled`, `--fp32`); phase-gate the live server with
-`investigation/soak_server.py`.
+(`--compiled`, `--fp32`); phase-gate the live server with `soak_server.py`, which
+lives outside this repo in the analysis tree at
+`/home/jadoughty/projects/loop_sim_MINE/investigation/2026-07_scene_and_perf_harnesses/`
+(mirrored to the gateway, but not versioned here).
 
 ## Condenser sampling (n_cond)
 

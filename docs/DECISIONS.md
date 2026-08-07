@@ -8,6 +8,64 @@
 
 ## Decisions
 
+### 2026-08-07 — the droplet generator's failure is recorded, not repaired
+
+`crystal_harvester`'s Bashforth-Adams solver silently substitutes a hemisphere for
+ordinary inputs (the measurements are in HANDOFF "Scene fidelity"). It was left
+unrepaired, deliberately.
+
+**Why record rather than fix.** The failure is a scaling problem in an ODE, and the thing
+that makes it dangerous is precisely that its output *looks* like a droplet — a plausible
+dome of the right diameter in the right units. Any fix attempted without a way to check
+the answer would be one more plausible-looking shape, and this project has already spent
+a week on a class of bug (the float32 hairy fiber, the sub-pixel crop errors, the pan that
+ignored φ) whose common feature is that the picture looked fine. So the prerequisite for
+touching it is **a validation check that measures drop volume and rim radius back off the
+generated mesh** and compares them against what was asked for. Nothing does that today,
+which is exactly why a hemisphere shipped unnoticed through a scene-fidelity audit that
+cited its dimensions approvingly.
+
+**What was corrected instead.** HANDOFF's claim that `crystal_harvester` is "the
+dimensionally-trustworthy source of scenes" was measuring the fallback. The claim is now
+split: trustworthy for the mount (loop, fiber, stem, pin — all verified), untrustworthy
+for the solvent. That distinction is the durable part; whoever fixes the solver can delete
+half a sentence.
+
+### 2026-08-07 — the analysis tree is out of git, but stays on the mirror
+
+Two requirements that these docs had collapsed into one. Experiment scratch should not be
+in the deliverable's git history — it is not part of what a successor clones, and it
+churns. But it *should* reach the gateway, because the team seeing the work in progress is
+a large part of what the mirror is for. The docs previously asserted `investigation/` was
+"NOT shipped", which was both wrong and not the intent.
+
+Resolved by location rather than by pattern: the tree now sits beside the repo rather than
+inside it, so git never sees it, while the mirror pair carries it by default.
+
+**An rsync exclude cannot hide a tracked file** — worth keeping, because it is the part
+that is easy to get wrong. While the harnesses lived inside the repo they were tracked,
+and the mirror ships `.git/` wholesale, so they travelled inside the pack files regardless
+of the exclude (which was anchored a level above the repo and never matched them anyway).
+Any future "this must not travel" requirement has to be met by keeping the content out of
+the repo; a pattern in `push-all.sh` is not a mechanism for that.
+
+**`loop_sim_MINE` ships as three pairs rather than one, and that split is what makes the
+above possible.** The analysis tree and the repo's `scratch/` both carry workspace-local
+paths — 133 files in the June bug-hunt, whose hardcoded roots no longer even resolve, and
+one build log in `scratch/`. The push's path-leak gate is fail-closed **per pair**, so as
+a single pair those tokens would have blocked the deliverable itself from shipping. Split,
+each tree carries its own gate decision: `xtal-loop-sim` stays gated, the two scratch
+trees are `nogate`. The asymmetry is deliberate and worth preserving — nothing clones or
+imports a scratch tree, so an ungated one costs nothing, whereas a silently-shipped path
+leak in the deliverable would cost the one mechanical check this protocol has. The
+alternative (ungate the whole pair) was rejected for exactly that reason. This mirrors the
+existing `goni`/`chain` and `auto_centering` splits, which exist for the same reason.
+
+Consequence to know about: a pair whose destination name contains a slash relies on its
+parent directory already existing on the gateway — rsync creates only the last component.
+That is pre-existing behaviour (`computer_vision/goni` fails the same way into an empty
+mirror), and it is invisible until someone builds a mirror from scratch.
+
 ### 2026-08-07 — the default trace tile is calculated, not measured
 
 **Every scene with a solvent droplet was unrenderable at default settings, and

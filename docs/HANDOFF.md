@@ -1,7 +1,7 @@
 ---
 project: loop-sim (xtal-loop-sim) — bright-field microscope + X-ray simulator for protein crystals in cryo-loops
 status: active — camera served from pre-computed templates (no GPU at runtime) and usable interactively; scene geometry/fidelity is the open front
-last_verified: 2026-08-06        # `pytest tests/` = 149 passed in 125 s on this tree (branch performance-correctness-optimizations, RTX 4080 SUPER)
+last_verified: 2026-08-07        # `pytest tests/` = 149 passed in 114 s on this tree (branch performance-correctness-optimizations, RTX 4080 SUPER)
 verify: python -m pytest tests/ -q        # 149 tests; "python" = the torch-enabled project interpreter (see docs/RUNBOOK.md "Environment")
 ---
 
@@ -23,7 +23,7 @@ generation, and dose estimation. James Holton wrote it; Jacob's contribution was
 the GPU path **correct** (it was producing a "hairy" artifact on the loop fiber) and
 **fast enough to drive as a live camera** (10 image files/s).
 
-## Current state (2026-08-06)
+## Current state (2026-08-07)
 
 - **The interactive path now works, and it had never been driven by a person before.**
   Templates made frames cheap in 2026-07-31, but the control page was still unusable: the
@@ -62,11 +62,14 @@ the GPU path **correct** (it was producing a "hairy" artifact on the loop fiber)
   Tiles are now sized at runtime against free VRAM, and rays are built one condenser
   sample at a time. A 14.34 Mpx template renders at **4.7 GB peak** where the old path
   needed ~14 GiB and spilled. **This retires risk A** (see Hazards).
-- **Scene fidelity was audited for the first time, and it is the weak half of the
-  project.** The imaging chain is dimensionally correct (a 700.0 µm pin measures 703.0 µm
-  in the image), but the bundled benchmark scene contains no droplet and no crystal, and
-  droplets render opaque for a non-physical reason. See "Scene fidelity" below — this is
-  now the highest-value open work, ahead of any further performance tuning.
+- **Scene fidelity is the weak half of the project, and as of 2026-08-07 there is no
+  trustworthy droplet at all.** The imaging chain is dimensionally correct (a 700.0 µm pin
+  measures 703.0 µm in the image), but the bundled benchmark scene contains no droplet and
+  no crystal; droplets render opaque for a non-physical reason; and the *generator* that
+  was supposed to be the way out silently substitutes a hemisphere for the solved droplet,
+  ignoring the volume and contact angle it was given, and places it outside the loop. So
+  both routes to a realistic sample are currently blocked. See "Scene fidelity" below —
+  this is the highest-value open work, ahead of any further performance tuning.
 - **Correctness: DONE + committed.** The float32 "hairy/spikey fiber" GPU artifact is
   fixed — the CUDA intersection quadratic now runs in float64, and the GPU **geometric
   trace is byte-identical to the float64 CPU reference**. With the objective PSF enabled
@@ -185,13 +188,55 @@ cannot detect a wrong *scene*. What is now measured:
 - **The fiber is beaded at the default sampling.** Tubes become `n_samples - 1` capsules;
   at the default `n_samples=50` a 300 µm loop yields 19.3 µm segments against a 20.0 µm
   fiber — capsules as long as they are wide. Raise `n_samples` for fidelity renders.
-- **`crystal_harvester` is the trustworthy source of scenes.** Its 300 µm circular loop
-  measures 300.4 × 300.0 µm, its droplet mesh spans 300 × 300 × 150 µm, its pin is exactly
-  700 µm. The hand-built bundled scenes are the outlier.
-- Reusable harnesses for all of the above live in `investigation/scene_survey.py` (renders
-  a set of scenes across spindle angles into a labelled contact sheet) and
-  `investigation/scene_dimcheck.py` (dimensional + NA-sensitivity checks). Note
-  `investigation/` is **not shipped** — see Open questions.
+- **`crystal_harvester` gets the hardware right and the droplet wrong — CORRECTED
+  2026-08-07.** This entry previously read "`crystal_harvester` is the trustworthy source
+  of scenes", citing a droplet mesh spanning 300 × 300 × 150 µm. That measurement was of a
+  **fallback hemisphere, not a solved droplet**, and the distinction was invisible until
+  someone generated a scene and rendered it. What still holds: its loop, fiber, stem and
+  pin are dimensionally correct (300 µm loop, 20 µm fiber, pin exactly 700 µm), and the
+  hand-built bundled scenes remain the outlier for *that* geometry. What does not hold is
+  the droplet — see the next entry. Treat `crystal_harvester` as trustworthy for the
+  mount and untrustworthy for the solvent until the solver is fixed.
+- **The droplet solver silently fails and substitutes a hemisphere.**
+  `crystal_harvester/droplet.py::bashforth_adams` integrates the meniscus profile outward
+  and looks for where it crosses the loop radius. For a 300 µm loop it never gets there at
+  **any** pressure in its own bracket: the profile's widest point peaks at ~78 µm against
+  the 150 µm needed, then the surface turns vertical (ψ = π/2) and stops. Measured, on the
+  CLI's own defaults:
+
+  | dP | max radius reached | reaches R_loop = 150 µm? |
+  |---|---|---|
+  | 3.3 (bracket low) | 0.0 µm | no |
+  | 33 | 78 µm | no |
+  | 267 (bracket high) | 9.6 µm | no |
+  | 800 (past the bracket) | diverges (5.9 × 10⁵ mm) | — |
+
+  The first guard therefore fires and it returns `_hemisphere_mesh(R_loop)` with no
+  warning. Three consequences, all silent: **`--solvent-volume` is ignored** (0.002 mm³
+  requested, 0.00707 delivered — the hemisphere's own volume, 3.5× larger);
+  **`--contact-angle` is ignored** (nothing downstream of the failed solve reads it); and
+  the drop is a **flat-bottomed dome spanning z = [0, +150] µm**, sitting *on* the loop
+  plane instead of straddling it as a lens pinned at the rim. The radius shortfall is not
+  a bracket you can widen — the maximum peaks mid-bracket and falls off on both sides,
+  which points at a scaling or non-dimensionalisation error in the ODE rather than a
+  search-range problem. **Deliberately not fixed** (owner's call, 2026-08-07): it is
+  physics work on the generator with a real risk of producing something plausible and
+  still wrong, and it wants a validation check — drop volume and rim radius measured back
+  off the mesh — as part of it.
+- **The generated droplet and crystal are not in the loop.** In
+  `scene_files/hampton_300um_realistic.yaml` the loop aperture is centred at
+  **x = −248 µm** (the loop path spans x ∈ [−504, 0] µm, the stem x ∈ [0, +700] µm) while
+  the droplet and crystal are centred at **x = 0** — the loop/stem junction. So the
+  aperture renders empty and the drop hangs off the stem. Every dimension is correct;
+  only the position is wrong, and there is no CLI option for drop position, so it is
+  generator behaviour rather than a mis-set flag. Separate from the solver failure above,
+  though a single missing "place the drop in the loop's frame" step would explain both.
+- Reusable harnesses for all of the above live **outside this repo** (they are analysis
+  scratch, not a deliverable) at
+  `/home/jadoughty/projects/loop_sim_MINE/investigation/2026-07_scene_and_perf_harnesses/`:
+  `scene_survey.py` renders a set of scenes across spindle angles into a labelled contact
+  sheet, and `scene_dimcheck.py` does the dimensional + NA-sensitivity checks. They import
+  `loop_sim`, so run them with the repo on the path — see that directory's `README.md`.
 
 **Deployment reality — the 10 fps target reproduces on the TITAN V (11.9 fps), but only with
 the full software stack; the hardware was never the bottleneck, the beamline's default
@@ -320,8 +365,33 @@ fallback **6.3 fps**. The three things that decide whether you get 11.9 or 6.3:
 - **`scene.yaml`/`loop.yaml` are gitignored, NOT shipped** — render a `scene_files/*.yaml`
   (e.g. `hampton_300um.yaml`, `mitegen_200um.yaml` are complete) or build one via the
   pipeline (README).
-- **The `investigation/` dir is NOT shipped** (excluded from the gateway push) — see Open
-  questions; the soak-test and profiling harnesses live there.
+- **The analysis tree lives outside this repo — out of git, but ON the mirror.** Those are
+  two different questions and these docs used to conflate them, asserting in three places
+  that `investigation/` was "NOT shipped (excluded from the gateway push)". The intent was
+  only ever the first half: keep experiment scratch out of the deliverable's history,
+  while still letting the team see what is being worked on. It now lives at
+  `/home/jadoughty/projects/loop_sim_MINE/investigation/`, split into
+  `2026-06_float64_gpu_parity/` (the original bug-hunt workings) and
+  `2026-07_scene_and_perf_harnesses/` (`scene_survey.py`, `scene_dimcheck.py`,
+  `soak_server.py`). Not a git repo; mirrored to the gateway, so it will not arrive with a
+  `git clone` but will be there beside the repo.
+- **The mirror ships `loop_sim_MINE` as three pairs, and that is load-bearing.** The
+  analysis tree and the repo's `scratch/` both carry workspace-local paths (133 files in
+  the June bug-hunt, one build log in `scratch/`), and the push's path-leak gate is
+  **fail-closed and per pair** — as a single pair those tokens would block the deliverable
+  itself from shipping. Split, each tree carries its own gate decision: `xtal-loop-sim`
+  stays **gated**, the two scratch trees are `nogate`. Keep it that way. Ungating the
+  deliverable to make a scratch tree travel would trade the one mechanical check the
+  knowledge-transfer protocol has for something nobody clones.
+- **An rsync exclude cannot hide a tracked file.** While the harnesses were inside the
+  repo they were tracked in git, and the mirror ships `.git/` wholesale — so they reached
+  the gateway inside the pack files no matter what the exclude said (and the exclude was
+  anchored a level too high to match them anyway). Whenever "this must not travel" is the
+  requirement, the content has to be out of the repo; a pattern is not a mechanism.
+- **A `scratch/` directory at the repo root is git-ignored but IS mirrored** — renders,
+  screenshots, one-off outputs. Nothing in it is a deliverable and it is safe to empty at
+  any time; it reaches the gateway as its own ungated pair so the team can see working
+  output without it entering the repo's history.
 
 ## Open questions
 
@@ -342,14 +412,24 @@ fallback **6.3 fps**. The three things that decide whether you get 11.9 or 6.3:
 - **Frame-library coverage.** The sweep covers rotation; `zoom` and `tz` are not free the
   way lateral translation is and would need their own sweeps or a live render. Decide
   whether the AXIS consumer needs them before treating the library as complete.
-- **Why does `crystal_harvester` place the droplet and crystal at the loop/stem
-  junction rather than in the loop aperture?** Measured on the first generated
-  scene: loop aperture centred at x = −248 µm, drop centred at x = 0, so the
-  aperture renders empty. Every dimension is right, only the position is wrong,
-  and there is no CLI flag for it. Blocks using generated scenes for fidelity
-  work, which is the whole point of generating them. See the 2026-08-07 work-log
-  entry; to see it, `python render.py scene_files/hampton_300um_realistic.yaml
-  --device cuda` and look at the loop.
+- **Why can the Bashforth-Adams profile never reach the loop radius?** Its widest point
+  peaks at ~78 µm against the 150 µm a 300 µm loop needs, and falls off on both sides of
+  the bracket, so widening the search will not help — the numbers point at a scaling or
+  non-dimensionalisation error in the ODE. Until it is answered, every generated droplet
+  is the fallback hemisphere and `--solvent-volume`/`--contact-angle` do nothing. The
+  first thing to check is the units of the gravity/capillary term in `_ba_rhs` against
+  the `dP` the bracket supplies. **Any fix needs a validation check that measures drop
+  volume and rim radius back off the generated mesh** — the current failure is invisible
+  precisely because nothing does that.
+- **Why does `crystal_harvester` place the droplet and crystal at the loop/stem junction
+  rather than in the loop aperture?** Loop aperture centred at x = −248 µm, drop centred
+  at x = 0, so the aperture renders empty. Every dimension is right, only the position is
+  wrong, and there is no CLI flag for it. Possibly the same root cause as the solver
+  failure — a missing "place the drop in the loop's frame" step would explain the wrong
+  position *and* the drop sitting on the loop plane rather than straddling it. Together
+  these two block using generated scenes for fidelity work, which is the whole point of
+  generating them. To see it: `python render.py
+  scene_files/hampton_300um_realistic.yaml --device cuda` and look at the loop.
 - **Should launching on a stale-library scene behave like switching to one?** Runtime
   switching serves a stale-but-complete library as-is; `CameraServer.__init__` still
   rebuilds it. Both behaviours are defensible on their own and they now disagree with
@@ -362,8 +442,8 @@ fallback **6.3 fps**. The three things that decide whether you get 11.9 or 6.3:
   deployment turnkey instead of a five-step manual setup.
 - **Make the silent compile-fallback loud** (risk B) and **declare torch 2.6** as required —
   a mis-set stack currently misses 10 fps with no signal.
-- **The perf-validation tooling in `investigation/` is push-excluded** (`soak_server.py`,
-  profiling experiments); `bench_frame.py` and `acceptance_voltron.py` (repo root) ARE
+- **The perf-validation tooling lives outside the repo** (`soak_server.py`, profiling
+  experiments — see Hazards); `bench_frame.py` and `acceptance_voltron.py` (repo root) ARE
   shipped. `acceptance_voltron.py` is the one-command GO/NO-GO check — run it on the target
   GPU and read the printed verdict + `acceptance_report.json`.
 
@@ -400,8 +480,10 @@ those numbers don't have to be re-derived.
   if that matters for a future scene.
 - `crystal_harvester/` — scene *generator* (James's original geometry code: elastica loop
   mechanics, Bashforth-Adams droplets, crystal habits, pin geometry). Builds a complete
-  scene from physical parameters — 8 Hampton loop sizes × 3 shapes, 9 MiTeGen models. This
-  is the dimensionally-correct source of scenes; prefer it to hand-editing YAML.
+  scene from physical parameters — 8 Hampton loop sizes × 3 shapes, 9 MiTeGen models.
+  Dimensionally correct for the **mount**; its droplet solver silently falls back to a
+  hemisphere and its droplet placement is wrong (see "Scene fidelity"). Still preferable
+  to hand-editing YAML for the loop/stem/pin.
 - `digitize_fiber.py → add_stem.py → add_droplet.py → add_crystal.py → generate_scene.py`
   — the pipeline that builds a scene from a real loop image (README).
 - `scene_files/` — complete example scenes (`hampton_300um.yaml` tube-based;
@@ -412,10 +494,36 @@ those numbers don't have to be re-derived.
   `--time`!). `tests/` — 149 tests (the verify command).
 - `README.md` — user guide (repo root). `CLAUDE.md` — deep engineering notes (repo root:
   architecture, precision, concurrency, the recentre bug). `docs/` — the handoff docs
-  (this file + `RUNBOOK.md`, `DECISIONS.md`, `DATA.md`). `investigation/` — **not
-  shipped**; experiment scratch + perf harnesses.
+  (this file + `RUNBOOK.md`, `DECISIONS.md`, `DATA.md`). `scratch/` — git-ignored,
+  git-ignored local scratch (mirrored, not versioned). The experiment/perf harnesses are
+  **outside this repo**, at
+  `/home/jadoughty/projects/loop_sim_MINE/investigation/`.
 
 ## Work log (append-only)
+
+- **2026-08-07 (sync)** — Documentation catch-up on the day's three commits (`13d42b7`,
+  `b0b89bf`, `3cceb47`), plus two corrections that matter more than the additions.
+  **(1) The droplet diagnosis was written down.** It existed nowhere in the repo:
+  `crystal_harvester`'s Bashforth-Adams solver silently returns a hemisphere for ordinary
+  inputs, so `--solvent-volume` and `--contact-angle` do nothing and every generated drop
+  is the wrong shape in the wrong place. Recorded with its measurements under "Scene
+  fidelity", with the reason it was left unrepaired in DECISIONS. This also **corrects**
+  the standing claim that `crystal_harvester` is the dimensionally-trustworthy source of
+  scenes — that assessment, and the 2026-07-28 audit's approving citation of a
+  300 × 300 × 150 µm droplet mesh, were both measuring the fallback. The claim is now
+  split: trustworthy for the mount, not for the solvent.
+  **(2) The analysis tree moved out of the repo, and the claim that it was excluded was
+  false until it did.** `investigation/` was tracked in git and the mirror ships `.git/`
+  wholesale, so an rsync exclude could never have hidden it — and the exclude pattern was
+  anchored a level too high to match it anyway. It now lives outside the repo, split into
+  `2026-06_float64_gpu_parity/` and `2026-07_scene_and_perf_harnesses/`; ~14 doc
+  references were repointed at the new absolute location. A git-ignored `scratch/` was
+  added at the repo root for renders and one-off outputs. Both it and the analysis tree
+  are mirrored to the gateway as their own ungated pairs, which is what keeps the
+  deliverable's own leak gate intact.
+  Verify re-run on the post-move tree: **149 passed**. **Next:** unchanged — scene
+  geometry correctness is still the highest-value open work, and the droplet solver is now
+  its first concrete blocker rather than a vague one.
 
 - **2026-08-07 (later)** — `mitegen_200um` rebuilt; nothing ships stale any more.
   Suite **149**. 360 PNG frames with the objective PSF, `--supersample 1` (its own

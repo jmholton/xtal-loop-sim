@@ -35,10 +35,11 @@ loop.yaml
 # Benchmark output (bench_frame.py)
 bench_results/
 
-# Local scratch: renders, screenshots, one-off outputs. Also excluded from the
-# gateway push (the loop_sim_MINE pair in Repositories/push-all.sh), so nothing
-# dropped here travels anywhere. Directory rule on purpose -- nothing under it
-# should ever be tracked, so there is nothing to re-include.
+# Local scratch: renders, screenshots, one-off outputs. Kept out of git only --
+# it IS mirrored to the gateway, as its own ungated pair in push-all.sh, so the
+# team can see working output without it entering this repo's history. Directory
+# rule on purpose -- nothing under it should ever be tracked, so there is nothing
+# to re-include.
 scratch/
 
 # Misc
