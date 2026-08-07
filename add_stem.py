@@ -39,6 +39,8 @@ Motor formula:
 """
 import sys, os, argparse
 sys.path.insert(0, '/home/jamesh/projects/loop_sim/claude')
+# This repo's own packages must win over the legacy path above.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import numpy as np
 import yaml
