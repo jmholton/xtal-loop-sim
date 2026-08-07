@@ -961,6 +961,69 @@ _TILE_MIN = 32_768
 # VRAM-aware size instead.
 _TILE_DEFAULT = 1_000_000
 
+# Peak trace memory is linear in (tile rays x mesh faces): every Moller-Trumbore
+# temporary in TSurfaceMesh._mt_batch is (B, F) or (B, F, 3), and there is no
+# AABB cull on the mesh path to shrink F. Measured 2026-08-07 on an RTX 4080
+# SUPER at 160 B per ray per face, stable to ~1% across tiles of 2048-16384 rays
+# AND across scenes of 234 faces (mitegen_200um) and 2880 (a crystal_harvester
+# droplet) -- so it is a property of the kernel, not of one scene. Scenes with
+# no mesh carry no such term at all (measured 0.5 KB/ray total) and keep the
+# flat _TILE_DEFAULT above.
+#
+# This is what makes the DEFAULT safe without probing. _TILE_DEFAULT alone put a
+# 640x480 frame through in one pass, which on a 2880-face droplet scene is
+# 307200 x 2880 x 160 B = 19.8 GB and a hard OOM -- i.e. any scene with a
+# solvent droplet was unrenderable at default settings. Probing instead (see
+# plan_tile_size) cannot be the default: it resets torch's global peak-memory
+# counters, which bench_frame.py and acceptance_voltron.py read, and its upper
+# rungs are exactly the allocations WSL2 spills on rather than failing.
+_MESH_BYTES_PER_RAY_FACE = 160
+# Floor for the computed tile. Below this the Python-level tile loop starts to
+# dominate; a 2880-face scene on a 16 GB card lands near 20k, so this only binds
+# on much heavier meshes, where being slow beats spilling.
+_TILE_FIT_MIN = 4_096
+
+
+def _mesh_face_count(shapes):
+    """Faces in the LARGEST mesh in a shape tree, or 0 if there is none.
+
+    The largest, not the total: _mt_batch broadcasts one mesh at a time, so peak
+    memory is set by the biggest F, not the sum. Walks CSG children because a
+    droplet reaches the renderer wrapped in Intersection/Difference nodes.
+    """
+    worst = 0
+    stack = list(shapes)
+    while stack:
+        s = stack.pop()
+        if isinstance(s, TSurfaceMesh):
+            worst = max(worst, int(s._v0.shape[0]))
+        stack.extend(getattr(s, "children", None) or [])
+        for attr in ("A", "B"):
+            child = getattr(s, attr, None)
+            if child is not None:
+                stack.append(child)
+    return worst
+
+
+def fit_tile_size(tscene, total_rays, vram_fraction=0.80):
+    """Largest tile that fits in free VRAM, computed rather than measured.
+
+    Costs microseconds and runs no trial renders, so it is safe as a default:
+    nothing here perturbs the memory counters the benchmark harnesses report,
+    and nothing allocates the very block it is trying to avoid. plan_tile_size
+    remains available for callers that explicitly ask for tile_size=None and
+    want the measured answer.
+    """
+    if tscene.dev.type != "cuda":
+        return total_rays
+    faces = _mesh_face_count(tscene.shapes)
+    if faces == 0:
+        return min(total_rays, _TILE_DEFAULT)   # no mesh: unchanged behaviour
+    free, _total = torch.cuda.mem_get_info()
+    budget = free * vram_fraction
+    per_ray = faces * _MESH_BYTES_PER_RAY_FACE
+    return int(max(_TILE_FIT_MIN, min(total_rays, budget // per_ray)))
+
 
 def _probe_peak(fn):
     """Marginal bytes `fn` adds to the allocator's RESERVED pool.
@@ -975,8 +1038,12 @@ def _probe_peak(fn):
     NOTE: this RESETS the process-global peak-memory counters. Torch offers no
     way to restore them, so anything reporting peak memory around a render
     (`bench_frame.py`, `acceptance_voltron.py`) must not run while a calibration
-    is happening. Both are safe today: they pass an explicit `tile_size`, and
-    calibration is cached per scene so it happens at most once.
+    is happening. Both are safe -- but NOT, as this note used to claim, because
+    they pass an explicit `tile_size`: neither does. They are safe because they
+    take the default, and the default is `fit_tile_size`, which calculates and
+    never probes. That is one of the reasons the probing ramp cannot be made the
+    default; changing it back would corrupt the VRAM figures in the TITAN V
+    GO/NO-GO harness with no test to catch it.
     """
     torch.cuda.empty_cache()          # start from a clean pool so the delta is real
     torch.cuda.synchronize()
@@ -1059,8 +1126,15 @@ def plan_tile_size(tscene, o_t, d_t, na_obj, opt_axis_s, total_rays,
 # tiles), which is what makes both safe.
 # ---------------------------------------------------------------------------
 @torch.inference_mode()
-def render_torch(tscene, goniometer, n_cond=1, tile_size=_TILE_DEFAULT,
+def render_torch(tscene, goniometer, n_cond=1, tile_size="fit",
                  compiled=False, vram_fraction=0.80, psf=True):
+    """Render one frame.
+
+    tile_size: "fit" (default) sizes the trace tile from the scene's mesh size
+    and free VRAM by calculation -- no trial renders, microseconds, and for a
+    scene with no mesh it is exactly the old flat _TILE_DEFAULT. None/"auto"
+    uses plan_tile_size's measured doubling ramp instead; an int is used as-is.
+    """
     from .microscope import _condenser_offsets
     from ..motors.goniometer import apply_transform
     from .optics import apply_psf, psf_sigma_px, MIN_SIGMA_PX
@@ -1107,7 +1181,11 @@ def render_torch(tscene, goniometer, n_cond=1, tile_size=_TILE_DEFAULT,
         d_t = torch.as_tensor(np.broadcast_to(illum_dir_s, (WH, 3)).copy(),
                               device=dev, dtype=dt)
 
-        if plan is None or plan == "auto":
+        if plan == "fit":
+            # Calculated, not probed: cheap enough to redo per condenser sample
+            # and it never allocates the block it is sizing against.
+            plan = fit_tile_size(tscene, WH, vram_fraction=vram_fraction)
+        elif plan is None or plan == "auto":
             # Cache per (scene, frame size, headroom): calibrating costs two
             # probe traces, and a 360-frame sweep would otherwise pay for them
             # 360 times over.

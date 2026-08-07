@@ -152,6 +152,14 @@ Notes:
   Tiling bounds the *trace* working set; the resident ray arrays are still O(W×H)
   (~1 GB at a 14 Mpx template) and no tile size shrinks them, so peak memory is reduced
   by tiling rather than made independent of resolution.
+- **Mesh scenes cost `rays × faces × 160 B` of VRAM, and that sets the tile.** There
+  is no AABB cull on the mesh path, so a droplet scene is far heavier than a tube
+  one: a 2880-face droplet at 640×480 needs 19.8 GB in a single pass. The trace
+  tile is therefore sized from the face count and free VRAM by default, which is
+  what makes such a scene renderable at all (3.2 s at 3.6 GB here). Tube scenes
+  carry no mesh term and are unaffected. If you add a much denser mesh and builds
+  slow down, that is the tile shrinking to fit — the durable fix is giving
+  `TSurfaceMesh` the AABB cull `TTube` already has.
 - **The build raises on out-of-memory rather than quietly dropping resolution** — a
   library rendered at a degraded setting is indistinguishable from a good one once it is
   on disk. Under WSL2 there is no OOM to catch (the driver spills to host RAM instead), so
@@ -278,7 +286,7 @@ server, whose `/motor` endpoint takes all seven axes.
 | `--format` | `png` | stored template format. png is lossless **and** smaller here. *rebuilds library* |
 | `--psf` | `on` | bake the objective diffraction PSF into the templates. *rebuilds library* |
 | `--quality` | 90 | JPEG quality; ignored when `--format png`. *rebuilds library* |
-| `--tile-size` | `auto` | rays per trace pass; auto sizes from free VRAM. Does not change pixels |
+| `--tile-size` | `auto` | rays per trace pass; `auto` measures the size by trial renders. Does not change pixels. Note `render_torch`'s own default is different and cheaper — it *calculates* the tile from mesh face count and free VRAM with no trial renders (DECISIONS.md §2026-08-07) |
 | `--vram-fraction` | 0.80 | share of free VRAM the auto tile may use. Does not change pixels |
 | `--device` | auto | `cuda` when available |
 | `--force` | off | rebuild even if current |

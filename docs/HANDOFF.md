@@ -1,8 +1,8 @@
 ---
 project: loop-sim (xtal-loop-sim) — bright-field microscope + X-ray simulator for protein crystals in cryo-loops
 status: active — camera served from pre-computed templates (no GPU at runtime) and usable interactively; scene geometry/fidelity is the open front
-last_verified: 2026-08-06        # `pytest tests/` = 139 passed in 108 s on this tree (branch performance-correctness-optimizations, RTX 4080 SUPER)
-verify: python -m pytest tests/ -q        # 139 tests; "python" = the torch-enabled project interpreter (see docs/RUNBOOK.md "Environment")
+last_verified: 2026-08-06        # `pytest tests/` = 147 passed in 117 s on this tree (branch performance-correctness-optimizations, RTX 4080 SUPER)
+verify: python -m pytest tests/ -q        # 147 tests; "python" = the torch-enabled project interpreter (see docs/RUNBOOK.md "Environment")
 ---
 
 # HANDOFF — loop-sim (xtal-loop-sim)
@@ -90,7 +90,7 @@ the GPU path **correct** (it was producing a "hairy" artifact on the loop fiber)
   exactly that case, and an implicit rebuild would cost ~1.9 h on the first tab
   click. See DECISIONS.md §2026-08-06 for the lock order and the deadlock this
   work uncovered in the existing `_servable` path.
-- **Verify: `pytest tests/` = 139 tests, green** on the local torch env (needs a
+- **Verify: `pytest tests/` = 147 tests, green** on the local torch env (needs a
   torch+CUDA interpreter; GPU-gated parity tests skip on a CPU-only box).
 - **Paused with clear open items** (see below) — nothing half-broken; the engine works.
 
@@ -99,7 +99,7 @@ the GPU path **correct** (it was producing a "hairy" artifact on the loop fiber)
 For a stranger picking this up cold:
 
 1. Build the environment and confirm health: follow **`RUNBOOK.md`** → run `python -m pytest
-   tests/ -q` (should be 139 green). "python" is the torch-enabled interpreter — beamline:
+   tests/ -q` (should be 147 green). "python" is the torch-enabled interpreter — beamline:
    `/programs/pytorch/envs/pt/bin/python`; local dev: a conda env with `torch==2.6.0+cu124`.
    On a CPU-only box the GPU parity tests skip, so green there proves less.
 2. Understand the design before editing: **`../CLAUDE.md`** is the deep engineering doc
@@ -198,7 +198,20 @@ software stack is.** Measured on a real voltron TITAN V (2026-07-17, `acceptance
 torch 2.6, devtoolset-7): compiled preview **11.9 fps median / 10.1 fps p90 (GO)**, eager
 fallback **6.3 fps**. The three things that decide whether you get 11.9 or 6.3:
 
-- **A — RESOLVED 2026-07-31. VRAM no longer scales with resolution.** The binding
+- **A — RESOLVED 2026-07-31, but only for callers that asked; the DEFAULT path
+  still OOM'd until 2026-08-07.** The VRAM-aware sizing below ran only when a
+  caller passed `tile_size=None`, and almost none did: `camera_server`,
+  `bench_frame.py`, `acceptance_voltron.py`, `investigation/` and
+  `frame_library`'s own scout sweep all took the flat 1,000,000-ray default, so
+  a 640×480 frame went through in one pass — 19.8 GB on a 2880-face droplet
+  scene. Every scene with a solvent droplet was therefore unrenderable at
+  default settings, and a library build for one would have died in the scout
+  before reaching the auto-sizing its main loop does use. The default now
+  *calculates* the tile from mesh size and free VRAM (160 B per ray per face,
+  measured); meshless scenes are unchanged. See DECISIONS.md §2026-08-07 and
+  `tests/test_tile_sizing.py`. The original entry follows.
+
+  **VRAM no longer scales with resolution.** The binding
   constraint was never the mesh geometry as such, it was `tile_size = max(tile_size, WH)`
   at `engine_torch.py`, which forced every trace tile to be at least a whole frame. The
   comment above that line already said per-ray results are tile-independent and
@@ -334,6 +347,14 @@ fallback **6.3 fps**. The three things that decide whether you get 11.9 or 6.3:
 - **Frame-library coverage.** The sweep covers rotation; `zoom` and `tz` are not free the
   way lateral translation is and would need their own sweeps or a live render. Decide
   whether the AXIS consumer needs them before treating the library as complete.
+- **Why does `crystal_harvester` place the droplet and crystal at the loop/stem
+  junction rather than in the loop aperture?** Measured on the first generated
+  scene: loop aperture centred at x = −248 µm, drop centred at x = 0, so the
+  aperture renders empty. Every dimension is right, only the position is wrong,
+  and there is no CLI flag for it. Blocks using generated scenes for fidelity
+  work, which is the whole point of generating them. See the 2026-08-07 work-log
+  entry; to see it, `python render.py scene_files/hampton_300um_realistic.yaml
+  --device cuda` and look at the loop.
 - **Should launching on a stale-library scene behave like switching to one?** Runtime
   switching serves a stale-but-complete library as-is; `CameraServer.__init__` still
   rebuilds it. Both behaviours are defensible on their own and they now disagree with
@@ -393,13 +414,38 @@ those numbers don't have to be re-derived.
 - `bench_frame.py` — warm-frame benchmark (`--compiled`, `--fp32`). `acceptance_voltron.py`
   — self-contained TITAN V acceptance test (fps + VRAM + compile check → GO/NO-GO +
   `acceptance_report.json`; auto-picks a free GPU). `run_gpu.slurm` — voltron GPU job (no
-  `--time`!). `tests/` — 139 tests (the verify command).
+  `--time`!). `tests/` — 147 tests (the verify command).
 - `README.md` — user guide (repo root). `CLAUDE.md` — deep engineering notes (repo root:
   architecture, precision, concurrency, the recentre bug). `docs/` — the handoff docs
   (this file + `RUNBOOK.md`, `DECISIONS.md`, `DATA.md`). `investigation/` — **not
   shipped**; experiment scratch + perf harnesses.
 
 ## Work log (append-only)
+
+- **2026-08-07** — First `crystal_harvester` scene generated, and it exposed that
+  droplet scenes could not be rendered at all with default settings. Suite **147**.
+  Generated `scene_files/hampton_300um_realistic.yaml` (the scene the fidelity
+  block has recommended since 2026-07-28): 300 µm teardrop loop, 20 µm fiber, a
+  real 300 × 300 × 150 µm droplet mesh and a hexagonal crystal — everything the
+  bundled `hampton_300um` lacks. **Two findings, both from actually rendering it.**
+  (1) **`render_torch`'s default tile OOM'd on any mesh scene**: the flat
+  1,000,000-ray default put a 640×480 frame through in one pass, which at 2880
+  faces is 19.8 GB. The 2026-07-31 VRAM work only ran for callers passing
+  `tile_size=None`, and essentially nobody does — including `frame_library`'s own
+  scout sweep, so a library build for this scene would have died before reaching
+  the auto-sizing its main loop uses. The default now calculates the tile from
+  mesh size and free VRAM (160 B/ray/face, measured across two scenes and four
+  tile sizes); meshless scenes are bit-for-bit unchanged, so no benchmark moves.
+  Probing was rejected as the default for three separate reasons — see
+  DECISIONS.md §2026-08-07. Renders in **3.2 s at 3.6 GB** where it used to OOM.
+  (2) **The generated scene's droplet and crystal are in the wrong place**: the
+  loop aperture is centred at x = −248 µm and the drop at x = 0, the loop/stem
+  junction, so the aperture renders empty and the drop hangs off the stem. Sizes
+  are all correct; only the placement is wrong. Not yet diagnosed — there is no
+  CLI option for drop position, so it is generator behaviour, not a mis-set flag.
+  The render also reproduces the known opaque-droplet bug. **Next:** that
+  placement question, and it sits directly on the critical path for the whole
+  scene-fidelity effort.
 
 - **2026-08-06 (latest)** — Runtime scene switching, and a live deadlock found on
   the way. Suite **139** (was 110). The server held one scene for the life of the

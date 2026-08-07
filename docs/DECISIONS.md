@@ -8,6 +8,51 @@
 
 ## Decisions
 
+### 2026-08-07 — the default trace tile is calculated, not measured
+
+**Every scene with a solvent droplet was unrenderable at default settings, and
+the fix that "retired risk A" never applied to the default path.** `render_torch`
+defaulted to a flat `tile_size = 1_000_000`, so a 640×480 frame went through in
+one pass: 307200 rays × 2880 faces × 160 B = **19.8 GB, a hard OOM** on a 16 GB
+card. The VRAM-aware sizing added on 2026-07-31 only ran when a caller passed
+`tile_size=None`, and almost nobody does — `camera_server`, `bench_frame.py`,
+`acceptance_voltron.py`, the `investigation/` harnesses and, critically,
+`frame_library`'s own **scout sweep** (`content_window`, frame_library.py:336)
+all take the default. Only the library's main render loop passed it through. So
+a library build for a droplet scene would have died in the scout, before the
+auto-sizing it does use ever ran.
+
+**Measured law, and it is a property of the kernel rather than of one scene:**
+peak trace memory is linear in `tile_rays × mesh_faces` at **160 B per ray per
+face**, stable to ~1% across tiles of 2048–16384 rays *and* across scenes of 234
+faces (`mitegen_200um`) and 2880 (a `crystal_harvester` droplet). Every
+Möller-Trumbore temporary in `TSurfaceMesh._mt_batch` is `(B, F)` or `(B, F, 3)`
+and there is no AABB cull to shrink `F`. Scenes with no mesh carry no such term
+at all — measured 0.5 KB/ray total.
+
+**So the default computes the tile instead of probing for it**
+(`fit_tile_size`): `free VRAM × vram_fraction ÷ (faces × 160)`, microseconds, no
+trial renders. A meshless scene gets exactly the old flat default, so every fps
+and parity number in the repo — all measured on the tube scene `hampton_300um` —
+is untouched, and both shipped scenes still render in a single pass.
+
+**Why not simply switch the default to the existing probing ramp**, which is the
+obvious move: three reasons, each of which would have been a silent regression.
+(1) `_probe_peak` **resets torch's global peak-memory counters**, which
+`bench_frame.py` and `acceptance_voltron.py` read — so the TITAN V GO/NO-GO
+harness would have reported corrupted VRAM figures, with no test to catch it.
+(That function's docstring asserted those two were safe "because they pass an
+explicit `tile_size`"; they do not, and never did. Corrected.) (2) It would put
+a calibration in the live server's first frame. (3) The ramp's upper rungs are
+precisely the 12–15 GB allocations **WSL2 spills on instead of failing**, so on
+the dev box it does not OOM, it hangs — measured >10 minutes against 3.2 s for a
+fixed tile. The ramp is still there for callers that ask for `tile_size=None`
+and want the measured answer.
+
+**Guarded by `tests/test_tile_sizing.py`**, including an end-to-end render of a
+2880-face scene through the bare default; verified to fail with
+`torch.OutOfMemoryError` against the old default.
+
 ### 2026-08-06 — runtime scene switching: build off-lock, install under lock
 
 The server held one scene for the life of the process, so comparing the two
