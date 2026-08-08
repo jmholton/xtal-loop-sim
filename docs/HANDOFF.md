@@ -500,6 +500,25 @@ those numbers don't have to be re-derived.
 
 ## Work log (append-only)
 
+- **2026-08-07 (pin joint, bundled scene)** — The same stem-pin gap existed in
+  the hand-built `hampton_300um.yaml`: stems ended at x = 0.700, pin metal
+  begins on the axis at x = 1.000 (same bevel geometry as the generator
+  emits). Both stem fiber paths were extended in place, continuing their
+  exact helix (R = 0.015 mm, 3000°/mm, same waypoint spacing) 19 waypoints to
+  x = 1.041, inside the pin CSG. Tube render cost is set by `n_samples`, not
+  waypoint count, so the perf-baseline character of the scene is unchanged;
+  suite **169** green on the edited scene. This is a deliberate, measured
+  exception to "never modify hampton_300um.yaml" (owner-requested; the rule's
+  target was droplet-filling, which would change the render-cost class). The
+  frame library was rebuilt (360 × 5578×2570 PNG, 29.3 MB, 47.6 min at
+  7.93 s/frame, status `current`) and a served template verified to show the
+  attached joint. The `hampton_300um_realistic` library build was started at
+  `--supersample 1` (~8 s/frame projected → not measured; the mesh has no
+  AABB cull so supersample 4 would be days) and **killed at the owner's
+  request to re-run overnight** — the builder restarts from frame 0 by
+  design, so nothing is lost; relaunch with
+  `python -u -m loop_sim.library --scene scene_files/hampton_300um_realistic.yaml --supersample 1`.
+
 - **2026-08-07 (pin joint)** — The stem now reaches the pin. `make_pin` places
   the scored break face `bevel_offset_mm` (0.3) PAST `tip_pos`, but the stem
   fibers were built to end AT `tip_pos` — a 0.3 mm air gap between nylon and
