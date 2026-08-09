@@ -316,12 +316,17 @@ fallback **6.3 fps**. The three things that decide whether you get 11.9 or 6.3:
   **16 MB**, 102 min at 17.0 s/frame. Like the hampton rebuild, PNG came out *smaller*
   than the JPEG it replaced (16 vs 28 MB). Nothing ships stale any more.
 
-  **The asymmetry it used to illustrate is still there, though, and still unresolved.**
-  Switching to a stale-but-complete library at runtime serves it as-is; launching with
-  `--scene <that scene>` still calls `ensure_library` in `__init__` and would rebuild
-  before the socket binds. No shipped scene triggers it today, so it is latent rather
-  than live — but the next scene built with older settings will hit it, and a fresh
-  clone can still be wedged for hours by a launch flag where a tab click would not.
+  **The asymmetry it used to illustrate is still there — and as of 2026-08-08 it is
+  LIVE, not latent.** Switching to a stale-but-complete library at runtime serves it
+  as-is; launching with `--scene <that scene>` still calls `ensure_library` in
+  `__init__` and rebuilds before the socket binds. `hampton_300um_realistic` is the
+  scene that triggers it: its per-scene-correct `--supersample 1` library grades stale
+  against the launch path's defaults, so a bare
+  `camera_server --scene scene_files/hampton_300um_realistic.yaml` **deletes the
+  manifest and starts a days-long supersample-4 mesh rebuild before serving anything**
+  (it did exactly this on 2026-08-08; the manifest had to be reconstructed — see the
+  work log). **Workaround until fixed: always pass `--supersample 1` when launching
+  the server on this scene.** The tab-switch path is unaffected and serves it fine.
 - **CPU/GPU parity is now "±1 grey level", not "byte-identical", once the PSF is on.**
   The two float64 traces always differed by ~3e-8 on ~0.7% of values; that was invisible
   while the image was near-binary and the PSF makes it visible at the quantisation
@@ -499,6 +504,28 @@ those numbers don't have to be re-derived.
   `/home/jadoughty/projects/loop_sim_MINE/investigation/`.
 
 ## Work log (append-only)
+
+- **2026-08-08 — the droplet scene's frame library shipped, after two traps fired.**
+  `frame_library/hampton_300um_realistic/`: 360 frames, 1396×644 (supersample 1,
+  n_cond 7, PSF, PNG), 2.9 MB, zoom 0.80–1×. Verified against a live f64 render at
+  φ=30: **0,0 px registration, mean |diff| 0.00055, 99% of pixels identical**.
+  **Trap 1 — the library CLI's tile-size "auto" is the probing ramp, and on WSL2 it
+  spills.** An overnight build at auto crawled at **~45 min/frame** (11 frames in 9 h):
+  the ramp sized the tile near the VRAM ceiling and WSL2 silently spilled to host RAM
+  — the exact failure DECISIONS §2026-08-07 gives as reason 3 for rejecting probing as
+  the render default. The builder's own spill warning cannot catch it (it baselines
+  against early frames, and a run that is slow from frame 0 sets a slow baseline).
+  Relaunched with an explicit `--tile-size 6800` (≈6 GB peak by the 160 B/ray/face
+  law): **95.2 s/frame, rock-steady, 9.5 h total**. On WSL2, always pass an explicit
+  tile for mesh-scene builds; the auto ramp is fine on native Linux where OOM raises.
+  **Trap 2 — the server launch path destroyed the fresh library's manifest** (see the
+  updated "asymmetry" entry under Other traps): a bare `--scene` launch graded the
+  S=1 library stale, deleted `manifest.json`, and began a days-long S=4 rebuild. It
+  was killed before any frame was overwritten; the manifest was **reconstructed
+  deterministically** using `frame_library`'s own functions (the scout window
+  recomputes byte-identically: 10.330 × 4.766 mm → 1396×644) and then verified by the
+  live-render comparison above. Launch this scene's server with `--supersample 1`.
+  Suite unchanged (**169**); no source edits this session — library + docs only.
 
 - **2026-08-07 (pin joint, bundled scene)** — The same stem-pin gap existed in
   the hand-built `hampton_300um.yaml`: stems ended at x = 0.700, pin metal
