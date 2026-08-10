@@ -749,13 +749,14 @@ class CameraServer(ThreadingHTTPServer):
                  preview_mode=True, compile_preview=True, settle_delay=0.5,
                  scene_path=None, templates=True, library_kwargs=None,
                  scene_dir=None, preview_root=None, camera_emulation=True,
-                 mono=True, sensor_pitch=True):
+                 mono=True, sensor_pitch=True, pin_streak=True):
         # Camera emulation: the illumination field, black floor and tone
         # response the tracer does not model (loop_sim/renderer/field.py).
         # Default ON -- the raw transmittance a tracer produces is 85% pure
         # white and 14% pure black, which is correct physics and not a
         # photograph.  Pass camera_emulation=False for the raw quantity.
-        self._camera = {"mono": bool(mono)} if camera_emulation else None
+        self._camera = ({"mono": bool(mono), "streak": bool(pin_streak)}
+                        if camera_emulation else None)
         # The sensor raster, applied in the same camera-space stage.  Kept
         # SEPARATE from camera_emulation because they answer different
         # questions: the field is what the camera records, this is the grid it
@@ -1987,6 +1988,14 @@ def main(argv=None):
                          "[0.7,0.9,1.0] renders strongly blue; this masks that "
                          "until the scene YAML is fixed. Ignored when "
                          "--camera-emulation off")
+    ap.add_argument("--pin-streak", choices=["on", "off"], default="on",
+                    help="on (default): draw the specular glint a real "
+                         "machined pin carries along its shank. The tracer "
+                         "models the pin as purely opaque, so it renders as a "
+                         "flat silhouette; this paints a grainy ridge on any "
+                         "opaque body wide enough to be a pin, keyed off the "
+                         "transmittance image. Ignored when --camera-emulation "
+                         "off. Costs ~3.4 ms/frame and no library rebuild")
     ap.add_argument("--sensor-pitch", choices=["on", "off"], default="on",
                     help="on (default): deliver frames on the real camera's "
                          "704x480 raster. The BL831 sample camera's pixels are "
@@ -2041,7 +2050,8 @@ def main(argv=None):
                           preview_root=args.preview_root,
                           camera_emulation=args.camera_emulation == "on",
                           mono=args.mono == "on",
-                          sensor_pitch=args.sensor_pitch == "on")
+                          sensor_pitch=args.sensor_pitch == "on",
+                          pin_streak=args.pin_streak == "on")
     server.start()
 
 
