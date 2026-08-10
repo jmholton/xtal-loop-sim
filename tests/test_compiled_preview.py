@@ -39,12 +39,15 @@ def _u8(img):
     return (img * 255).clamp(0, 255).to(torch.uint8).cpu()
 
 
-def _encode(img, quality=85):
-    from PIL import Image
-    img8 = _u8(img).numpy()
-    buf = io.BytesIO()
-    Image.fromarray(img8, mode="RGB").save(buf, format="JPEG", quality=quality)
-    return buf.getvalue()
+def _encode(img, quality=85, camera=None):
+    """Deliver exactly as the server delivers.
+
+    Routed through the server's own `encode_frame` rather than reimplementing
+    the chain, so the camera-emulation stage cannot drift between the two.
+    Pass the server's `_camera` dict; None gives raw transmittance.
+    """
+    from loop_sim.server.camera_server import encode_frame
+    return encode_frame(img.detach().cpu().numpy(), quality, camera)
 
 
 # ---------------------------------------------------------------------------
@@ -85,7 +88,8 @@ def test_compile_off_preview_is_eager_bytes():
 
         ts = TorchScene(scene, torch.device("cuda"), torch.float64)
         ref = _encode(render_torch(ts, Goniometer(scene.geometry).set(),
-                                   n_cond=1, compiled=False))
+                                   n_cond=1, compiled=False),
+                      camera=srv._camera)
         assert served == ref
     finally:
         srv.server_close()

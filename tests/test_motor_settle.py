@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 
+import numpy as np
 import pytest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -33,7 +34,12 @@ def server(monkeypatch):
     def fake_render(scene, gono, n_cond=1, jpeg_quality=85):
         calls.append(n_cond)
         time.sleep(0.01)
-        return None, b"FAKE%04d" % len(calls)
+        # Must return a real (H, W, 3) float image, not None: since the camera
+        # emulation stage landed, the server takes microscope_render's FLOAT
+        # image and encodes it itself, rather than passing through the JPEG
+        # this seam produces.  The assertions below key off `calls` (the n_cond
+        # each render used), never these bytes, so a tiny frame is enough.
+        return np.zeros((8, 8, 3), np.float32), b"FAKE%04d" % len(calls)
 
     monkeypatch.setattr(cs, "microscope_render", fake_render)
     scene = load(HAMPTON, device="cpu")

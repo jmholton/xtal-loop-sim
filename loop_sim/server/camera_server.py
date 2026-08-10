@@ -88,6 +88,40 @@ _SCENE_DIR_DEFAULT = os.path.join(
 
 
 # ---------------------------------------------------------------------------
+# Frame delivery: camera emulation, then encode
+# ---------------------------------------------------------------------------
+def encode_frame(img, jpeg_quality, camera=None):
+    """Apply camera emulation to a float (H, W, 3) in [0, 1], return JPEG bytes.
+
+    THE single place a served frame becomes bytes.  Both the live path (either
+    engine) and the template replay path route through here, which is what
+    makes the emulation identical across them -- the same discipline
+    `optics.py` uses for the PSF, and for the same reason: two implementations
+    would diverge by a ULP and break the byte comparisons in
+    `tests/test_server_settle_parity.py`.
+
+    This sits in CAMERA space, downstream of `pose_crop`, so the illumination
+    field cannot pan or rotate with the sample and templates keep storing raw
+    transmittance.  See `loop_sim/renderer/field.py` for why that placement is
+    load-bearing rather than incidental.
+
+    `camera` is the kwargs dict for `field.apply_camera`, or None for the raw
+    transmittance the tracer produced.  Quantisation truncates rather than
+    rounds, matching what `microscope.render` and the torch path already did.
+    """
+    from PIL import Image
+    import numpy as np
+
+    if camera:
+        from ..renderer.field import apply_camera
+        img = apply_camera(img, **camera)
+    arr = (np.clip(np.asarray(img, dtype=np.float64), 0.0, 1.0) * 255).astype(np.uint8)
+    buf = io.BytesIO()
+    Image.fromarray(arr, mode="RGB").save(buf, format="JPEG", quality=jpeg_quality)
+    return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
 # Template replay
 # ---------------------------------------------------------------------------
 class TemplateSource:
@@ -102,10 +136,12 @@ class TemplateSource:
     is not the bottleneck).
     """
 
-    def __init__(self, manifest, lib_dir, jpeg_quality=85, cache_size=8):
+    def __init__(self, manifest, lib_dir, jpeg_quality=85, cache_size=8,
+                 camera=None):
         self.manifest = manifest
         self.lib_dir = lib_dir
         self.jpeg_quality = jpeg_quality
+        self.camera = camera
         self._cache_size = max(1, int(cache_size))
         self._cache = {}
         self._order = []
@@ -156,9 +192,16 @@ class TemplateSource:
         img = self._frame(rec["file"]).resize(out_size, Image.BILINEAR, box=box)
         if sigma > 0.05:
             img = img.filter(ImageFilter.GaussianBlur(radius=sigma))
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=self.jpeg_quality)
-        return buf.getvalue()
+        if not self.camera:
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=self.jpeg_quality)
+            return buf.getvalue()
+        # Camera emulation runs AFTER the crop and the defocus blur, so the
+        # illumination field is pinned to output pixels: the sample moves under
+        # it, never with it.  Templates on disk stay raw transmittance.
+        import numpy as np
+        return encode_frame(np.asarray(img, dtype=np.float64) / 255.0,
+                            self.jpeg_quality, self.camera)
 
 
 # ---------------------------------------------------------------------------
@@ -687,7 +730,14 @@ class CameraServer(ThreadingHTTPServer):
                  n_cond=7, fps_limit=30.0, engine="auto", jpeg_quality=85,
                  preview_mode=True, compile_preview=True, settle_delay=0.5,
                  scene_path=None, templates=True, library_kwargs=None,
-                 scene_dir=None, preview_root=None):
+                 scene_dir=None, preview_root=None, camera_emulation=True,
+                 mono=True):
+        # Camera emulation: the illumination field, black floor and tone
+        # response the tracer does not model (loop_sim/renderer/field.py).
+        # Default ON -- the raw transmittance a tracer produces is 85% pure
+        # white and 14% pure black, which is correct physics and not a
+        # photograph.  Pass camera_emulation=False for the raw quantity.
+        self._camera = {"mono": bool(mono)} if camera_emulation else None
         self._scene_path     = scene_path
         # The RAW --templates intent, kept separately from _want_templates
         # (which folds in "and we have a path"). A server constructed with
@@ -831,7 +881,7 @@ class CameraServer(ThreadingHTTPServer):
         if manifest is not None:
             self._templates = TemplateSource(
                 manifest, library_dir(scene_path, self._library_root),
-                jpeg_quality=jpeg_quality)
+                jpeg_quality=jpeg_quality, camera=self._camera)
 
     # ------------------------------------------------------------------
     # Cache management
@@ -892,14 +942,16 @@ class CameraServer(ThreadingHTTPServer):
                     img = render_torch(self._tscene, gono, n_cond=n_cond, compiled=False)
             else:
                 img = render_torch(self._tscene, gono, n_cond=n_cond, compiled=False)
-            img8 = (img * 255).clamp(0, 255).to(torch.uint8).cpu().numpy()
-            buf = io.BytesIO()
-            Image.fromarray(img8, mode="RGB").save(
-                buf, format="JPEG", quality=self._jpeg_quality)
-            jpeg = buf.getvalue()
+            jpeg = encode_frame(img.detach().cpu().numpy(),
+                                self._jpeg_quality, self._camera)
         else:
-            _, jpeg = microscope_render(self._scene, gono, n_cond=n_cond,
-                                        jpeg_quality=self._jpeg_quality)
+            # microscope_render encodes internally; we take its float image and
+            # re-encode through the shared path so the emulation and the
+            # quantisation are identical on both engines.  The wasted encode
+            # only happens on the no-CUDA fallback.
+            img, _ = microscope_render(self._scene, gono, n_cond=n_cond,
+                                       jpeg_quality=self._jpeg_quality)
+            jpeg = encode_frame(img, self._jpeg_quality, self._camera)
         return jpeg
 
     def _render_now(self):
@@ -1422,7 +1474,8 @@ class CameraServer(ThreadingHTTPServer):
                     warning = describe_differences(diff)
             templates = TemplateSource(manifest,
                                        library_dir(scene_path, root),
-                                       jpeg_quality=self._jpeg_quality)
+                                       jpeg_quality=self._jpeg_quality,
+                                       camera=self._camera)
             if serving_from == "preview":
                 warning = ("serving the coarse PREVIEW library "
                            f"({PREVIEW_BUILD['step_deg']:g}deg steps, "
@@ -1883,6 +1936,21 @@ def main(argv=None):
                          "library, building it first if absent or stale. This "
                          "is the low-latency path and needs no GPU at runtime. "
                          "off: raytrace every frame live")
+    ap.add_argument("--camera-emulation", choices=["on", "off"], default="on",
+                    help="on (default): map the tracer's transmittance through "
+                         "the camera's illumination field, black floor and tone "
+                         "response, so an empty field reads ~0.60 and an opaque "
+                         "object ~0.18 instead of pure white and pure black. "
+                         "off: serve raw transmittance. This is a delivery-stage "
+                         "effect only -- it never enters a template, so it costs "
+                         "no library rebuild")
+    ap.add_argument("--mono", choices=["on", "off"], default="on",
+                    help="on (default): collapse to grey before the camera "
+                         "stage. Material colour in this renderer is an "
+                         "ABSORPTION spectrum, so a crystal declared "
+                         "[0.7,0.9,1.0] renders strongly blue; this masks that "
+                         "until the scene YAML is fixed. Ignored when "
+                         "--camera-emulation off")
     ap.add_argument("--supersample", type=int, default=None,
                     help="template sampling factor when building a library "
                          "(default: the library builder's own default)")
@@ -1925,7 +1993,9 @@ def main(argv=None):
                           templates=args.templates == "on",
                           library_kwargs=lib_kwargs,
                           scene_dir=args.scene_dir,
-                          preview_root=args.preview_root)
+                          preview_root=args.preview_root,
+                          camera_emulation=args.camera_emulation == "on",
+                          mono=args.mono == "on")
     server.start()
 
 

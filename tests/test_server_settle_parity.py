@@ -6,8 +6,19 @@ This is the guard for all preview-mode work: approximations may run while a
 move animates, but the settled (idle) frame the server publishes must remain
 the exact engine output. Runs the real server render path (_render_now) — no
 HTTP, no threads.
+
+NOT WEAKENED BY CAMERA EMULATION (2026-08-10).  The server now maps
+transmittance through the camera model in `loop_sim/renderer/field.py` before
+encoding, so "the exact engine output" is no longer the same bytes as raw
+transmittance.  The reference below therefore routes through the SAME shared
+`encode_frame` the server uses, and the assertion still means exactly what it
+did: the served frame is the exact f64 engine output carried through the
+documented, deterministic delivery chain, with nothing approximated and
+nothing stochastic in it.  If a future delivery stage is added and this test
+is not updated with it, the test fails — which is the point.  Keep the
+reference routed through the server's own helper rather than reimplementing
+the chain here; a second implementation is what this guard exists to catch.
 """
-import io
 import os
 import sys
 
@@ -22,7 +33,7 @@ torch = pytest.importorskip("torch")
 from loop_sim.scene.scene import load
 from loop_sim.motors.goniometer import Goniometer
 from loop_sim.renderer.engine_torch import TorchScene, render_torch
-from loop_sim.server.camera_server import CameraServer
+from loop_sim.server.camera_server import CameraServer, encode_frame
 
 HAMPTON = os.path.join(REPO_ROOT, "scene_files", "hampton_300um.yaml")
 
@@ -30,16 +41,16 @@ cuda_only = pytest.mark.skipif(not torch.cuda.is_available(),
                                reason="CUDA not available")
 
 
-def _reference_jpeg(scene, pose, n_cond, quality=85):
-    """The exact f64 engine output, encoded exactly as the server encodes."""
-    from PIL import Image
+def _reference_jpeg(scene, pose, n_cond, quality=85, camera=None):
+    """The exact f64 engine output, delivered exactly as the server delivers it.
+
+    `camera` must be the server's own `_camera` dict, so the reference and the
+    server share one delivery implementation rather than two that agree today.
+    """
     ts = TorchScene(scene, torch.device("cuda"), torch.float64)
     gono = Goniometer(scene.geometry).set(**pose)
     img = render_torch(ts, gono, n_cond=n_cond)
-    img8 = (img * 255).clamp(0, 255).to(torch.uint8).cpu().numpy()
-    buf = io.BytesIO()
-    Image.fromarray(img8, mode="RGB").save(buf, format="JPEG", quality=quality)
-    return buf.getvalue()
+    return encode_frame(img.detach().cpu().numpy(), quality, camera)
 
 
 @pytest.fixture()
@@ -57,7 +68,8 @@ def test_idle_served_frame_is_exact(server, pose):
     server._goniometer.set(**pose)
     server._anim_active = False
     served = server._render_now()
-    assert served == _reference_jpeg(server._scene, pose, n_cond=server._n_cond)
+    assert served == _reference_jpeg(server._scene, pose, n_cond=server._n_cond,
+                                     camera=server._camera)
 
 
 @cuda_only
@@ -69,7 +81,8 @@ def test_animating_preview_uses_n_cond_1(server):
     """
     server._anim_active = True
     served = server._render_now()
-    assert served == _reference_jpeg(server._scene, {}, n_cond=1)
+    assert served == _reference_jpeg(server._scene, {}, n_cond=1,
+                                     camera=server._camera)
 
 
 @cuda_only
@@ -82,6 +95,7 @@ def test_preview_mode_off_is_always_exact():
     try:
         srv._anim_active = True
         served = srv._render_now()
-        assert served == _reference_jpeg(scene, {}, n_cond=srv._n_cond)
+        assert served == _reference_jpeg(scene, {}, n_cond=srv._n_cond,
+                                     camera=srv._camera)
     finally:
         srv.server_close()
