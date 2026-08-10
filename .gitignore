@@ -11,6 +11,15 @@
 !frame_library/**/*.jpg
 !frame_library/**/manifest.json
 
+# ...and except the real reference photographs, which are ground truth rather
+# than output: 44 real BL831 sample-camera frames the renders are judged
+# against, split hi_mag/ and mid_mag/, with MANIFEST.tsv naming the source of
+# each.  5.6 MB.  They are irreplaceable (the 2020 session that calibrated the
+# illumination field cannot be re-shot) and MANIFEST.tsv is useless without
+# them, so tracking one and ignoring the other would ship a manifest pointing
+# at nothing.  Same re-include shape as frame_library above.
+!real_images/**/*.jpg
+
 # Coarse PREVIEW libraries the camera server builds on demand when you switch
 # it to a scene that has none.  Disposable build output, NOT a deliverable --
 # the opposite of frame_library/ above.  Their images are already ignored by

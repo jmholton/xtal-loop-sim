@@ -1,0 +1,45 @@
+file	mag	subject	why_kept	source_path_under_Repositories
+mid_mag/A01_nylonloop_pinleft_mid.jpg	mid	nylon loop + pin	mid-mag framing; loop+pin boxes in labels/00001.txt	home/jamesh/projects/loop_center_AI/annotation2/raw/images/00001.jpg
+mid_mag/A02_nylonloop_pinright_mid.jpg	mid	nylon loop + pin	same mount, loop far from the pin — extreme off-centre framing	home/jamesh/projects/loop_center_AI/annotation2/raw/images/06000.jpg
+mid_mag/A03_smallloop_a_mid.jpg	mid	small nylon loop	loop2 set: a visibly smaller loop than the annotation2 mount	home/jamesh/projects/loop_center_AI/loop2/raw/images/00001.jpg
+mid_mag/A04_smallloop_b_mid.jpg	mid	small nylon loop	loop2 at a later phi step	home/jamesh/projects/loop_center_AI/loop2/raw/images/00019.jpg
+mid_mag/A05_micromount_edge_mid.jpg	mid	MiTeGen micromount	kapton blade EDGE-ON — a tapered spike, not a loop	home/jamesh/projects/loop_center_AI/micromount1/raw/images/00001.jpg
+mid_mag/A06_micromount_face_mid.jpg	mid	MiTeGen micromount	kapton blade FACE-ON — the rounded aperture	home/jamesh/projects/loop_center_AI/micromount1/raw/images/00010.jpg
+hi_mag/B01_drop8_full_faceon_hi.jpg	hi	loop + clear solvent	THE target: loop fully filled with clear cryoprotectant, face-on	home/jamesh/projects/cryo_bubble/drop8/dose_001_faceon.jpg
+hi_mag/B02_drop8_full_edgeon_hi.jpg	hi	loop + clear solvent	same drop EDGE-ON — the spherical-cap profile in section	home/jamesh/projects/cryo_bubble/drop8/dose_001_edgeon.jpg
+hi_mag/B03_drop7_full_faceon_hi.jpg	hi	loop + clear solvent	a second filled loop, face-on	home/jamesh/projects/cryo_bubble/drop7/dose_001_faceon.jpg
+hi_mag/B04_drop7_full_edgeon_hi.jpg	hi	loop + clear solvent	second loop edge-on	home/jamesh/projects/cryo_bubble/drop7/dose_001_edgeon.jpg
+hi_mag/B05_drop8_dosed_faceon_hi.jpg	hi	loop + solvent, dosed	same drop after X-ray dose — contrast/texture change	home/jamesh/projects/cryo_bubble/drop8/dose_060_faceon.jpg
+hi_mag/B06_drop38_bubble_faceon_hi.jpg	hi	loop + solvent + inclusion	large clear loop with a single dark inclusion/bubble — the crystal-in-solvent contrast case	home/jamesh/projects/cryo_bubble/drop38/dose_075_faceon.jpg
+hi_mag/B07_drop8_drained_faceon_hi.jpg	hi	loop, thin film only	drop mostly gone — the FIBER itself and its twist are visible through a thin film. Best available look at bare loop geometry filled	home/jamesh/projects/cryo_bubble/drop8/nodose_160_faceon.jpg
+hi_mag/B08_drop42_zoom_faceon.jpg	hi	drop, zoomed	drop filling the frame — a much tighter view than the rest	home/jamesh/projects/cryo_bubble/drop42/dose_001_faceon.jpg
+hi_mag/B09_drop42_zoom_edgeon.jpg	hi	drop, zoomed	same, edge-on	home/jamesh/projects/cryo_bubble/drop42/dose_001_edgeon.jpg
+hi_mag/B10_drop_265K_faceon.jpg	hi	liquid drop, warm	warmed to 265 K — a genuinely LIQUID drop, no vitrification texture	home/jamesh/projects/cryo_bubble/faceon_at_265K.jpg
+hi_mag/B11_drop_devitrified_faceon.jpg	hi	devitrified drop	after 15 min at 90 K — ice texture. NOT MODELLED; keep as a reminder of what the simulator deliberately omits	home/jamesh/projects/cryo_bubble/faceon_after_15min_at_90K.jpg
+mid_mag/C01_mitegen200_phi000_mid.jpg	mid	MiTeGen micromount 200 um	run3/README says "200um Mitegen Micromount"; phi=0 deg. Compare against --loop-type mitegen --model M2-L18SP-200	home/sfd/loop_centering_stuff/run3/raw/images/00001.jpg
+mid_mag/C02_mitegen200_phi090_mid.jpg	mid	MiTeGen micromount 200 um	run3/README says "200um Mitegen Micromount"; phi=90 deg. Compare against --loop-type mitegen --model M2-L18SP-200	home/sfd/loop_centering_stuff/run3/raw/images/00010.jpg
+mid_mag/C03_mitegen200_phi180_mid.jpg	mid	MiTeGen micromount 200 um	run3/README says "200um Mitegen Micromount"; phi=180 deg. Compare against --loop-type mitegen --model M2-L18SP-200	home/sfd/loop_centering_stuff/run3/raw/images/00019.jpg
+mid_mag/C04_mitegen200_phi270_mid.jpg	mid	MiTeGen micromount 200 um	run3/README says "200um Mitegen Micromount"; phi=270 deg. Compare against --loop-type mitegen --model M2-L18SP-200	home/sfd/loop_centering_stuff/run3/raw/images/00028.jpg
+mid_mag/C05_mitegen200_pose14_mid.jpg	mid	MiTeGen micromount 200 um	same mount, different sample position	home/sfd/loop_centering_stuff/run3/raw/images/00505.jpg
+mid_mag/C06_smallloop_phi000_mid.jpg	mid	nylon loop 50-100 um	run4/README says "small standard loop - maybe 50-100um"; phi=0 deg. Compare against --loop-type hampton --loop-size 100	home/sfd/loop_centering_stuff/run4/raw/images/00001.jpg
+mid_mag/C07_smallloop_phi090_mid.jpg	mid	nylon loop 50-100 um	run4/README says "small standard loop - maybe 50-100um"; phi=90 deg. Compare against --loop-type hampton --loop-size 100	home/sfd/loop_centering_stuff/run4/raw/images/00010.jpg
+mid_mag/C08_smallloop_phi180_mid.jpg	mid	nylon loop 50-100 um	run4/README says "small standard loop - maybe 50-100um"; phi=180 deg. Compare against --loop-type hampton --loop-size 100	home/sfd/loop_centering_stuff/run4/raw/images/00019.jpg
+mid_mag/C09_smallloop_phi270_mid.jpg	mid	nylon loop 50-100 um	run4/README says "small standard loop - maybe 50-100um"; phi=270 deg. Compare against --loop-type hampton --loop-size 100	home/sfd/loop_centering_stuff/run4/raw/images/00028.jpg
+mid_mag/C10_smallloop_pose14_mid.jpg	mid	nylon loop 50-100 um	same loop, different sample position	home/sfd/loop_centering_stuff/run4/raw/images/00505.jpg
+hi_mag/D01_cog3_CRYSTAL_faceon_hi.jpg	hi	faceted crystal in loop	THE crystal reference — a clearly faceted crystal inside solvent inside the loop. What --crystal hexagonal should look like	home/gmeigs/projects/LN2_wash/test_scripts/cog3_faceon_high.jpg
+hi_mag/D02_cog3_edgeon_hi.jpg	hi	same, edge-on	the same mount 90 deg round	home/gmeigs/projects/LN2_wash/test_scripts/cog3_edgeon_high.jpg
+hi_mag/D03_cog1_bubbly_faceon_hi.jpg	hi	loop + bubbly frozen drop	drop full of bubbles; note the BRIGHT fiber rim and the dark TIR edge the renderer draws	home/gmeigs/projects/LN2_wash/test_scripts/cog1_faceon_high.jpg
+hi_mag/D04_cog1_edgeon_hi.jpg	hi	same, edge-on	drop profile in section, hi-mag	home/gmeigs/projects/LN2_wash/test_scripts/cog1_edgeon_high.jpg
+hi_mag/D05_cog1_washed_faceon_hi.jpg	hi	loop, less solvent	cog1 after an LN2 wash — thinner drop, same loop	home/gmeigs/projects/LN2_wash/test_scripts/cog1_faceon_high_washed.jpg
+hi_mag/D06_cog2_lump_faceon_hi.jpg	hi	opaque lump in loop	a dense opaque sample rather than a clear one	home/gmeigs/projects/LN2_wash/test_scripts/cog2_faceon_high.jpg
+mid_mag/D07_cog1_crossmag_mid.jpg	mid	same loop at MID-mag	CROSS-MAGNIFICATION CHECK: same physical loop as D03. Its measured size must agree between the two stops	home/gmeigs/projects/LN2_wash/test_scripts/cog1_centered_low.jpg
+hi_mag/D08_iced_faceon_hi.jpg	hi	heavily iced loop	frost/ice obscuring everything. NOT MODELLED	home/gmeigs/projects/LN2_wash/ice_test1/ref_faceon.jpg
+hi_mag/D09_iced_edgeon_hi.jpg	hi	heavily iced loop	same, edge-on. NOT MODELLED	home/gmeigs/projects/LN2_wash/ice_test1/ref_edgeon.jpg
+hi_mag/E01_digitize_source_hi.jpg	hi	bare dry nylon loop	THE geometry reference — digitize_fiber.py was run on this. Measured 347 x 185 um outer, 143 um inner aperture, twisted-pair stem sharp	home/jamesh/projects/loop_sim/claude/real_loop_himag.jpg
+mid_mag/E02_digitize_source_mid.jpg	mid	same loop + 0.7 mm pin	same mount at mid-mag with the pin and its bevel in frame	home/jamesh/projects/loop_sim/claude/real_loop.jpg
+hi_mag/F01_xtal_in_loop_hi.jpg	hi	crystal/ice in loop	sharp fiber, clear structure inside, stem visible — the best hi-mag production frame in the set	home/jadoughty/projects/auto_centering/crystal_centering/runs/raster_sample_04/bT0_raster_1_BEGIN20170316_145639.jpg
+hi_mag/F02_mesh_mount_hi.jpg	hi	mesh/aperture mount	a circular-aperture mount with a yellow-green kapton body — a mount family the simulator does not model	home/jadoughty/projects/auto_centering/crystal_centering/runs/raster_sample_05/raster_4_BEGIN20170621_094706.jpg
+hi_mag/F03_opaque_sample_hi.jpg	hi	opaque sample in loop	2025 production frame, textured opaque contents	home/jadoughty/projects/auto_centering/crystal_centering/runs/raster_sample_01/4_1_raster_1_BEGIN20251120_135733.jpg
+hi_mag/F04_lowcontrast_drop_hi.jpg	hi	near-invisible drop	THE HARD CASE — a filled loop at almost zero contrast	home/jadoughty/projects/auto_centering/crystal_centering/runs/raster_sample_03/FRS-049_01_1_raster_1_BEGIN20251112_095803.jpg
+hi_mag/F05_flat_sample_hi.jpg	hi	flat plate-like sample	low-contrast flat sample, 2024	home/jadoughty/projects/auto_centering/crystal_centering/runs/raster_sample_06/raster_1_BEGIN20240427_002759.jpg
+hi_mag/F06_sample_2017_hi.jpg	hi	sample in loop	2017-era frame (older vertical-FOV calibration)	home/jadoughty/projects/auto_centering/crystal_centering/runs/raster_sample_05/bT0_raster_1_BEGIN20170228_103834.jpg
