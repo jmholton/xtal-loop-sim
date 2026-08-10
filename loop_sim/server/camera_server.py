@@ -422,6 +422,12 @@ _DIFF_PHRASES = {
     "pan_mm":       lambda d: f"{d['have']} mm pan margin, not {d['want']}",
     "jpeg_quality": lambda d: f"JPEG quality {d['have']}, not {d['want']}",
     "axis":         lambda d: f"swept about {d['have']}, not {d['want']}",
+    # Never print the digests: 64 hex characters tell an operator nothing, and
+    # two of them tell them less.  What matters is that the frames were traced
+    # by code that no longer exists.
+    "render_sha":   lambda d: ("built by a different version of the renderer"
+                               if d["have"] else
+                               "built before the renderer was fingerprinted"),
 }
 
 

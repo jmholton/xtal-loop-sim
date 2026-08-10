@@ -398,6 +398,12 @@ def test_build_params_matches_build_library_defaults():
     assert resolved["jpeg_quality"] == sig["quality"].default
     assert resolved["format"] == sig["format"].default
     assert resolved["psf"] == sig["psf"].default
+    # render_sha has no build_library parameter by design -- it is a property
+    # of the code on disk, not a choice, so both sides must call the same
+    # function rather than agree on a default.
+    from loop_sim.library.frame_library import render_sha
+    assert resolved["render_sha"] == render_sha()
+    assert "render_sha" not in sig
 
 
 @cuda_only
@@ -411,6 +417,107 @@ def test_non_rotx_axis_is_refused(tmp_path):
 
 def test_is_current_false_when_absent(tmp_path):
     assert not is_current(SCENE, str(tmp_path))
+
+
+# ---------------------------------------------------------------------------
+# render_sha: the one staleness hole nothing else covered
+# ---------------------------------------------------------------------------
+def test_render_sha_covers_the_tracers_and_not_the_delivery_stage():
+    """Getting this set wrong is silent BOTH ways -- too few files and a
+    renderer change ships stale frames, too many and an unrelated edit costs
+    hours of rebuild.  `field.py` is the one that must stay out: it runs at
+    serve time, downstream of `pose_crop`, and never enters a template.  Being
+    able to change it without a rebuild is why it was put there.
+    """
+    from loop_sim.library.frame_library import render_source_paths
+
+    root, paths = render_source_paths()
+    covered = {os.path.relpath(p, root).replace(os.sep, "/") for p in paths}
+    for want in ("renderer/microscope.py", "renderer/engine_torch.py",
+                 "renderer/optics.py", "motors/goniometer.py",
+                 "scene/scene.py", "scene/tube.py", "scene/surface_mesh.py",
+                 "scene/primitives.py", "scene/csg.py", "scene/materials.py"):
+        assert want in covered, f"{want} decides template pixels but is not hashed"
+    for keep_out in ("renderer/field.py", "renderer/beam.py",
+                     "library/frame_library.py", "server/camera_server.py"):
+        assert keep_out not in covered, f"{keep_out} must not invalidate a library"
+
+
+def test_render_sha_is_stable_and_content_sensitive(tmp_path):
+    """Stable across calls (it is cached and compared on every status check),
+    and sensitive to both content and file set."""
+    from loop_sim.library.frame_library import _sha_over, render_sha
+
+    assert render_sha() == render_sha()
+    a, b = tmp_path / "a.py", tmp_path / "b.py"
+    a.write_text("x = 1\n")
+    b.write_text("y = 2\n")
+    root = str(tmp_path)
+    base = _sha_over(root, [str(a), str(b)])
+    assert _sha_over(root, [str(a), str(b)]) == base
+    a.write_text("x = 2\n")
+    assert _sha_over(root, [str(a), str(b)]) != base, "content change not seen"
+    a.write_text("x = 1\n")
+    assert _sha_over(root, [str(a)]) != base, "a removed file was not seen"
+
+
+def test_a_manifest_built_by_another_renderer_is_stale_not_current(tmp_path):
+    """The hole this closes: `scene_sha256` catches a changed scene and the
+    other build keys catch changed settings, but until now a renderer edit
+    left the manifest reading `current` while the frames were traced by code
+    that no longer existed.
+    """
+    import json
+    from loop_sim.library.frame_library import library_diff, render_sha
+
+    man = dict(build_params(),
+               frames=[{"file": "rot_0000.png", "angle": 0.0}],
+               scene=SCENE)
+    (tmp_path / "manifest.json").write_text(json.dumps(man))
+    assert library_diff(SCENE, str(tmp_path), **build_params()) == {}
+
+    man["render_sha"] = "0" * 64
+    (tmp_path / "manifest.json").write_text(json.dumps(man))
+    diff = library_diff(SCENE, str(tmp_path), **build_params())
+    assert set(diff) == {"render_sha"}
+    assert diff["render_sha"] == {"have": "0" * 64, "want": render_sha()}
+
+    del man["render_sha"]                     # a manifest predating the key
+    (tmp_path / "manifest.json").write_text(json.dumps(man))
+    diff = library_diff(SCENE, str(tmp_path), **build_params())
+    assert diff["render_sha"]["have"] is None
+
+
+def test_render_sha_difference_reads_as_english_not_a_digest():
+    """64 hex characters tell an operator nothing, and two of them tell them
+    less.  The banner has to say what actually happened."""
+    from loop_sim.server.camera_server import describe_differences
+
+    changed = describe_differences({"render_sha": {"have": "a" * 64, "want": "b" * 64}})
+    never = describe_differences({"render_sha": {"have": None, "want": "b" * 64}})
+    assert "renderer" in changed and "a" * 8 not in changed
+    assert "fingerprint" in never
+
+
+def test_the_shipped_libraries_are_current_against_this_renderer():
+    """Adding a build key silently marks every shipped library stale, and the
+    LAUNCH path rebuilds a stale library before it binds the socket -- so a
+    bare `camera_server --scene ...` would start hours of work.  The three
+    manifests carry the sha of the renderer that actually built them.
+    """
+    from loop_sim.library.frame_library import library_status, load_manifest
+
+    for scene, name in (("hampton_300um", "hampton_300um"),
+                        ("hampton_300um_realistic", "hampton_300um_realistic"),
+                        ("mitegen_200um", "mitegen_200um")):
+        lib = os.path.join(REPO_ROOT, "frame_library", name)
+        man = load_manifest(lib)
+        if man is None:
+            pytest.skip(f"{name} library not present")
+        # graded against its OWN supersample, which is per-scene by design
+        params = build_params(supersample=man["supersample"])
+        path = os.path.join(REPO_ROOT, "scene_files", scene + ".yaml")
+        assert library_status(path, lib, **params) == "current", name
 
 
 # ---------------------------------------------------------------------------

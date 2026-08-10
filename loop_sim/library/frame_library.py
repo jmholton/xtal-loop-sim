@@ -46,6 +46,7 @@ The manifest records a SHA-256 of the scene YAML and the build parameters;
 `ensure_library()` rebuilds when either changes.  `format` and `psf` are build
 parameters, so a library predating either correctly reads as stale.
 """
+import glob
 import hashlib
 import json
 import math
@@ -100,12 +101,74 @@ MAX_TEMPLATE_MPX = 200.0
 # Build parameters that change the pixels. A library whose manifest disagrees
 # with the requested value of any of these is stale, not merely different.
 _BUILD_KEYS = ("axis", "step_deg", "n_cond", "supersample", "pan_mm",
-               "jpeg_quality", "format", "psf")
+               "jpeg_quality", "format", "psf", "render_sha")
+
+# The modules whose SOURCE decides what a template pixel is.  A change to any
+# of them makes every stored template a render of code that no longer exists,
+# and until `render_sha` existed nothing noticed: `scene_sha256` catches a
+# changed scene and `_BUILD_KEYS` catches changed settings, but a renderer edit
+# left the manifest reading `current` while the frames were built by the old
+# tracer.  That was the one genuine silent-staleness hole.
+#
+# WHAT IS DELIBERATELY NOT HERE, because over-invalidating costs hours:
+#   renderer/field.py   camera emulation -- applied at SERVE time, downstream
+#                       of pose_crop, and never written into a template.  Being
+#                       able to change it without a rebuild is the whole reason
+#                       it was placed there; hashing it would give that back.
+#   renderer/beam.py    the X-ray path.  No optical template comes from it.
+#   library/, server/   delivery, not content -- and `pose_crop` lives in
+#                       library/, so hashing it would invalidate every library
+#                       for a change to how frames are CROPPED.
+_RENDER_SOURCES = ("renderer/microscope.py", "renderer/engine_torch.py",
+                   "renderer/optics.py", "motors/goniometer.py", "scene/*.py")
+_render_sha_cache = None
 
 
 def scene_fingerprint(scene_path):
     with open(scene_path, "rb") as fh:
         return hashlib.sha256(fh.read()).hexdigest()
+
+
+def render_source_paths():
+    """`(package_root, sorted_paths)` -- exactly the files `render_sha` hashes.
+
+    Public so a test can assert WHICH files are covered.  Getting that set
+    wrong is silent in both directions: too few and a renderer change ships
+    stale frames, too many and an unrelated edit costs hours of rebuild.
+    """
+    pkg = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    paths = []
+    for pat in _RENDER_SOURCES:
+        paths.extend(glob.glob(os.path.join(pkg, *pat.split("/"))))
+    return pkg, sorted(paths)
+
+
+def _sha_over(root, paths):
+    """sha256 of (relative path, contents) for each file, in the given order.
+
+    The PATH is hashed alongside the contents so that adding, removing or
+    renaming a module registers -- a bare content digest would not notice a
+    file that had been deleted.
+    """
+    h = hashlib.sha256()
+    for path in paths:
+        h.update(os.path.relpath(path, root).replace(os.sep, "/").encode())
+        with open(path, "rb") as fh:
+            h.update(fh.read())
+    return h.hexdigest()
+
+
+def render_sha():
+    """sha256 over the source of every module that decides a template pixel.
+
+    Computed once per process: these files cannot change under a running build,
+    and reading a dozen of them on every `library_status` call would make
+    listing scenes on the control page do pointless I/O.
+    """
+    global _render_sha_cache
+    if _render_sha_cache is None:
+        _render_sha_cache = _sha_over(*render_source_paths())
+    return _render_sha_cache
 
 
 def library_dir(scene_path, root=DEFAULT_ROOT):
@@ -154,10 +217,15 @@ def build_params(axis="rotx", step_deg=DEFAULT_STEP_DEG, n_cond=DEFAULT_N_COND,
     Every value here must resolve to something concrete -- `is_current` skips
     any key whose requested value is None, so a None default would silently
     disable staleness checking for that parameter.
+
+    `render_sha` takes no argument: it is a property of the code on disk, not
+    a choice a caller gets to make, and letting one be passed would only give
+    a caller a way to declare a stale library current.
     """
     return {"axis": axis, "step_deg": step_deg, "n_cond": n_cond,
             "supersample": supersample, "pan_mm": pan_mm,
-            "jpeg_quality": quality, "format": format, "psf": bool(psf)}
+            "jpeg_quality": quality, "format": format, "psf": bool(psf),
+            "render_sha": render_sha()}
 
 
 def _frames_complete(lib_dir, man):
@@ -566,6 +634,7 @@ def build_library(scene_path, root=DEFAULT_ROOT, axis="rotx",
         "jpeg_quality": quality,
         "format": fmt,
         "psf": bool(psf),
+        "render_sha": render_sha(),
         # Provenance only -- not a build key. The sigma is derived from the
         # camera NA and the rendered pixel size, both recorded below.
         "psf_sigma_px": psf_sigma,
