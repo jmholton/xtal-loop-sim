@@ -41,16 +41,17 @@ cuda_only = pytest.mark.skipif(not torch.cuda.is_available(),
                                reason="CUDA not available")
 
 
-def _reference_jpeg(scene, pose, n_cond, quality=85, camera=None):
+def _reference_jpeg(scene, pose, n_cond, quality=85, camera=None, sensor=None):
     """The exact f64 engine output, delivered exactly as the server delivers it.
 
-    `camera` must be the server's own `_camera` dict, so the reference and the
-    server share one delivery implementation rather than two that agree today.
+    `camera` and `sensor` must be the server's own `_camera` / `_sensor`, so
+    the reference and the server share one delivery implementation rather than
+    two that agree today.
     """
     ts = TorchScene(scene, torch.device("cuda"), torch.float64)
     gono = Goniometer(scene.geometry).set(**pose)
     img = render_torch(ts, gono, n_cond=n_cond)
-    return encode_frame(img.detach().cpu().numpy(), quality, camera)
+    return encode_frame(img.detach().cpu().numpy(), quality, camera, sensor)
 
 
 @pytest.fixture()
@@ -69,7 +70,8 @@ def test_idle_served_frame_is_exact(server, pose):
     server._anim_active = False
     served = server._render_now()
     assert served == _reference_jpeg(server._scene, pose, n_cond=server._n_cond,
-                                     camera=server._camera)
+                                     camera=server._camera,
+                                     sensor=server._sensor)
 
 
 @cuda_only
@@ -82,7 +84,8 @@ def test_animating_preview_uses_n_cond_1(server):
     server._anim_active = True
     served = server._render_now()
     assert served == _reference_jpeg(server._scene, {}, n_cond=1,
-                                     camera=server._camera)
+                                     camera=server._camera,
+                                     sensor=server._sensor)
 
 
 @cuda_only
@@ -96,6 +99,7 @@ def test_preview_mode_off_is_always_exact():
         srv._anim_active = True
         served = srv._render_now()
         assert served == _reference_jpeg(scene, {}, n_cond=srv._n_cond,
-                                     camera=srv._camera)
+                                         camera=srv._camera,
+                                         sensor=srv._sensor)
     finally:
         srv.server_close()

@@ -68,6 +68,7 @@ import numpy as np
 from ..motors.goniometer import Goniometer
 from ..renderer.microscope import render as microscope_render
 from ..renderer.beam        import beam_volumes_json
+from ..renderer            import field as _field
 from ..library.frame_library import (CPU_BUILD_REFUSAL,
                                      DEFAULT_PREVIEW_ROOT as _LIB_PREVIEW_ROOT,
                                      DEFAULT_ROOT as _LIB_DEFAULT_ROOT,
@@ -90,7 +91,7 @@ _SCENE_DIR_DEFAULT = os.path.join(
 # ---------------------------------------------------------------------------
 # Frame delivery: camera emulation, then encode
 # ---------------------------------------------------------------------------
-def encode_frame(img, jpeg_quality, camera=None):
+def encode_frame(img, jpeg_quality, camera=None, sensor=None):
     """Apply camera emulation to a float (H, W, 3) in [0, 1], return JPEG bytes.
 
     THE single place a served frame becomes bytes.  Both the live path (either
@@ -106,12 +107,23 @@ def encode_frame(img, jpeg_quality, camera=None):
     load-bearing rather than incidental.
 
     `camera` is the kwargs dict for `field.apply_camera`, or None for the raw
-    transmittance the tracer produced.  Quantisation truncates rather than
-    rounds, matching what `microscope.render` and the torch path already did.
+    transmittance the tracer produced.  `sensor` is the (W, H) raster to
+    resample onto -- `field.SENSOR_WH` for the real camera's 704x480 non-square
+    grid, or None to deliver the render's own square pixels.  Quantisation
+    truncates rather than rounds, matching what `microscope.render` and the
+    torch path already did.
+
+    The resample runs BEFORE the field, so the illumination is evaluated on the
+    delivered pixel grid rather than interpolated onto it -- and so anything
+    later that works at the pixel scale (grain, sensor noise) lands in true
+    camera pixels instead of being smeared by a downstream resize.
     """
     from PIL import Image
     import numpy as np
 
+    if sensor:
+        from ..renderer.field import to_sensor
+        img = to_sensor(img, sensor)
     if camera:
         from ..renderer.field import apply_camera
         img = apply_camera(img, **camera)
@@ -137,11 +149,12 @@ class TemplateSource:
     """
 
     def __init__(self, manifest, lib_dir, jpeg_quality=85, cache_size=8,
-                 camera=None):
+                 camera=None, sensor=None):
         self.manifest = manifest
         self.lib_dir = lib_dir
         self.jpeg_quality = jpeg_quality
         self.camera = camera
+        self.sensor = sensor
         self._cache_size = max(1, int(cache_size))
         self._cache = {}
         self._order = []
@@ -192,16 +205,19 @@ class TemplateSource:
         img = self._frame(rec["file"]).resize(out_size, Image.BILINEAR, box=box)
         if sigma > 0.05:
             img = img.filter(ImageFilter.GaussianBlur(radius=sigma))
-        if not self.camera:
+        if not self.camera and not self.sensor:
             buf = io.BytesIO()
             img.save(buf, format="JPEG", quality=self.jpeg_quality)
             return buf.getvalue()
         # Camera emulation runs AFTER the crop and the defocus blur, so the
         # illumination field is pinned to output pixels: the sample moves under
-        # it, never with it.  Templates on disk stay raw transmittance.
+        # it, never with it.  The sensor resample runs here too rather than as
+        # a wider `out_size` above, so the blur stays isotropic in square-pixel
+        # space (see `field.to_sensor`).  Templates on disk stay raw
+        # transmittance either way.
         import numpy as np
         return encode_frame(np.asarray(img, dtype=np.float64) / 255.0,
-                            self.jpeg_quality, self.camera)
+                            self.jpeg_quality, self.camera, self.sensor)
 
 
 # ---------------------------------------------------------------------------
@@ -621,7 +637,9 @@ class _Handler(BaseHTTPRequestHandler):
         Preferred: fx/fy — the click as a fraction (0..1) of the *displayed*
         image; the server scales them by the true camera resolution, so the
         client need not know native dimensions (robust to CSS scaling / the
-        unreliable MJPEG <img>.naturalWidth).  px/py (native pixels) also work.
+        unreliable MJPEG <img>.naturalWidth).  px/py also work, and are pixels
+        of the frame that was DELIVERED -- which the sensor raster makes wider
+        than the render grid, so they are converted (`_command_recenter`).
         """
         srv = self.server
         try:
@@ -731,13 +749,19 @@ class CameraServer(ThreadingHTTPServer):
                  preview_mode=True, compile_preview=True, settle_delay=0.5,
                  scene_path=None, templates=True, library_kwargs=None,
                  scene_dir=None, preview_root=None, camera_emulation=True,
-                 mono=True):
+                 mono=True, sensor_pitch=True):
         # Camera emulation: the illumination field, black floor and tone
         # response the tracer does not model (loop_sim/renderer/field.py).
         # Default ON -- the raw transmittance a tracer produces is 85% pure
         # white and 14% pure black, which is correct physics and not a
         # photograph.  Pass camera_emulation=False for the raw quantity.
         self._camera = {"mono": bool(mono)} if camera_emulation else None
+        # The sensor raster, applied in the same camera-space stage.  Kept
+        # SEPARATE from camera_emulation because they answer different
+        # questions: the field is what the camera records, this is the grid it
+        # records it on.  Someone reading raw transmittance for analysis still
+        # usually wants the frame the real camera would hand them.
+        self._sensor = tuple(_field.SENSOR_WH) if sensor_pitch else None
         self._scene_path     = scene_path
         # The RAW --templates intent, kept separately from _want_templates
         # (which folds in "and we have a path"). A server constructed with
@@ -881,7 +905,8 @@ class CameraServer(ThreadingHTTPServer):
         if manifest is not None:
             self._templates = TemplateSource(
                 manifest, library_dir(scene_path, self._library_root),
-                jpeg_quality=jpeg_quality, camera=self._camera)
+                jpeg_quality=jpeg_quality, camera=self._camera,
+                sensor=self._sensor)
 
     # ------------------------------------------------------------------
     # Cache management
@@ -943,7 +968,7 @@ class CameraServer(ThreadingHTTPServer):
             else:
                 img = render_torch(self._tscene, gono, n_cond=n_cond, compiled=False)
             jpeg = encode_frame(img.detach().cpu().numpy(),
-                                self._jpeg_quality, self._camera)
+                                self._jpeg_quality, self._camera, self._sensor)
         else:
             # microscope_render encodes internally; we take its float image and
             # re-encode through the shared path so the emulation and the
@@ -951,7 +976,8 @@ class CameraServer(ThreadingHTTPServer):
             # only happens on the no-CUDA fallback.
             img, _ = microscope_render(self._scene, gono, n_cond=n_cond,
                                        jpeg_quality=self._jpeg_quality)
-            jpeg = encode_frame(img, self._jpeg_quality, self._camera)
+            jpeg = encode_frame(img, self._jpeg_quality, self._camera,
+                                self._sensor)
         return jpeg
 
     def _render_now(self):
@@ -1156,9 +1182,9 @@ class CameraServer(ThreadingHTTPServer):
         """Animate so the clicked point moves to the image centre.
 
         Takes the click either as a FRACTION of the displayed image (`frac`,
-        the path the UI uses) or in native pixels (`pixel`).  A fraction is
-        scaled here rather than in the handler so the resolution, the geometry
-        and the camera config all come from one scene.
+        the path the UI uses) or in delivered-frame pixels (`pixel`).  Either
+        is scaled here rather than in the handler so the resolution, the
+        geometry and the camera config all come from one scene.
 
         Resolved against the LIVE displayed pose (what the user clicked on),
         not the running command target — so a click maps to the frame on screen.
@@ -1178,6 +1204,15 @@ class CameraServer(ThreadingHTTPServer):
                     row = frac[1] * int(cam.get("height", 480))
                 else:
                     col, row = pixel
+                    if self._sensor:
+                        # px/py are pixels of the DELIVERED frame, and the
+                        # sensor raster makes that wider than the render grid
+                        # `recenter_target` works in -- 704 against 640, a 10%
+                        # error if taken literally.  A FRACTION is invariant
+                        # under that resample, which is the other reason the UI
+                        # sends fx/fy.
+                        col *= int(cam.get("width", 640)) / float(self._sensor[0])
+                        row *= int(cam.get("height", 480)) / float(self._sensor[1])
                 target = recenter_target(col, row, state, self._scene.geometry, cam)
                 target = self._servable(target)
                 self._commit_target_locked(target, speed)
@@ -1475,7 +1510,8 @@ class CameraServer(ThreadingHTTPServer):
             templates = TemplateSource(manifest,
                                        library_dir(scene_path, root),
                                        jpeg_quality=self._jpeg_quality,
-                                       camera=self._camera)
+                                       camera=self._camera,
+                                       sensor=self._sensor)
             if serving_from == "preview":
                 warning = ("serving the coarse PREVIEW library "
                            f"({PREVIEW_BUILD['step_deg']:g}deg steps, "
@@ -1951,6 +1987,15 @@ def main(argv=None):
                          "[0.7,0.9,1.0] renders strongly blue; this masks that "
                          "until the scene YAML is fixed. Ignored when "
                          "--camera-emulation off")
+    ap.add_argument("--sensor-pitch", choices=["on", "off"], default="on",
+                    help="on (default): deliver frames on the real camera's "
+                         "704x480 raster. The BL831 sample camera's pixels are "
+                         "1.11 non-square and the tracer's are square, so the "
+                         "shipped 640x480 scenes cover the same field of view "
+                         "(to under 1%%) on a different grid -- and a consumer "
+                         "applying dcss's um-per-pixel constant to 640 columns "
+                         "reads 10%% wide. off: serve the render's own square "
+                         "pixels. Delivery-stage only; costs no library rebuild")
     ap.add_argument("--supersample", type=int, default=None,
                     help="template sampling factor when building a library "
                          "(default: the library builder's own default)")
@@ -1995,7 +2040,8 @@ def main(argv=None):
                           scene_dir=args.scene_dir,
                           preview_root=args.preview_root,
                           camera_emulation=args.camera_emulation == "on",
-                          mono=args.mono == "on")
+                          mono=args.mono == "on",
+                          sensor_pitch=args.sensor_pitch == "on")
     server.start()
 
 

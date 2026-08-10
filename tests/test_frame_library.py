@@ -467,6 +467,27 @@ def test_template_source_serves_without_a_gpu(tiny_library):
 
 
 @cuda_only
+def test_template_source_delivers_on_the_sensor_raster(tiny_library):
+    """`sensor` resamples the served frame onto the real camera's grid.
+
+    The scene renders SQUARE pixels; the BL831 camera's are 1.11 non-square
+    and it emits 704x480.  This is the one thing about the delivered frame
+    that is not the scene's own resolution, and it must hold for every pose --
+    a resample that only fired on some crops would change the magnification
+    as the stage moved.
+    """
+    import io
+    from PIL import Image
+    from loop_sim.renderer.field import SENSOR_WH
+    from loop_sim.server.camera_server import TemplateSource
+
+    man, lib_dir = tiny_library
+    src = TemplateSource(man, lib_dir, jpeg_quality=85, sensor=SENSOR_WH)
+    for pose in ({}, {"rotx": 90.0}, {"tx": 0.2, "tz": 0.1, "rotx": 45.0}):
+        assert Image.open(io.BytesIO(src.render(pose))).size == SENSOR_WH
+
+
+@cuda_only
 def test_servable_pose_is_exact_and_idempotent(tiny_library):
     """servable_pose must report the pose the library actually shows.
 

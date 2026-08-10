@@ -1,4 +1,4 @@
-"""Camera emulation: illumination field, black floor, and tone response.
+"""Camera emulation: sensor raster, illumination field, black floor, tone.
 
 The ray tracer computes TRANSMITTANCE.  Every ray is born carrying radiance
 exactly 1.0 (`microscope.py`, `engine_torch.py`) and a ray that hits nothing is
@@ -23,6 +23,12 @@ measured, which makes both rails unreachable BY CONSTRUCTION -- the real
 frames' "40-226, nothing clipped" comes out for free, with no clamp and no tone
 curve.  Nothing here is fitted to the space between those anchors, because
 nothing was measured there.
+
+It also supplies the sensor's RASTER (`to_sensor`, `SENSOR_WH`).  The tracer
+renders square pixels; the BL831 camera's are 1.110 non-square and it emits
+704x480.  That is a resample, not a rescale -- the field of view is the same
+either way, to under 1% -- and the constant above says why 640 was right all
+along and what the resample buys.
 
 WHY THIS IS NOT INSIDE EITHER TRACER, AND MUST NOT BE MOVED THERE.  Three
 independent reasons, any one sufficient:
@@ -93,7 +99,23 @@ VIGNETTE = (1.09472, -0.02534, +0.05636, +0.02100, -0.00112, -0.30397)
 # Rec. 601 luma weights, used only by the `mono` option.
 _LUMA = np.array([0.299, 0.587, 0.114])
 
+# The real sensor's raster.  Every frame in `real_images/` is 704x480, and the
+# BL831 sample camera's pixels are NOT square: 6.7324 x 7.4729 um at the mid
+# zoom stop and 0.8233 x 0.9139 at the hi stop -- aspect 1.1100 at both.  The
+# renderer has one scalar `pixel_size`, so the shipped scenes model that camera
+# the only way a square-pixel tracer can: 640 x 7.4 um covers 4736.0 um where
+# 704 x 6.7324 covers 4739.6, agreeing to 0.08% horizontally and 0.98%
+# vertically.  640 is therefore not a discrepancy against the photographs, it
+# is the square-pixel rendition of them (704/640 = 1.100 cancels the 1.110
+# pixel aspect), and rendering 704 wide at 7.4 um would over-cover the field by
+# +9.92%.  What 640 does NOT reproduce is the frame SHAPE, and consumers care:
+# dcss stores a um-per-pixel constant for this camera, so a stand-in that emits
+# 640 columns reads 10% wide horizontally.  Resampling to the sensor raster
+# here closes that without touching the scene, the renderer or any template.
+SENSOR_WH = (704, 480)
+
 _cache = {}
+_weight_cache = {}
 
 
 def vignette(h, w, coeffs=VIGNETTE, amplitude=1.0):
@@ -125,6 +147,65 @@ def vignette(h, w, coeffs=VIGNETTE, amplitude=1.0):
         f = 1.0 + amplitude * (f - 1.0)
     _cache[key] = f
     return f
+
+
+def _axis_weights(n_src, n_dst):
+    """Bilinear source indices and weights for one resampled axis.
+
+    Pixel CENTRES, not edges: output centre i sits at source coordinate
+    `(i + 0.5) * n_src / n_dst - 0.5`, which is PIL's and OpenCV's convention
+    and the one `pose_crop` already assumes when it offsets the crop box by
+    half a source pixel.  Aligning corners instead would shift the image by
+    half an output pixel at this scale factor.
+    """
+    key = (n_src, n_dst)
+    hit = _weight_cache.get(key)
+    if hit is not None:
+        return hit
+    c = (np.arange(n_dst, dtype=np.float64) + 0.5) * (n_src / float(n_dst)) - 0.5
+    c = np.clip(c, 0.0, n_src - 1.0)
+    i0 = np.floor(c).astype(np.intp)
+    i1 = np.minimum(i0 + 1, n_src - 1)
+    hit = (i0, i1, c - i0)
+    _weight_cache[key] = hit
+    return hit
+
+
+def to_sensor(img, size=SENSOR_WH):
+    """Resample a square-pixel render onto the camera's non-square raster.
+
+    `img` is (H, W, 3) float; the result is (size[1], size[0], 3).  Returns the
+    input unchanged when it is already that size, so this is free for a caller
+    that renders at the sensor raster directly.
+
+    WHY THIS RUNS AFTER THE DEFOCUS BLUR, NOT BEFORE.  The objective's PSF is
+    isotropic in the optical image; it is the SENSOR that samples that image at
+    two different pitches.  Blurring in square-pixel space with one scalar
+    sigma and resampling afterwards reproduces that -- the blur comes out 1.1x
+    wider vertically than horizontally in the delivered frame, which is what
+    the real camera does.  Blurring after the resample would need an
+    anisotropic kernel, and `ImageFilter.GaussianBlur` has no such thing.
+
+    WHY BILINEAR.  A real sensor box-integrates over each pixel, but this is a
+    1.100x UPSAMPLE: each output column draws on 0.909 source columns, so a box
+    filter degenerates to nearly a point sample and bilinear is both the
+    standard choice and the one the template crop upstream already uses.
+    Separable and index-based, so it is a pure function of (shape, size) --
+    `tests/test_server_settle_parity.py` compares JPEG bytes and would catch
+    any per-call state here.
+    """
+    a = np.asarray(img, dtype=np.float64)
+    h, w = a.shape[:2]
+    tw, th = int(size[0]), int(size[1])
+    if (w, h) == (tw, th):
+        return a
+    if w != tw:
+        i0, i1, t = _axis_weights(w, tw)
+        a = a[:, i0] * (1.0 - t)[None, :, None] + a[:, i1] * t[None, :, None]
+    if h != th:
+        j0, j1, t = _axis_weights(h, th)
+        a = a[j0] * (1.0 - t)[:, None, None] + a[j1] * t[:, None, None]
+    return a
 
 
 def to_luma(img):

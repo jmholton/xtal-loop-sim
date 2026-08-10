@@ -22,8 +22,20 @@ shape mismatch a geometry bug.
 crops — a 10 px border removed on every side, with the FOV comment recomputed to match
 (`0.579607 * 684/704 = 0.563141`). Same um/px; just don't divide by 704.
 
-`template.yaml` (`pixel_size: 0.0008233`, 704x480) is the `hi` stop exactly. The Hampton
-scenes' 7.4 um is within 1% of the `mid` VERTICAL pitch but uses width 640, not 704.
+**640 vs 704 is settled, and 640 was right** (2026-08-10). The Hampton scenes' square
+7.4 um at width 640 is the square-pixel rendition of this camera, not a discrepancy
+against it: `640 x 7.4 = 4736.0 um` against the real `704 x 6.7324 = 4739.6`, and
+`480 x 7.4 = 3552.0` against `480 x 7.4729 = 3587.0` — **0.08% horizontally, 0.98%
+vertically**. The `704/640 = 1.100` shape difference is the `1.110` pixel aspect; they
+cancel. Rendering 704 wide at 7.4 um would over-cover the field by **+9.9%**. What 640
+does not reproduce is the frame *shape*, so the server resamples to 704x480 at delivery
+(`loop_sim/renderer/field.py` `to_sensor`, `--sensor-pitch`); measured on a served frame,
+the pin stays 95 px tall (703.0 um, the documented dimensional check) and the horizontal
+pitch comes out 6.7273 um/px against the real 6.7324.
+
+`template.yaml` (`pixel_size: 0.0008233`, 704x480) is the `hi` stop's HORIZONTAL pitch at
+the real width — which makes it 9.91% short vertically, for exactly the reason above. It
+is the one place a real 10% scale error lives, and nothing uses the file.
 
 ## Read this before calibrating anything against these frames
 

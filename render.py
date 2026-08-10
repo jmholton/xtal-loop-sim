@@ -49,7 +49,13 @@ def main():
     camera   = scene_dict.get('camera',   {})
     motor    = scene_dict.get('motor',    {})
 
-    W = camera.get('width',  704)
+    # 640, matching microscope.py / engine_torch.py / beam.py / camera_server.py
+    # and every shipped scene.  This used to default to 704 -- the real camera's
+    # raster -- which is the wrong number for a SQUARE-pixel render: the BL831
+    # pixels are 1.11 non-square, so 640 x 7.4 um and 704 x 6.7324 um cover the
+    # same field to 0.08%, and 704 x 7.4 um would over-cover it by +9.9%.  See
+    # loop_sim/renderer/field.py SENSOR_WH.
+    W = camera.get('width',  640)
     H = camera.get('height', 480)
 
     tx   = args.tx   if args.tx   is not None else float(motor.get('tx',   0.0))

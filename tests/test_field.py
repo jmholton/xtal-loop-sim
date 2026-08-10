@@ -92,6 +92,57 @@ def test_field_is_a_vertical_bowl():
     assert rows[H // 2] > rows[0] and rows[H // 2] > rows[-1]
 
 
+# --- the sensor raster -----------------------------------------------------
+
+def test_sensor_resample_lands_on_the_camera_raster():
+    """The tracer renders square pixels; the BL831 camera's are 1.11
+    non-square and it emits 704x480."""
+    out = F.to_sensor(np.zeros((480, 640, 3)))
+    assert out.shape == (F.SENSOR_WH[1], F.SENSOR_WH[0], 3)
+
+
+def test_sensor_resample_is_the_identity_at_the_target_size():
+    t = np.linspace(0.0, 1.0, 480 * 704 * 3).reshape(480, 704, 3)
+    assert np.array_equal(F.to_sensor(t), t)
+
+
+def test_sensor_resample_is_bit_identical_across_calls():
+    """Load-bearing for `test_server_settle_parity`, which compares JPEG
+    bytes between the live server and a fresh render."""
+    t = np.linspace(0.0, 1.0, 480 * 640 * 3).reshape(480, 640, 3)
+    assert np.array_equal(F.to_sensor(t), F.to_sensor(t.copy()))
+
+
+def test_sensor_resample_preserves_a_flat_field_exactly():
+    """Bilinear weights must sum to 1 on every output column, including the
+    two clamped edges -- otherwise the frame darkens at its own border."""
+    out = F.to_sensor(np.full((480, 640, 3), 0.42))
+    assert np.allclose(out, 0.42, atol=1e-12)
+
+
+def test_sensor_resample_does_not_shift_the_image():
+    """A centred feature must stay centred.  Aligning corners instead of
+    pixel centres would slide it half an output pixel."""
+    t = np.zeros((480, 640, 3))
+    t[:, 320 - 40:320 + 40] = 1.0
+    out = F.to_sensor(t)
+    col = out[240, :, 0]
+    centroid = float((np.arange(col.size) * col).sum() / col.sum())
+    assert centroid == pytest.approx((704 - 1) / 2.0, abs=0.05)
+
+
+def test_sensor_resample_stretches_the_horizontal_axis_only():
+    """640 -> 704 is 1.100x, which is how the 1.110 pixel aspect is
+    reproduced.  The vertical pitch is already the camera's."""
+    t = np.zeros((480, 640, 3))
+    t[200:280, 280:360] = 1.0                   # an 80x80 square
+    out = F.to_sensor(t)
+    wide = (out[240, :, 0] > 0.5).sum()
+    tall = (out[:, 352, 0] > 0.5).sum()
+    assert wide == pytest.approx(80 * 704 / 640, abs=1)
+    assert tall == 80
+
+
 # --- mono ------------------------------------------------------------------
 
 def test_mono_collapses_channel_spread():
