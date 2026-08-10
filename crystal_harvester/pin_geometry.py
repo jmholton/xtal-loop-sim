@@ -24,8 +24,11 @@ Usage
 import numpy as np
 
 
+_BEVEL_MAX_DEG = 80.0
+
+
 def make_pin(diameter_mm, length_mm, bevel_angle_deg=45.0, bevel_offset_mm=0.3,
-             tip_pos=(0.0, 0.0, 0.0), axis=(1.0, 0.0, 0.0)):
+             tip_pos=(0.0, 0.0, 0.0), axis=(1.0, 0.0, 0.0), bevel_up=None):
     """
     Build a CSG intersection YAML spec for a beveled metal pin.
 
@@ -60,8 +63,25 @@ def make_pin(diameter_mm, length_mm, bevel_angle_deg=45.0, bevel_offset_mm=0.3,
         "height": round(length_mm, 6),
     }
 
-    # Bevel plane: find a perpendicular direction to ax for the tilt
-    up = np.array([0.0, 1.0, 0.0])
+    # `bevel_angle_deg` is measured from perpendicular-to-axis, so 0 is a flat
+    # cut and 90 does not cut the tip at all -- it slices the whole cylinder
+    # lengthwise and leaves a half-pin staring up-beam.  Everything from ~78.6
+    # up also pushes the stem's glue joint outside the metal (the stem is run
+    # deliberately past the tip so it emerges from the score face).  Reachable
+    # only since the `--pin-bevel 0` falsy-zero bug was fixed, hence the guard.
+    if not (0.0 <= float(bevel_angle_deg) < _BEVEL_MAX_DEG):
+        raise ValueError(
+            f"bevel_angle_deg={bevel_angle_deg} is outside [0, {_BEVEL_MAX_DEG}); "
+            "0 is a flat cut, and at 90 the half-space stops cutting the tip and "
+            "bisects the pin along its length instead")
+
+    # WHICH WAY the bevel faces is a real choice, and it used to be made by
+    # accident: `up` defaulted to +Y and `cross(ax, up)` therefore landed on Z,
+    # which is the camera's depth axis -- so the chisel presented in full
+    # profile at spindle 90/270 and as a blunt taper at 0.  Nothing chose that.
+    # (Note the guard below never fires for an X-aligned pin: dot is exactly 0.)
+    up = np.array([0.0, 1.0, 0.0]) if bevel_up is None \
+        else np.asarray(bevel_up, dtype=float)
     if abs(np.dot(ax, up)) > 0.9:
         up = np.array([0.0, 0.0, 1.0])
     perp = np.cross(ax, up);  perp /= np.linalg.norm(perp)

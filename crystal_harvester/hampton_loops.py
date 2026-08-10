@@ -174,15 +174,25 @@ def build_hampton_scene(
     if preset is None:
         preset = HamptonPreset(loop_diameter_um=loop_diameter_um)
 
-    fd_mm   = (fiber_diameter_um or preset.fiber_diameter_um) / 1000.0
+    # `x if x is not None else preset.x`, NOT `x or preset.x`.  Every one of
+    # these is a number whose legitimate values include 0, and `or` silently
+    # discards a caller's 0 in favour of the preset.  That made the documented
+    # `--pin-bevel 0` a lie (docs/HANDOFF.md advertises it as giving a flat
+    # cut; it returned a 45-degree chisel), and the same bug was latent on the
+    # five neighbours.  No behaviour changes today, because passing 0 never
+    # worked and so nobody does -- this only makes the flags mean what they say.
+    def _or_preset(value, name):
+        return getattr(preset, name) if value is None else value
+
+    fd_mm   = _or_preset(fiber_diameter_um, "fiber_diameter_um") / 1000.0
     ld_mm   = preset.loop_diameter_um / 1000.0
-    shape   = loop_shape          or preset.loop_shape
-    stem_l  = stem_length_mm      or preset.stem_length_mm
-    pitch_r = stem_pitch_ratio    or preset.stem_pitch_ratio
-    pin_d   = pin_diameter_mm     or preset.pin_diameter_mm
-    pin_l   = pin_length_mm       or preset.pin_length_mm
-    pin_bv  = pin_bevel_deg       or preset.pin_bevel_deg
-    E_gpa   = youngs_modulus_gpa  or preset.youngs_modulus_gpa
+    shape   = _or_preset(loop_shape,         "loop_shape")
+    stem_l  = _or_preset(stem_length_mm,     "stem_length_mm")
+    pitch_r = _or_preset(stem_pitch_ratio,   "stem_pitch_ratio")
+    pin_d   = _or_preset(pin_diameter_mm,    "pin_diameter_mm")
+    pin_l   = _or_preset(pin_length_mm,      "pin_length_mm")
+    pin_bv  = _or_preset(pin_bevel_deg,      "pin_bevel_deg")
+    E_gpa   = _or_preset(youngs_modulus_gpa, "youngs_modulus_gpa")
 
     # --- Geometry ---
     geo = {**DEFAULT_GEOMETRY, **(geometry or {})}

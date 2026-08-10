@@ -221,6 +221,50 @@ def validate_scene(scene, requested_volume_mm3=None, expect_droplet=True,
             f"above / {h_dn:.4f} mm below) — a one-sided dome is the old "
             "hemisphere fallback signature")
 
+    # --- shape: is the drop FAT enough to look like a drop, and to be seen? ---
+    # The 1 um floor above only catches a one-sided dome; a legal-but-invisible
+    # pancake passes it.  The shipped 2 nL default is h = 20.67 um against a
+    # 170.17 um mean rim radius -- an 8.2:1 lens that protrudes 1.44 px past
+    # the 20 um fiber at 7.4 um/px, which is why no bulge is visible at spindle
+    # 90/270.  These are REPORTS and WARNINGS, never failures: a thin drop is
+    # exactly what was asked for when someone asks for one, and validate.py's
+    # failures mean "the generator produced something other than requested".
+    h_mean = 0.5 * (h_up + h_dn)
+    # Mean rim radius, measured off the rim ring itself rather than assumed
+    # from the loop size -- the teardrop aperture is not circular, and the
+    # spread (120-242 um on the shipped 300 um loop) is exactly why the same
+    # volume reads thinner here than the idealised-circle figure in DECISIONS.
+    r_mean = float(np.linalg.norm(rim - plane_c, axis=1).mean()) \
+        if len(rim) >= 8 else 0.0
+    if r_mean > 0 and h_mean > 0:
+        report["h_mm"] = h_mean
+        report["rim_radius_mean_mm"] = r_mean
+        report["aspect_ratio"] = float(r_mean / h_mean)
+        report["hemisphere_fraction"] = float(h_mean / r_mean)
+        if r_mean / h_mean > 6.0:
+            warnings.append(
+                f"droplet is {r_mean / h_mean:.1f}:1 (h {h_mean * 1e3:.1f} um "
+                f"vs rim radius {r_mean * 1e3:.1f} um) — visibly flat; it will "
+                "show no bulge edge-on at the shipped pixel size")
+
+        # Rim-ray deflection vs the objective's acceptance cone.  This is the
+        # check DECISIONS.md:128 was reaching for, with the sign the reference
+        # photographs support: a drop fat enough to LOOK like a drop throws its
+        # rim ray outside the cone and goes dark at the rim, and real ones do
+        # exactly that.  Reporting the number beats arguing about the aesthetic.
+        n_sol = float(scene.get("materials", {})
+                      .get("solvent", {}).get("n", 1.333))
+        rho = (r_mean ** 2 + h_mean ** 2) / (2.0 * h_mean)
+        defl = (n_sol - 1.0) * (r_mean / rho)
+        report["rim_deflection_sin"] = float(defl)
+        na_obj = float(scene.get("camera", {}).get("na_objective", 0.10))
+        report["na_objective"] = na_obj
+        if defl < na_obj:
+            warnings.append(
+                f"rim ray deflects sin={defl:.3f}, inside NA {na_obj:.2f} — the "
+                "whole droplet collects, so it renders near-background-bright "
+                "with no rim. Real drops of this size do not")
+
     # --- crystal ---
     if crystal is not None:
         ci, cobj = crystal
