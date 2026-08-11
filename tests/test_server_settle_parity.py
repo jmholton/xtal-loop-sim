@@ -33,7 +33,7 @@ torch = pytest.importorskip("torch")
 from loop_sim.scene.scene import load
 from loop_sim.motors.goniometer import Goniometer
 from loop_sim.renderer.engine_torch import TorchScene, render_torch
-from loop_sim.server.camera_server import CameraServer, encode_frame
+from loop_sim.server.camera_server import CameraServer, encode_frame, pose_phase
 
 HAMPTON = os.path.join(REPO_ROOT, "scene_files", "hampton_300um.yaml")
 
@@ -47,11 +47,17 @@ def _reference_jpeg(scene, pose, n_cond, quality=85, camera=None, sensor=None):
     `camera` and `sensor` must be the server's own `_camera` / `_sensor`, so
     the reference and the server share one delivery implementation rather than
     two that agree today.
+
+    The grain phase is taken from the GONIOMETER, not from the `pose` dict, for
+    the same reason: the server reads `gono.get()`, which resolves every motor
+    including `zoom` to 1.0, while a partial dict would default it to 0.0 and
+    silently re-roll the grain. Same source, same bytes.
     """
     ts = TorchScene(scene, torch.device("cuda"), torch.float64)
     gono = Goniometer(scene.geometry).set(**pose)
     img = render_torch(ts, gono, n_cond=n_cond)
-    return encode_frame(img.detach().cpu().numpy(), quality, camera, sensor)
+    return encode_frame(img.detach().cpu().numpy(), quality, camera, sensor,
+                        pose_phase(gono.get()))
 
 
 @pytest.fixture()

@@ -96,6 +96,63 @@ B = 0.1765
 # which is why a gradient model looks like it fails.
 VIGNETTE = (1.09472, -0.02534, +0.05636, +0.02100, -0.00112, -0.30397)
 
+# What the quadratic LEAVES BEHIND, put back.  The bowl above explains 83.5% of
+# the field; the rest is the soft blotchiness every real frame has, and fitting
+# the smooth part while discarding the remainder is why the first version of
+# this stage read as a flat grey card next to a photograph.
+#
+# Deterministic, and FIXED IN CAMERA SPACE like the bowl it corrects: this is an
+# illumination defect, so the sample moves under it.  That is the opposite of
+# the pin's grain, which belongs to the pin and re-rolls with the pose -- the
+# two look similar in the code and are physically unrelated.
+#
+# SIX OCTAVES, because one scale cannot look like cloud.  Splitting the real
+# residual by successive box-blurs shows energy at every scale, not one:
+#
+#   features surviving a blur of   16px   32px   64px  128px  256px
+#     C07                          3.19%  3.03%  3.79%  5.71%  4.59%
+#     A01                          3.24%  3.05%  3.44%  5.17%  7.01%
+#     F04                          3.71%  3.45%  3.15%  2.99%  3.06%
+#
+# so the base octave is set at 0.8 u-units (280 px at the 704-wide raster) and
+# halved five times to ~9 px, which brackets that range.  A single 200 px
+# cell -- the first version -- read as a smooth wash and the owner could not
+# see it at all.
+#
+# The TOTAL is 3.6% of level, from re-measuring the real frames with a proper
+# background mask.  The first measurement said 2.6-2.9% because it took
+# "background" to mean brighter than the 60th percentile, which clips the dark
+# half of every cloud and biases the spread down; the mask now dilates the dark
+# body instead and reads 3.38 / 3.48 / 3.92%.
+MOTTLE = 0.0435        # raw fBm amplitude, SOLVED for MOTTLE_RESIDUAL below
+MOTTLE_RESIDUAL = 0.036  # what it must LEAVE after a quadratic is re-fitted
+MOTTLE_UV = 0.80        # coarsest octave, in u-units (u spans 2.0 across w)
+MOTTLE_OCTAVES = 6
+# 0.90, not the textbook 0.5.  Real background energy is nearly FLAT across
+# scale (3.0-3.8% at 16-64 px against 4.6-7.0% at 128-256), so a fast roll-off
+# puts everything in the coarse octaves and the frame reads as a smooth wash:
+# at gain 0.62 the sub-33 px detail was 0.39% of level against the real ~3.2%,
+# and six octaves at 0.90 lift it to 1.61% for the same 3.6% total.
+MOTTLE_GAIN = 0.90      # amplitude ratio between successive octaves
+MOTTLE_SEED = 0x30771E
+
+
+def _fbm(u, v, cell, seed, octaves=MOTTLE_OCTAVES, gain=MOTTLE_GAIN):
+    """Sum of halving-scale value noise, normalised to unit standard deviation.
+
+    Octaves are statistically independent (each gets its own hash salt), so
+    they add in QUADRATURE -- dividing by the linear sum would leave the result
+    short of unit sd and make the amplitude constant lie.
+    """
+    total = 0.0
+    amp, power = 1.0, 0.0
+    for i in range(int(octaves)):
+        total = total + amp * _value_noise(u, v, cell / (2 ** i),
+                                           seed + i * 7919)
+        power += amp * amp
+        amp *= gain
+    return total / (power ** 0.5)
+
 # Rec. 601 luma weights, used only by the `mono` option.
 _LUMA = np.array([0.299, 0.587, 0.114])
 
@@ -118,7 +175,7 @@ _cache = {}
 _weight_cache = {}
 
 
-def vignette(h, w, coeffs=VIGNETTE, amplitude=1.0):
+def vignette(h, w, coeffs=VIGNETTE, amplitude=1.0, mottle=MOTTLE):
     """The illumination field shape, (h, w) float64 with mean ~1.0.
 
     Coordinates are normalised to [-1, 1] on each axis, so the same
@@ -133,7 +190,7 @@ def vignette(h, w, coeffs=VIGNETTE, amplitude=1.0):
     a measurement; if the mottle is later found to scale with zoom it sits near
     a field-conjugate plane instead.
     """
-    key = (h, w, coeffs, float(amplitude))
+    key = (h, w, coeffs, float(amplitude), float(mottle))
     hit = _cache.get(key)
     if hit is not None:
         return hit
@@ -145,6 +202,17 @@ def vignette(h, w, coeffs=VIGNETTE, amplitude=1.0):
          + c[3] * u * u + c[4] * u * v + c[5] * v * v)
     if amplitude != 1.0:
         f = 1.0 + amplitude * (f - 1.0)
+    if mottle:
+        n = _fbm(u, v * (h / float(w)), MOTTLE_UV, MOTTLE_SEED)
+        # The mottle may change the field's SHAPE and never its LEVEL -- E0 is
+        # a measured number and the blobs are a perturbation about it.  Both
+        # steps are needed: subtracting the mean makes the perturbation
+        # zero-mean, and rescaling removes what the bowl-blob covariance still
+        # puts back.  Skipping the first shifted the served mean 6.7%; skipping
+        # the second left 0.24%, and test_clear_path_reads_the_empty_field
+        # catches both.
+        g = f * (1.0 + amplitude * float(mottle) * (n - n.mean()))
+        f = g * (f.mean() / g.mean())
     _cache[key] = f
     return f
 
@@ -256,6 +324,10 @@ STREAK = {
     "min_width":  13,     # px; narrower opaque bodies get no streak (the
                           # 20 um loop fiber is ~2.7 px, the pin ~95)
     "min_aspect": 1.8,    # and no streak on a body that is not shank-shaped
+    "axis_gate":  0.90,   # fit the axis only across slices at least this
+                          # fraction of the widest -- drops the tapering tip
+    "max_width":  0.90,   # and nothing wider than this fraction of the frame's
+                          # SHORT side is a pin whose sides we can see
     "offset":    -0.45,   # ridge centre, in HALF-widths from the pin's axis
                           # (A01 sits at +0.48, E02 at -0.42; sign is the
                           # illumination's, so the default follows E02)
@@ -264,6 +336,7 @@ STREAK = {
     "grain":      0.15,   # grain sd, x the local ridge amplitude
     "grain_px":   2.0,    # grain correlation length, px
     "seed":       0x5EED,
+    "phase":      0,      # re-rolls the grain; the server feeds it the pose
 }
 
 
@@ -346,6 +419,122 @@ def _wide_opaque(mask, k):
     return out
 
 
+def _fit_one_orientation(core, k, horizontal):
+    """Width-gated centreline fit for ONE slicing direction, or None.
+
+    Returns `(x0, y0, ax, ay, half_w, half_l, has_end, cut_lo, cut_hi)`.
+    None means this orientation is not a consistent bar, for either of the two
+    reasons that matter -- see `_pin_axis`.
+    """
+    m = core if horizontal else core.T
+    n_cross, n_along = m.shape
+    m0 = k // 2 + 1
+
+    present = m.any(axis=0)
+    if present.sum() < 8:
+        return None
+    first = np.argmax(m, axis=0).astype(np.float64)
+    last = (n_cross - 1 - np.argmax(m[::-1], axis=0)).astype(np.float64)
+    width = np.where(present, last - first + 1.0, 0.0)
+    keep = present & (width >= float(STREAK["axis_gate"]) * width.max())
+    if keep.sum() < 8:
+        return None
+
+    # A SIDE against the frame: half_w was never measurable, and it sets both
+    # the ridge's position and its FWHM.  This is what rules mitegen out.
+    if first[keep].min() <= m0 or last[keep].max() >= n_cross - 1 - m0:
+        return None
+
+    raw_w = float(width[keep].mean())
+    span = np.nonzero(present)[0]
+    cut_lo, cut_hi = bool(span[0] <= m0), bool(span[-1] >= n_along - 1 - m0)
+    # A clipped END must be a CLEAN SEVER -- the body's cross-section right at
+    # the frame equal to the width it has been holding.  Measured: hampton
+    # reads 1.00-1.05 at every zoom, a tilted bar 1.01, while mitegen's only
+    # side-free orientation reads 0.63 and is correctly refused.
+    for cut, idx in ((cut_lo, span[0]), (cut_hi, span[-1])):
+        if cut and not (0.75 <= float(m[:, idx].sum()) / raw_w <= 1.30):
+            return None
+
+    s = np.nonzero(keep)[0].astype(np.float64)
+    centre = 0.5 * (first[keep] + last[keep])
+    slope, intercept = np.polyfit(s, centre, 1)
+    s_mid = 0.5 * (float(span[0]) + float(span[-1]))
+    c_mid = slope * s_mid + intercept
+    # Erosion by k took (k-1)/2 off every side; add it back to both extents.
+    half_l = 0.5 * (float(span[-1]) - float(span[0])) + (k - 1) / 2.0
+    half_w = 0.5 * raw_w + (k - 1) / 2.0
+    norm = (1.0 + slope * slope) ** 0.5
+    geom = ((s_mid, c_mid, 1.0 / norm, slope / norm) if horizontal
+            else (c_mid, s_mid, slope / norm, 1.0 / norm))
+    return geom + (half_w, half_l, cut_lo or cut_hi, cut_lo, cut_hi)
+
+
+def _pin_axis(core, k):
+    """`(x0, y0, ax, ay, half_w, half_l, axis_certain, cut_lo, cut_hi)`, or None.
+
+    ACCEPTED LIMITATION, and the one worth reading before adding a sixth
+    heuristic here.  Everything below infers the pin from its SILHOUETTE, so
+    the glint is unavoidably a function of what is in frame.  Two consequences
+    are known and were accepted deliberately (owner, 2026-08-10) rather than
+    fixed: the glint disappears when the pin's SIDE leaves the frame (its width
+    stops being measurable), and on a view showing only the bevelled tip the
+    fit has no shank sides to lock onto and the ridge follows the tip's curve.
+
+    The real fix is not a better inference -- it is to stop inferring.  The
+    server knows the scene and the pose, `hampton_300um.yaml`'s pin is a
+    cylinder with `axis [1,0,0], radius 0.35`, and `pose_crop` already does the
+    lab-to-image mapping.  Handing this stage `(x0, y0, ax, ay, half_w)` in
+    output pixels would make all of it exact at any zoom, any crop and any
+    angle, and would DELETE `_wide_opaque`, `_fit_one_orientation`, this
+    function, the sever test and the width cap -- ~150 lines of heuristic for
+    ~40 of projection, and faster, since no mask or erosion would be needed.
+    It would also settle mitegen properly: a kapton mount is declared not to
+    shine, rather than guessed at from its shape.
+
+    Fitted from the body's two long SIDES -- not from its second moments -- and
+    only across slices at least `axis_gate` of the widest, which is what makes
+    it immune to the shape of the tip.
+
+    THE MOMENT FIT WAS A REAL BUG, TWICE OVER, and both were visible.
+
+    (1) `hampton_300um`'s pin carries a 45-degree chisel, and as the spindle
+    turns that bevel's projected silhouette sweeps up and down.  The filled
+    mask's principal axis followed it: **-6.40 to +6.39 degrees, sinusoidal in
+    phi**, tilting the specular ridge 54.5 px across the pin over a revolution.
+    A horizontal pin lit from a fixed direction shows a horizontal glint at
+    every angle.  Gating on width drops the tapering tip, so what is fitted is
+    two parallel edges, and the answer is 0.00 degrees at every phi.
+
+    (2) Past ~1.5x zoom the pin's in-frame piece is WIDER THAN IT IS LONG --
+    211 x 59 px at 2.77x -- so the moments called it vertical and the fit
+    measured the shank's width as its length.  half_w came out 17.8 px on a
+    187 px pin and the glint vanished on zoom-in.
+
+    So the orientation is not guessed from moments at all: BOTH are fitted and
+    the consistent one wins.  An orientation is inconsistent if the body's
+    SIDES run off the frame (its width is then unmeasurable) or if a clipped
+    END is not a clean sever (the body does not simply continue past the
+    crop).  Exactly one survives for a pin at any zoom; for `mitegen_200um`,
+    whose 1 um pixels put a 0.7 mm pin wider than the frame, NEITHER does --
+    which is the answer that stops the glint blinking six times a revolution.
+    Moments break a tie only when the body touches no edge at all, where they
+    are reliable and `min_aspect` is still there to catch a blob.
+    """
+    fits = [f for f in (_fit_one_orientation(core, k, True),
+                        _fit_one_orientation(core, k, False)) if f is not None]
+    if not fits:
+        return None
+    if len(fits) == 1:
+        return fits[0]
+    ended = [f for f in fits if f[6]]
+    if len(ended) == 1:
+        return ended[0]
+    ys, xs = np.nonzero(core)                       # fully in frame: moments
+    dy, dx = ys - ys.mean(), xs - xs.mean()
+    return fits[0] if (dx * dx).mean() >= (dy * dy).mean() else fits[1]
+
+
 def _streak_patch(t, params=None):
     """`(rows, cols, values)` for the pin's glint, or None if there is no pin.
 
@@ -371,33 +560,35 @@ def _streak_patch(t, params=None):
     if int(core.sum()) < 4 * k * k:                   # no pin worth drawing on
         return None
 
-    ys, xs = np.nonzero(core)
-    y0, x0 = ys.mean(), xs.mean()
-    dy, dx = ys - y0, xs - x0
-    cyy, cxx, cxy = (dy * dy).mean(), (dx * dx).mean(), (dx * dy).mean()
-    # Principal axis of the 2x2 covariance, closed form.  `axis` is the long
-    # one; the streak runs along it and is offset across it.
-    th = 0.5 * np.arctan2(2.0 * cxy, cxx - cyy)
-    ax, ay = np.cos(th), np.sin(th)                   # long axis, in (x, y)
-    tr, det = cxx + cyy, cxx * cyy - cxy * cxy
-    disc = max(tr * tr / 4.0 - det, 0.0) ** 0.5
-    lam_short = max(tr / 2.0 - disc, 1e-9)
-    lam_long = tr / 2.0 + disc
-    # Only an elongated body has a long axis worth finding: for a compact one
-    # the two eigenvalues are nearly equal and the principal angle is
-    # whichever way the noise fell, so the ridge would be drawn at an
-    # arbitrary orientation.  The threshold is 1.8 because a pin ONLY EVER
-    # ENTERS FROM ONE SIDE and what is in frame is a short stub of shank, not
-    # the whole part: measured 2.87 on the shipped hampton frame and 2.0 on
-    # the reference photo E02, against 4.1 on A01.  It still turns away a
-    # square blob (1.0) and a body so magnified that both its ends are
-    # off-frame, where the extent genuinely cannot be measured.
-    if lam_long < float(p["min_aspect"]) ** 2 * lam_short:
+    fit = _pin_axis(core, k)
+    if fit is None:
         return None
-    # A uniform bar of full width W has variance W^2/12.  `core` is the pin
-    # eroded by k, so add back what the erosion took off each side.
-    half_w = (12.0 * lam_short) ** 0.5 / 2.0 + (k - 1) / 2.0
-    half_l = (12.0 * lam_long) ** 0.5 / 2.0 + (k - 1) / 2.0
+    x0, y0, ax, ay, half_w, half_l, axis_certain, clip_lo, clip_hi = fit
+    # The aspect test exists to reject a body whose ORIENTATION cannot be
+    # trusted -- a compact blob, where the fit is a handful of near-square
+    # slices and the answer is whichever way the noise fell.  1.8 because a pin
+    # only ever enters from one side and what is in frame is a stub of shank:
+    # 2.87 on the shipped hampton frame and 2.0 on E02, against 4.1 on A01.
+    #
+    # It is SKIPPED when the frame cleanly severed the body, because then the
+    # orientation is known for certain from the sever and the visible aspect is
+    # just an artefact of the crop.  Requiring 1.8 of a zoomed-in pin is what
+    # made the glint disappear past ~1.5x: at 2.77x the in-frame piece is
+    # 211 px wide and 59 px long, an aspect of 0.28, and still obviously a pin.
+    if not axis_certain and half_l < float(p["min_aspect"]) * half_w:
+        return None
+    # A body WIDER THAN THE FRAME'S SHORT SIDE is not a pin whose sides we can
+    # see -- it is something the crop is looking inside of, and half_w is then
+    # a property of the crop rather than of the object.  This is what keeps
+    # `mitegen_200um` off (its 1 um pixels fit a 528 px body in a 480 px frame,
+    # and it would otherwise draw at half its angles and blink), and it is the
+    # ONLY separator that survived: aspect does not work (the zoomed pin is
+    # 0.28 against mitegen's 0.85) and neither does bar-likeness (35% against
+    # 57% -- the zoomed pin is the LESS bar-like of the two).
+    if 2.0 * half_w > float(p["max_width"]) * min(opaque.shape):
+        return None
+    ys, xs = np.nonzero(core)
+    dy, dx = ys - y0, xs - x0
 
     # Work in the pin's bounding box, and inside it only in the ridge's own
     # band.  The exponential and the grain are the whole cost of this function
@@ -405,36 +596,12 @@ def _streak_patch(t, params=None):
     # restricting them takes it from ~10.6 ms to ~2 ms on a 640x480 frame,
     # which matters because it runs on every served frame and the worst-case
     # /motor stream has no headroom to give away.
-    # Frame contact asks two DIFFERENT questions, and conflating them is what
-    # made this both flicker and fade.
     #
-    #   * A SIDE against the frame means the width was never measurable, and
-    #     half_w sets the ridge's position AND its FWHM -- so there is nothing
-    #     to draw.  This is `mitegen_200um`, whose 1 um pixels put a 0.7 mm pin
-    #     wider than the frame: its moment aspect wanders 1.1-2.2 with the
-    #     spindle, so a bare aspect threshold made the glint blink on and off
-    #     six times a revolution, which is far worse than never drawing it.
-    #   * An END against the frame costs only the length, and the length is
-    #     used for nothing but the taper.  This is every hampton frame -- the
-    #     pin enters from the right and runs off the edge -- and tapering there
-    #     faded the streak out over the last 8 px of a shank that in reality
-    #     just continues.
-    h, w = opaque.shape
-    u_core = dx * ax + dy * ay
-    edge = ((xs <= k // 2 + 1) | (xs >= w - 2 - k // 2) |
-            (ys <= k // 2 + 1) | (ys >= h - 2 - k // 2))
-    clip_hi = clip_lo = False
-    if edge.any():
-        ue = u_core[edge]
-        if float(ue.max() - ue.min()) > half_l:       # a side, not an end
-            return None
-        clip_hi = bool((ue > 0.7 * half_l).any())
-        clip_lo = bool((ue < -0.7 * half_l).any())
-
     # `ys`/`xs` come from the ERODED mask, so the real body reaches (k-1)/2
     # further on every side; k of padding covers that and nothing more.  The
     # ridge lives inside the pin, so padding out by half_w (as an earlier
     # version did) tripled the box for no pixels.
+    h, w = opaque.shape
     r0, r1 = max(int(ys.min()) - k, 0), min(int(ys.max()) + k + 1, h)
     c0, c1 = max(int(xs.min()) - k, 0), min(int(xs.max()) + k + 1, w)
     rr = np.arange(r0, r1, dtype=np.float64) - y0
@@ -466,8 +633,21 @@ def _streak_patch(t, params=None):
     if not clip_lo:
         e = np.minimum(e, np.clip((half_l + u) / tail, 0.0, 1.0))
     ridge *= e * e * (3.0 - 2.0 * e)
+    # SCINTILLATION, not a texture glued to the pin.  The grain used to be
+    # hashed on the pin's own frame so it would ride with it -- which is right
+    # for a static surface pattern and WRONG for what this actually is.  A
+    # machined shank is rough at the scale of the wavelength, so as it turns,
+    # different micro-facets come into the specular condition and the glint
+    # twinkles rather than translating rigidly.  Anchoring it also made the
+    # pattern slide against the pin whenever the visible portion changed, which
+    # read as parallax and gave the whole thing away as painted on.
+    #
+    # `phase` re-rolls the pattern; the server derives it from the POSE, so it
+    # is still a pure function of what is being rendered -- a frame re-rendered
+    # at the same pose is byte-identical, which `test_server_settle_parity`
+    # requires, and a held pose does not shimmer.
     ridge *= 1.0 + float(p["grain"]) * _value_noise(
-        u, dv, float(p["grain_px"]), int(p["seed"]))
+        u, dv, float(p["grain_px"]), int(p["seed"]) ^ int(p["phase"]))
 
     # `band` already carries the opaque mask, so the ridge is only ever drawn
     # where the tracer said the body is opaque: it cannot leak onto the

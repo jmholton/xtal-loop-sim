@@ -91,7 +91,27 @@ _SCENE_DIR_DEFAULT = os.path.join(
 # ---------------------------------------------------------------------------
 # Frame delivery: camera emulation, then encode
 # ---------------------------------------------------------------------------
-def encode_frame(img, jpeg_quality, camera=None, sensor=None):
+def pose_phase(pose):
+    """A stable integer that changes whenever the pose does.
+
+    Feeds the specular grain (`field.STREAK["phase"]`), so a machined shank
+    twinkles as it turns instead of carrying a texture glued to it.  Derived
+    from the POSE rather than a clock or an RNG, which is what keeps the whole
+    delivery chain a pure function of what is being rendered: re-render the
+    same pose and you get the same bytes, which `test_server_settle_parity`
+    asserts, and a stage held still does not shimmer.
+
+    Quantised to 1e-4 of a unit so floating-point noise in a pose that was
+    round-tripped through JSON cannot re-roll the pattern on its own.
+    """
+    h = 0x9E3779B9
+    for key in _MOTOR_KEYS:
+        v = int(round(float(pose.get(key, 0.0)) * 1e4)) & 0xFFFFFFFF
+        h = ((h * 1000003) ^ v) & 0xFFFFFFFF
+    return h
+
+
+def encode_frame(img, jpeg_quality, camera=None, sensor=None, phase=0):
     """Apply camera emulation to a float (H, W, 3) in [0, 1], return JPEG bytes.
 
     THE single place a served frame becomes bytes.  Both the live path (either
@@ -126,6 +146,10 @@ def encode_frame(img, jpeg_quality, camera=None, sensor=None):
         img = to_sensor(img, sensor)
     if camera:
         from ..renderer.field import apply_camera
+        if phase:
+            sp = dict(camera.get("streak_params") or {})
+            sp["phase"] = int(phase)
+            camera = dict(camera, streak_params=sp)
         img = apply_camera(img, **camera)
     arr = (np.clip(np.asarray(img, dtype=np.float64), 0.0, 1.0) * 255).astype(np.uint8)
     buf = io.BytesIO()
@@ -217,7 +241,8 @@ class TemplateSource:
         # transmittance either way.
         import numpy as np
         return encode_frame(np.asarray(img, dtype=np.float64) / 255.0,
-                            self.jpeg_quality, self.camera, self.sensor)
+                            self.jpeg_quality, self.camera, self.sensor,
+                            pose_phase(pose))
 
 
 # ---------------------------------------------------------------------------
@@ -975,7 +1000,8 @@ class CameraServer(ThreadingHTTPServer):
             else:
                 img = render_torch(self._tscene, gono, n_cond=n_cond, compiled=False)
             jpeg = encode_frame(img.detach().cpu().numpy(),
-                                self._jpeg_quality, self._camera, self._sensor)
+                                self._jpeg_quality, self._camera, self._sensor,
+                                pose_phase(gono.get()))
         else:
             # microscope_render encodes internally; we take its float image and
             # re-encode through the shared path so the emulation and the
@@ -984,7 +1010,7 @@ class CameraServer(ThreadingHTTPServer):
             img, _ = microscope_render(self._scene, gono, n_cond=n_cond,
                                        jpeg_quality=self._jpeg_quality)
             jpeg = encode_frame(img, self._jpeg_quality, self._camera,
-                                self._sensor)
+                                self._sensor, pose_phase(gono.get()))
         return jpeg
 
     def _render_now(self):

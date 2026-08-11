@@ -48,6 +48,14 @@ the GPU path **correct** (it was producing a "hairy" artifact on the loop fiber)
   first — which corrected the plan's spec twice (its "1.25× background peak" was a
   three-pixel frame maximum, and its grain figure was the pin body, not the ridge, which
   is ~10× grainier). 3.4 ms/frame, camera space, no rebuild. `--pin-streak off`.
+- **The pin's glint is inferred from the SILHOUETTE, and that is an accepted
+  limitation, not an oversight.** Because the geometry comes from what is in
+  frame, the glint disappears when the pin's side leaves the frame, and on a
+  tip-only view the ridge follows the tip's curve instead of the shank. Judged
+  a small incorrectness and accepted (owner, 2026-08-10). The fix is not a
+  better inference: hand the stage the pin's axis and radius from the SCENE,
+  which the server already knows, and ~150 lines of heuristic in
+  `renderer/field.py` delete. See `_pin_axis`'s docstring.
 - **`render_sha` closes the last silent-staleness hole.** A renderer edit used to leave
   every manifest reading `current` while the frames on disk had been traced by code that
   no longer existed. Now hashed into the manifest and `_BUILD_KEYS`. `field.py` is

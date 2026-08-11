@@ -78,6 +78,63 @@ def test_field_shape_has_unit_mean_and_is_resolution_independent():
     assert large.max() == pytest.approx(small.max(), abs=0.02)
 
 
+def test_field_carries_the_mottle_the_quadratic_discards():
+    """A 6-coefficient bowl explains 83.5% of the real field and the rest is
+    soft blotchiness -- fitting the smooth part and throwing away the residual
+    is what made an early render read as a flat grey card beside a photograph.
+    Real frames leave sd 2.6% (C07) and 2.9% (A01) of level after a per-frame
+    quadratic is removed.
+    """
+    H, W = 480, 704
+    f = F.vignette(H, W)
+    yy, xx = np.mgrid[0:H, 0:W].astype(float)
+    u, v = 2 * xx / (W - 1) - 1, 2 * yy / (H - 1) - 1
+    A = np.stack([np.ones_like(u), u, v, u * u, u * v, v * v], -1).reshape(-1, 6)
+    coef, *_ = np.linalg.lstsq(A, f.ravel(), rcond=None)
+    resid = (f.ravel() - A @ coef).std() / f.mean()
+    assert 0.03 < resid < 0.045, f"mottle is {100*resid:.1f}% of level, real is 3.4-3.9%"
+
+    # Not "the mottled field varies more" -- it is a MULTIPLICATIVE term, so it
+    # correlates with the bowl and can lower the total spread while adding
+    # structure.  What must be true is that it adds structure the quadratic
+    # cannot absorb, and that switching it off removes it.
+    flat = F.vignette(H, W, mottle=0.0)
+    cf, *_ = np.linalg.lstsq(A, flat.ravel(), rcond=None)
+    assert (flat.ravel() - A @ cf).std() / flat.mean() < 1e-6
+    assert not np.allclose(f, flat)
+
+
+def test_mottle_has_energy_at_the_scales_the_real_frames_do():
+    """Real background energy does not sit at one scale -- box-blurring the
+    residual leaves 3.0-3.8% at 16-64 px and 4.6-7.0% at 128-256 px.  A single
+    cell size read as a smooth wash and was invisible; six octaves is what
+    puts cloud at more than one size."""
+    f = F.vignette(480, 704)
+    f = f / f.mean()
+    fine = f - _boxblur(f, 33)               # detail finer than ~33 px
+    coarse = _boxblur(f, 129)                # structure coarser than ~129 px
+    assert fine.std() > 0.010, "no fine-scale structure"
+    assert (coarse - coarse.mean()).std() > 0.015, "no coarse-scale structure"
+
+
+def _boxblur(a, k):
+    ker = np.ones(k) / k
+    pad = k // 2
+    out = np.apply_along_axis(
+        lambda r: np.convolve(np.pad(r, pad, mode="reflect"), ker, "valid"), 1, a)
+    return np.apply_along_axis(
+        lambda c: np.convolve(np.pad(c, pad, mode="reflect"), ker, "valid"), 0, out)
+
+
+def test_mottle_moves_the_field_shape_but_never_its_level():
+    """`E0` is a measured number. The blobs perturb about it; they may not
+    shift it, or every served frame's exposure drifts."""
+    for h, w in ((480, 704), (96, 128), (240, 320)):
+        flat = F.vignette(h, w, mottle=0.0)
+        mott = F.vignette(h, w)
+        assert mott.mean() == pytest.approx(flat.mean(), rel=1e-9)
+
+
 def test_amplitude_zero_is_a_flat_field():
     """Recent epochs are 5-7x flatter than the calibration session, so the
     amplitude dial has to reach flat."""
@@ -215,24 +272,44 @@ def test_streak_grain_is_deterministic():
     assert np.array_equal(F.specular_streak(t), F.specular_streak(t.copy()))
 
 
-def test_streak_grain_rides_with_the_pin():
-    """Surface roughness belongs to the PIN, not to the camera -- unlike the
-    illumination field, which is fixed in camera space.  Translate the pin and
-    the grain must translate with it, or it crawls across the shank as the
-    stage pans (and becomes a localisation shortcut for anything trained on
-    these frames)."""
-    def at(dx):
-        yy, xx = np.mgrid[0:PIN_H, 0:PIN_W].astype(float)
-        bar = ((np.abs((yy - 240) - 0.04 * (xx - 352 - dx)) < 47.5)
-               & (np.abs(xx - 352 - dx) < 150))          # wholly inside frame
-        t = np.ones((PIN_H, PIN_W, 3))
-        t[bar] = 0.0
-        return t
+def test_streak_grain_scintillates_with_the_pose_but_holds_at_rest():
+    """A machined shank is rough at the wavelength scale, so as it turns,
+    different micro-facets enter the specular condition and the glint TWINKLES.
 
-    a = F.specular_streak(at(0))
-    b = F.specular_streak(at(30))
-    assert a.max() > 0.1
-    assert np.allclose(a[:, :-30], b[:, 30:], atol=1e-12)
+    An earlier version hashed the grain on the pin's own frame so it would ride
+    with it.  That is right for a static surface texture and wrong for this:
+    it also slid against the pin whenever the visible portion changed, which
+    read as parallax and gave the effect away as painted on.
+
+    Both halves matter.  Re-rolling on pose change is the effect; holding still
+    at a FIXED pose is what keeps the whole chain a pure function of what is
+    being rendered, which `test_server_settle_parity` compares bytes against.
+    """
+    t, _ = _pin_frame()
+    a = F.specular_streak(t, {"phase": 1234})
+    again = F.specular_streak(t, {"phase": 1234})
+    moved = F.specular_streak(t, {"phase": 5678})
+
+    assert np.array_equal(a, again), "a held pose must not shimmer"
+    assert not np.array_equal(a, moved), "the pattern must re-roll on a new pose"
+    lit = a > 0
+    assert np.abs(a - moved)[lit].mean() > 1e-3          # visibly different
+    # ...but only the grain moves: the ridge itself is in the same place.
+    assert np.array_equal(lit, moved > 0)
+    assert abs(a[lit].mean() - moved[lit].mean()) < 0.05 * a[lit].mean()
+
+
+def test_pose_phase_is_stable_and_discriminating():
+    """The phase must come from the POSE, so the same pose renders the same
+    bytes and any real move re-rolls the grain."""
+    from loop_sim.server.camera_server import pose_phase
+
+    base = {"rotx": 37.0, "tx": 0.1, "zoom": 1.5}
+    assert pose_phase(base) == pose_phase(dict(base))
+    assert pose_phase(base) == pose_phase(dict(base, rotx=37.00000001))  # quantised
+    assert pose_phase(base) != pose_phase(dict(base, rotx=37.01))
+    assert pose_phase(base) != pose_phase(dict(base, tx=0.1005))
+    assert pose_phase({}) == pose_phase({"rotx": 0.0})
 
 
 def test_streak_does_not_put_the_white_rail_back_in_reach():
@@ -256,15 +333,69 @@ def test_streak_follows_a_rotated_pin():
         assert not s[~bar].any(), f"streak leaked off the pin at tilt {tilt}"
 
 
-def test_streak_refuses_a_body_whose_width_the_frame_cuts():
-    """`mitegen_200um`'s 1 um pixels put a 0.7 mm pin wider than the frame, so
-    its moment aspect wanders 1.1-2.2 with the spindle and a bare aspect
-    threshold made the glint blink on and off six times a revolution.  A side
-    against the frame means half_w -- which sets both the ridge's position and
-    its FWHM -- was never measurable, so there is nothing to draw."""
-    t = np.ones((PIN_H, PIN_W, 3))
-    t[:, 100:600] = 0.0                          # runs off the top AND bottom
-    assert F.specular_streak(t).max() == 0.0
+def test_streak_axis_is_immune_to_the_shape_of_the_tip():
+    """THE BUG THIS REPLACED WAS VISIBLE.  `hampton_300um`'s pin carries a
+    45-degree chisel, and as the spindle turns that bevel's silhouette sweeps
+    up and down.  Fitting the axis from the filled mask's second moments
+    followed it: -6.40 to +6.39 degrees over a revolution, which slid the
+    specular ridge 54.5 px across the pin.  A horizontal pin lit from a fixed
+    direction shows a horizontal glint at every angle.
+
+    Simulated here by putting a differently-angled wedge on the end of an
+    otherwise identical horizontal bar: the fitted axis must not care.
+    """
+    def bar_with_tip(slope):
+        yy, xx = np.mgrid[0:PIN_H, 0:PIN_W].astype(float)
+        body = (np.abs(yy - 240) < 47.5) & (xx > 300)
+        # a wedge cut off the tip, at a different angle each time
+        cut = (xx - 300) < slope * (yy - 192.5)
+        t = np.ones((PIN_H, PIN_W, 3))
+        t[body & ~cut] = 0.0
+        return t
+
+    angles = []
+    for slope in (-0.8, -0.4, 0.0, 0.4, 0.8):
+        t = bar_with_tip(slope)
+        th = F.STREAK["opaque"]
+        m = (t[..., 0] <= th) & (t[..., 1] <= th) & (t[..., 2] <= th)
+        fit = F._pin_axis(F._wide_opaque(m, 13), 13)
+        assert fit is not None, f"no fit at tip slope {slope}"
+        angles.append(np.degrees(np.arctan2(fit[3], fit[2])))
+    assert max(abs(a) for a in angles) < 0.5, f"tip tilted the axis: {angles}"
+
+
+def test_streak_refuses_mitegen_at_every_angle():
+    """`mitegen_200um`'s 1 um pixels put a 0.7 mm pin WIDER than the frame, so
+    its width is never measurable and there is nothing to draw.  It has to be
+    refused at EVERY angle, not most: a glint that blinks on and off six times
+    a revolution is far worse than one that never appears, and that is exactly
+    what an earlier aspect-threshold version did.
+
+    Run against the shipped library rather than a synthetic, because the
+    synthetic that replaced it was a clean bar running off two edges -- a body
+    the fit should and does accept -- so it tested the opposite of the bug.
+    """
+    import json
+    from PIL import Image
+    from loop_sim.library.frame_library import frame_for_angle, pose_crop
+
+    lib = os.path.join(REPO_ROOT, "frame_library", "mitegen_200um")
+    man_path = os.path.join(lib, "manifest.json")
+    if not os.path.exists(man_path):
+        pytest.skip("mitegen_200um library not present")
+    with open(man_path) as fh:
+        man = json.load(fh)
+
+    fired = []
+    for ang in range(0, 360, 15):
+        rec = frame_for_angle(man, float(ang))
+        box, out, _, _ = pose_crop(man, angle_deg=float(ang), clamp=True)
+        with Image.open(os.path.join(lib, rec["file"])) as im:
+            crop = im.convert("RGB").resize(out, Image.BILINEAR, box=box)
+        t = F.to_sensor(np.asarray(crop, np.float64) / 255.0)
+        if F._streak_patch(t) is not None:
+            fired.append(ang)
+    assert not fired, f"glint drawn on mitegen at {fired}"
 
 
 def test_streak_tapers_the_tip_but_not_the_frame_edge():
