@@ -150,17 +150,45 @@ def test_survivor_chunk_is_capped_absolutely_not_just_as_a_fraction():
     costs nothing.
     """
     dev = torch.device("cuda")
-    for faces in (234, 2880, 5472):
+    # Face counts MUST straddle the point where the floor stops fitting the
+    # budget (~6,553 faces at a 2 GiB cap). The first version of this test used
+    # 234/2880/5472 -- all below it -- and passed while a 50,976-face droplet
+    # reserved 16.1 GB, because `max(_MESH_CHUNK_MIN, ...)` silently overrode
+    # the cap. 50,976 is the Rayleigh-matched droplet; 200,000 is absurd on
+    # purpose.
+    for faces in (234, 2880, 5472, 6553, 22464, 50976, 200_000):
         chunk = et._mesh_survivor_chunk(faces, dev, vram_fraction=1.0)
         peak = chunk * faces * et._MESH_BYTES_PER_RAY_FACE
+        assert chunk >= 1, f"{faces} faces -> chunk {chunk}"
         assert peak <= et._MESH_CHUNK_MAX_BYTES, f"{faces} faces -> {peak/2**30:.2f} GiB"
 
 
 @cuda_only
-def test_survivor_chunk_never_falls_below_the_floor():
-    """An absurd mesh must still produce a usable chunk, not zero."""
+def test_survivor_chunk_floor_yields_to_the_budget():
+    """An absurd mesh must still produce a usable chunk -- but never one the
+    budget cannot pay for.
+
+    This previously asserted the floor WINS (`== _MESH_CHUNK_MIN`). That
+    assertion was the bug: applying the floor unconditionally made a
+    50,976-face droplet demand 2048 x 50976 x 160 B = 16.7 GB and spill the
+    card, under a cap that was supposed to be 2 GiB. The floor is a preference
+    against a pathologically small chunk; past ~6,553 faces it no longer fits
+    and must yield.
+    """
     dev = torch.device("cuda")
-    assert et._mesh_survivor_chunk(200_000_000, dev) == et._MESH_CHUNK_MIN
+    assert et._mesh_survivor_chunk(500, dev) >= et._MESH_CHUNK_MIN   # fits: honour it
+    for faces in (50_976, 200_000):
+        chunk = et._mesh_survivor_chunk(faces, dev)
+        assert chunk >= 1, f"{faces} faces -> chunk {chunk}; must never be zero"
+        assert chunk < et._MESH_CHUNK_MIN, "floor must yield when it cannot fit"
+        assert chunk * faces * et._MESH_BYTES_PER_RAY_FACE <= et._MESH_CHUNK_MAX_BYTES
+
+    # Beyond ~13.4M faces (2 GiB / 160 B) even ONE ray's Moller-Trumbore
+    # temporaries exceed the budget, and no chunking can help -- that would need
+    # a per-face broad phase, which this codebase deliberately does not have
+    # (dead by Amdahl once the AABB cull lands; see DECISIONS). The contract
+    # there is only that it stays renderable rather than returning zero.
+    assert et._mesh_survivor_chunk(200_000_000, dev) == 1
 
 
 @cuda_only

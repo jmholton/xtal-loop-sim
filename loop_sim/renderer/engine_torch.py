@@ -1067,7 +1067,14 @@ def _mesh_survivor_chunk(faces, dev, vram_fraction=0.25):
     free, _total = torch.cuda.mem_get_info()
     budget = min(free * vram_fraction, float(_MESH_CHUNK_MAX_BYTES))
     per_ray = faces * _MESH_BYTES_PER_RAY_FACE
-    return int(max(_MESH_CHUNK_MIN, budget // per_ray))
+    fits = int(budget // per_ray)
+    # The floor is a PREFERENCE and must never override the budget. Applying it
+    # unconditionally is what made a 50,976-face droplet reserve 16.1 GB and
+    # spill: the budget asked for 263 rays, the floor forced 2048, and
+    # 2048 x 50976 x 160 B = 16.7 GB. It crosses over at ~6,553 faces, which is
+    # why meshes up to 5,472 never showed it. Below that many faces the floor
+    # is free; above it, honour the budget and take more chunks instead.
+    return max(1, min(fits, max(_MESH_CHUNK_MIN, fits)))
 
 
 def _mesh_face_count(shapes):
