@@ -1,8 +1,8 @@
 ---
 project: loop-sim (xtal-loop-sim) — bright-field microscope + X-ray simulator for protein crystals in cryo-loops
-status: active — camera served from pre-computed templates (no GPU at runtime) and usable interactively; renders go out through a measured camera model on the real 704x480 raster; all three frame libraries current; the camera calibration is now fully settled (pixels 2026-08-10, NA 2026-08-11) and the next front is render-time optimisation
-last_verified: 2026-08-11        # `pytest tests/` = 213 passed in 121 s on this tree (branch performance-correctness-optimizations, 61 commits ahead of master, RTX 4080 SUPER)
-verify: python -m pytest tests/ -q        # 213 tests; "python" = the torch-enabled project interpreter (see docs/RUNBOOK.md "Environment")
+status: active — camera served from pre-computed templates (no GPU at runtime) and usable interactively; renders go out through a measured camera model on the real 704x480 raster; all three frame libraries current; the camera calibration is fully settled (pixels 2026-08-10, NA 2026-08-11); library builds are 43x faster since the mesh path learned to cull, so the open front is how much fidelity to spend that on
+last_verified: 2026-08-11        # `pytest tests/` = 219 passed in 148 s on this tree (branch performance-correctness-optimizations, 62 commits ahead of master, RTX 4080 SUPER)
+verify: python -m pytest tests/ -q        # 219 tests; "python" = the torch-enabled project interpreter (see docs/RUNBOOK.md "Environment")
 ---
 
 # HANDOFF — loop-sim (xtal-loop-sim)
@@ -573,6 +573,37 @@ fallback **6.3 fps**. The three things that decide whether you get 11.9 or 6.3:
   Note the square-pixel hi stop is **0.9056 µm**, not `template.yaml`'s 0.8233 — built
   the same way the mid stop's 7.4 µm is (704 × 0.8233 / 640). The two give the same tone
   to 0.3%, so it only matters dimensionally.
+- **How much fidelity should `hampton_300um_realistic` buy with the 43x?**
+  It ships at `--supersample 1`, so the viewer caps zoom at **1x**, while the
+  optically correct value for its 7.4 um pixel at NA 0.10 is **4** (the same
+  rule that gives `hampton_300um` its 4 -- RUNBOOK "Frame libraries"). It was
+  set to 1 purely because 4 was days of build time on a mesh scene; that
+  argument is gone. Raising it also exposes the droplet's tessellation: at
+  supersample 4 the template pixel is 1.85 um against **10 um facets**, so a
+  hard zoom shows a staircase on the drop's edge. Facet size is now a build
+  parameter (`--drop-mesh-nz` / `--drop-mesh-nphi`). Measured at supersample 4,
+  5584x2576, n_cond 7, one frame each:
+
+  | droplet mesh | faces | facet | s/frame | 360-frame build |
+  |---|---|---|---|---|
+  | shipped | 5,472 | 10.0 um | 20.2 | 2.0 h |
+  | 2x finer | 14,508 | 6.2 um | 31.1 | 3.1 h |
+  | 3x finer | 22,464 | 5.0 um | 37.8 | 3.8 h |
+  | Rayleigh-matched | 50,976 | 3.3 um | **spills** | — |
+
+  **The Rayleigh-matched mesh does not currently build.** At 50,976 faces and
+  14.4 Mpx the card pins at ~16.1 GB with the GPU reporting 100% busy at 70 W
+  of 320 W -- the WSL2 spill signature (RUNBOOK "Dev-environment caveat") --
+  and a single frame does not complete. Matching the facet size to the 3.35 um
+  Rayleigh limit is the principled place to stop tessellating, so this is worth
+  resolving rather than working around.
+  **Cause unknown; the prime suspect is `fit_tile_size` itself.** It no longer
+  reduces the tile for face count (correct, now the mesh culls and chunks its
+  own survivors) and returns a flat 1,000,000 rays -- but that change was only
+  validated against 5,472 faces, 9x below the case that fails. The accounted
+  terms come to roughly 4 GB, not 16, so a memory term is unexplained. The
+  cheapest test is one frame at an explicit small `--tile-size` with a guard
+  that aborts the moment `nvidia-smi` crosses ~12 GB.
 - **Is the bundled `hampton_300um` loop mislabelled, or digitized at another size?** Its
   waypoints span 69 × 200 µm, not ~300 µm. Worth comparing against the physical part before
   assuming the geometry is wrong rather than the name.
@@ -688,6 +719,28 @@ those numbers don't have to be re-derived.
   `/home/jadoughty/projects/loop_sim_MINE/investigation/`.
 
 ## Work log (append-only)
+
+- **2026-08-11 (later still) — the mesh path learned to cull, and an 8-hour
+  build became 11 minutes.** One commit, `bef28eb`. Suite **219** (was 213).
+  `TSurfaceMesh` brute-forced every ray against every face while the numpy
+  `SurfaceMesh` it ports has always AABB-culled and `TTube` culls too -- the
+  torch mesh was the one class that diverged. The droplet's AABB covers
+  **0.284% of the render window**, so 99.7% of rays were being tested against
+  5472 triangles they could not hit. **`hampton_300um_realistic` 80.6 ->
+  1.86 s/frame (43x), 8.06 h -> 11.2 min; `mitegen_200um` 17.0 -> 3.00 s
+  (5.7x); `hampton_300um` unchanged, as intended.** The cull alone was 4.05x;
+  the rest came from letting `fit_tile_size` return a single full-frame tile
+  instead of 6800 rays and 133 passes. All three libraries were rebuilt and
+  diffed against the shipped frames: **1080/1080 byte-identical**, only the
+  manifests changed. DECISIONS §2026-08-11 (later still) has the reasoning;
+  **Already tried** gained df64 and rasterisation, both investigated and
+  rejected with measurements.
+  **A supersample-4 ceiling was found and is now the open fidelity question.**
+  The droplet scene ships at `--supersample 1`, so zoom is capped at 1x while
+  the optically correct value for its 7.4 um / NA 0.10 camera is 4. That is
+  now affordable, but only up to a point -- see Open questions for the
+  measured cost table and the 50,976-face build that spills.
+  **Next:** decide the supersample/mesh-density pair for the droplet scene.
 
 - **2026-08-11 (later) — the NA fork closed, and the doc set was re-measured
   rather than re-quoted.** No source changes; docs + `scratch/` only. Suite

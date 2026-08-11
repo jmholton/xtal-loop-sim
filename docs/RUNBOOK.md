@@ -105,17 +105,28 @@ Every lever, with defaults and what it costs, is tabulated under "Every lever" b
 > to **0,0 px registration, mean |diff| 0.00056, 99.1% of pixels identical**.
 > All three libraries read `current` (re-measured 2026-08-11).
 >
-> **Both flags in the command below are load-bearing on WSL2.** `--supersample 1`
+> **SUPERSEDED 2026-08-11 by the mesh AABB cull -- `--tile-size` is no longer
+> needed here.** The mesh path now culls and chunks its own survivors, so the
+> whole reason for hand-picking a tile is gone and the build is **11.2 minutes
+> at 1.86 s/frame** rather than 8.06 h. A plain
+>
+> ```bash
+> $PY -u -m loop_sim.library --scene scene_files/hampton_300um_realistic.yaml \
+>     --supersample 1
+> ```
+>
+> holds ~5.9 GB throughout. Passing the old `--tile-size 6800` still works but
+> now costs **10x** (19.90 s/frame): it forces 133 passes over a frame that fits
+> in one. The historical note follows, because the reasoning still applies to
+> any scene heavy enough to need a manual tile.
+>
+> *(historical)* **Both flags in the command below are load-bearing on WSL2.**
+> `--supersample 1`
 > is this scene's own optically-correct value; the default 4 on a mesh scene is
 > days, not hours. `--tile-size 6800` is ~6 GB by the measured 160 B/ray/face
 > law -- the `auto` ramp sizes near the VRAM ceiling and WSL2 silently spills to
 > host RAM, which took one overnight run to **~45 min/frame** instead of 80.
 > The 2026-08-11 run held 14.8 of 16.4 GB throughout, ~700 MB under that cliff.
->
-> ```bash
-> $PY -u -m loop_sim.library --scene scene_files/hampton_300um_realistic.yaml \
->     --supersample 1 --tile-size 6800
-> ```
 >
 > A rebuild DELETES the manifest first and overwrites frames in place, so a
 > server launched at that scene mid-rebuild will not find a library. All 361
@@ -201,7 +212,25 @@ Notes:
   template grows with the square. For a scene whose content is wider than its field
   (mitegen's is, 1.10 mm against 0.48 mm) the useful zoom direction is *out*, which the
   window already provides, not *in*.
-- **Cost** (RTX 4080 SUPER, n_cond 7): `hampton_300um` ~7.2 s/frame at `--supersample 4`
+- **Cost after the mesh cull (2026-08-11), measured on an RTX 4080 SUPER at
+  n_cond 7.** Mesh scenes dropped by roughly the fraction of the frame their
+  bounding box covers:
+
+  | scene | build raster | before | after | 360-frame build |
+  |---|---|---|---|---|
+  | `hampton_300um_realistic` | 1396x644 | 80.6 s | **1.86 s** | 8.06 h -> **11.2 min** |
+  | `mitegen_200um` | 1840x2296 | 17.0 s | **3.00 s** | 1.9 h -> **18 min** |
+  | `hampton_300um` (no mesh) | 5578x2570 | 7.93 s | 8.0 s | ~48 min, unchanged |
+
+  Peak VRAM during a droplet build is ~5.9 GB. **Watch `nvidia-smi`, not
+  torch's own counter** -- the caching allocator reserves and never returns, so
+  `max_memory_allocated()` under-reports what the card is actually holding, by
+  8 GB in one measured case.
+- **Raising `--supersample` on a mesh scene has a ceiling.** See
+  docs/HANDOFF.md "Open questions" for the measured table: supersample 4 on the
+  droplet scene costs 20-38 s/frame depending on droplet tessellation, and a
+  50,976-face droplet spills past 16 GB and does not complete a frame.
+- **Cost** *(historical, pre-cull)* (RTX 4080 SUPER, n_cond 7): `hampton_300um` ~7.2 s/frame at `--supersample 4`
   (5578×2570), a 360-frame sweep in ~45 min. `mitegen_200um` ~18 s/frame at
   `--supersample 1` (1840×2296) — **slower despite being 3.4× smaller**, because it is a
   mesh scene and `TSurfaceMesh` has no AABB cull, so its tile is memory-capped at ~262 k

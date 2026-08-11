@@ -46,6 +46,13 @@ external dependency is the runtime itself: a torch+CUDA interpreter, unpinned â€
   **Being tracked is also the recovery path:** an accidental rebuild is undone by
   `git checkout -- frame_library/<scene>/`, which is how the 2026-08-10 incident was
   recovered. See HANDOFF Hazards for the launch path that causes those accidents.
+  **Rebuild cost stopped being the constraint on 2026-08-11** (the mesh AABB
+  cull: the droplet library went 8.06 h -> 11.2 min), so library SIZE is now the
+  binding cost rather than build time. Raising `hampton_300um_realistic` to the
+  optically-correct `--supersample 4` would take it from 2.1 MB to roughly
+  25-30 MB, i.e. the tracked total from 46 MB to ~70 MB, and every rebuild
+  writes a fresh copy into git history. That trade -- 4x zoom against ~24 MB
+  per rebuild in history -- is the open decision; see HANDOFF "Open questions".
 - **Benchmark baselines don't travel.** `bench_results/` is gitignored, so the numbers a
   perf claim rests on exist only on the machine that produced them. Comparing this
   machine's results against the beamline's TITAN V (voltron) requires committing a
