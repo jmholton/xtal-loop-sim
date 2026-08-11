@@ -99,42 +99,28 @@ centred field of view, default 0.6), `--axis` (spindle motor, default `rotx`), `
 `--tile-size` (default `auto`), `--vram-fraction` (default 0.80), `--device`.
 Every lever, with defaults and what it costs, is tabulated under "Every lever" below.
 
-> **`hampton_300um_realistic` is OWED A REBUILD (since 2026-08-10), and until it happens
-> DO NOT POINT A TEMPLATE SERVER AT THAT SCENE.** Slice 3 changed the scene — neutral
-> crystal, flat pin tip, half-maximum drop — so its library reads `missing`, and
-> `CameraServer.__init__` calls `ensure_library` before binding the socket, which deletes
-> the manifest and overwrites frames **in place**.
+> **`hampton_300um_realistic` was rebuilt 2026-08-11** for slice 3 (neutral
+> crystal, flat pin tip, half-maximum drop): 360 frames, 1396x644, supersample 1,
+> **2.3 MB**, 8.06 h at 80.6 s/frame, verified against a live f64 render at phi=30
+> to **0,0 px registration, mean |diff| 0.00056, 99.1% of pixels identical**.
+> All three libraries now read `current`.
 >
-> **The old `--supersample 1` workaround no longer protects this scene.** It worked while
-> the library was merely *stale* (a supersample mismatch the flag could satisfy);
-> `missing` cannot be satisfied by any flag, because `ensure_library` rebuilds anything
-> that is not current. This fired for real on 2026-08-10 — a launch intended just to open
-> the viewer removed the manifest before being cancelled at the first frame.
->
-> What is safe meanwhile:
->
-> - `--templates off` — raytraces live and never calls `ensure_library` (it is gated on
->   `_want_templates`). Slow per frame, but it touches nothing on disk.
-> - Launch on another scene and reach this one from the **tab strip**. The runtime switch
->   path deliberately never calls `ensure_library`.
-> - **Safety net if it happens anyway:** all 361 files are tracked (2.9 MB), so
->   `git checkout -- frame_library/hampton_300um_realistic/` restores every frame and the
->   manifest. That is what recovered the 2026-08-10 incident.
->
-> The rebuild itself is deliberately held until the NA question is settled, because a
-> switch to NA 0.28 would invalidate anything built now (see HANDOFF "Open questions").
-> When you do want it, run this and wait ~9.5 h:
+> **Both flags in the command below are load-bearing on WSL2.** `--supersample 1`
+> is this scene's own optically-correct value; the default 4 on a mesh scene is
+> days, not hours. `--tile-size 6800` is ~6 GB by the measured 160 B/ray/face
+> law -- the `auto` ramp sizes near the VRAM ceiling and WSL2 silently spills to
+> host RAM, which took one overnight run to **~45 min/frame** instead of 80.
+> The 2026-08-11 run held 14.8 of 16.4 GB throughout, ~700 MB under that cliff.
 >
 > ```bash
 > $PY -u -m loop_sim.library --scene scene_files/hampton_300um_realistic.yaml \
 >     --supersample 1 --tile-size 6800
 > ```
 >
-> **Both of those flags are load-bearing on WSL2.** `--supersample 1` is this scene's own
-> optically-correct value (see the sampling rule below); the default 4 on a mesh scene is
-> days, not hours. `--tile-size 6800` is ≈6 GB by the measured 160 B/ray/face law — the
-> `auto` ramp sizes near the VRAM ceiling and WSL2 silently spills to host RAM, which took
-> one overnight run to **~45 min/frame** instead of 95.2 s.
+> A rebuild DELETES the manifest first and overwrites frames in place, so a
+> server launched at that scene mid-rebuild will not find a library. All 361
+> files are tracked (2.3 MB), so `git checkout -- frame_library/hampton_300um_realistic/`
+> recovers the previous one -- which is what recovered the 2026-08-10 incident.
 
 Re-running is a **no-op when the library is current** — the manifest stores a SHA-256 of
 the scene YAML, a SHA-256 of the **renderer source** (`render_sha`, added 2026-08-10),

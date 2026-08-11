@@ -1,7 +1,7 @@
 {
   "scene": "scene_files/hampton_300um_realistic.yaml",
-  "scene_sha256": "86dcbcdde40173d68646b2b3593326a4ba2ba966ac47913aa1ee2c8221c7caa1",
-  "built_utc": "2026-08-09T01:13:04Z",
+  "scene_sha256": "37fb2f8f5aa56fea096371b74c4edb313808a40c4603744d64588370d7cf030f",
+  "built_utc": "2026-08-11T13:45:08Z",
   "axis": "rotx",
   "step_deg": 1.0,
   "n_cond": 7,
