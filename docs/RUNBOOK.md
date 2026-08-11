@@ -99,8 +99,27 @@ centred field of view, default 0.6), `--axis` (spindle motor, default `rotx`), `
 `--tile-size` (default `auto`), `--vram-fraction` (default 0.80), `--device`.
 Every lever, with defaults and what it costs, is tabulated under "Every lever" below.
 
+> **`hampton_300um_realistic` is OWED A REBUILD (since 2026-08-10).** Slice 3 changed the
+> scene — neutral crystal, flat pin tip, half-maximum drop — so its library reads
+> `missing` and the launch path will try to rebuild it before binding the socket. The
+> rebuild is deliberately held until the NA question is settled, because a switch to
+> NA 0.28 would invalidate anything built now (see HANDOFF "Open questions"). Until then,
+> serve the other two scenes, or run this and wait ~9.5 h:
+>
+> ```bash
+> $PY -u -m loop_sim.library --scene scene_files/hampton_300um_realistic.yaml \
+>     --supersample 1 --tile-size 6800
+> ```
+>
+> **Both of those flags are load-bearing on WSL2.** `--supersample 1` is this scene's own
+> optically-correct value (see the sampling rule below); the default 4 on a mesh scene is
+> days, not hours. `--tile-size 6800` is ≈6 GB by the measured 160 B/ray/face law — the
+> `auto` ramp sizes near the VRAM ceiling and WSL2 silently spills to host RAM, which took
+> one overnight run to **~45 min/frame** instead of 95.2 s.
+
 Re-running is a **no-op when the library is current** — the manifest stores a SHA-256 of
-the scene YAML *and* the build parameters, so an edited scene or a different
+the scene YAML, a SHA-256 of the **renderer source** (`render_sha`, added 2026-08-10),
+*and* the build parameters, so an edited scene, an edited tracer or a different
 `--supersample` rebuilds automatically. From Python, `ensure_library(scene_path)` does the
 same and returns the manifest; `frame_for_angle(manifest, deg)` picks the frame and
 `pose_crop(manifest, tx, ty, tz, angle_deg, zoom)` gives the crop box, output size and
@@ -265,6 +284,10 @@ server, whose `/motor` endpoint takes all seven axes.
 | `--preview-mode` | `on` | approximate frames while moving, exact on settle |
 | `--compile-preview` | `on` | `torch.compile` the preview path (CUDA + preview only) |
 | `--settle-delay` | 0.5 s | quiet time after a `/motor` set before the exact frame renders |
+| `--camera-emulation` | `on` | map transmittance through the illumination field, black floor and tone response (`loop_sim/renderer/field.py`), so an empty field reads ~0.60 and an opaque body ~0.18 instead of the rails. **Serve-time only — costs no library rebuild** |
+| `--mono` | `on` | collapse to grey before the camera stage. Colour is an ABSORPTION spectrum here, so a scene declaring a crystal `[0.7,0.9,1.0]` renders it blue. `hampton_300um_realistic` no longer needs this (2026-08-10); the other scenes still do. Ignored when `--camera-emulation off` |
+| `--pin-streak` | `on` | draw the specular glint a real machined pin carries along its shank. Keyed off the transmittance image, ~3.4 ms/frame. Ignored when `--camera-emulation off` |
+| `--sensor-pitch` | `on` | deliver on the real camera's **704×480** raster. The BL831 pixels are 1.11 non-square and the tracer's are square, so a 640-wide render covers the same field (to under 1%) on a different grid — and a consumer applying dcss's µm-per-pixel constant to 640 columns reads 10% wide. `off` serves the render's own square pixels |
 | `--supersample` | builder default (4) | *rebuilds library* |
 | `--template-format` | builder default (`png`) | *rebuilds library* |
 | `--template-quality` | builder default (90) | JPEG quality of **stored** templates; ignored for png. *rebuilds library* |

@@ -1,8 +1,8 @@
 ---
 project: loop-sim (xtal-loop-sim) — bright-field microscope + X-ray simulator for protein crystals in cryo-loops
-status: active — camera served from pre-computed templates (no GPU at runtime) and usable interactively; generated scenes now carry a real, validated droplet; the camera-calibration fork is the open front
-last_verified: 2026-08-07        # `pytest tests/` = 167 passed in 143 s on this tree (branch performance-correctness-optimizations, RTX 4080 SUPER)
-verify: python -m pytest tests/ -q        # 167 tests; "python" = the torch-enabled project interpreter (see docs/RUNBOOK.md "Environment")
+status: active — camera served from pre-computed templates (no GPU at runtime) and usable interactively; renders now go out through a measured camera model on the real 704x480 raster; the NA half of the camera-calibration fork is the open front, and hampton_300um_realistic is owed a library rebuild
+last_verified: 2026-08-10        # `pytest tests/` = 206 passed in 123 s on this tree (branch performance-correctness-optimizations, RTX 4080 SUPER)
+verify: python -m pytest tests/ -q        # 206 tests; "python" = the torch-enabled project interpreter (see docs/RUNBOOK.md "Environment")
 ---
 
 # HANDOFF — loop-sim (xtal-loop-sim)
@@ -23,7 +23,45 @@ generation, and dose estimation. James Holton wrote it; Jacob's contribution was
 the GPU path **correct** (it was producing a "hairy" artifact on the loop fiber) and
 **fast enough to drive as a live camera** (10 image files/s).
 
-## Current state (2026-08-07)
+## Current state (2026-08-10)
+
+- **The output is now judged against PHOTOGRAPHS, and that changed what the top
+  problem was.** `real_images/` (44 tracked frames, `MANIFEST.tsv`) is the first
+  reference set this project has had. The gap nobody had named turned out to dominate:
+  the render was **84.6% pure white / 14.4% pure black / 1.1% anything else**, where real
+  frames carry **19–27% intermediate tone**. A binary silhouette against a continuous-tone
+  photograph. `loop_sim/renderer/field.py` now maps transmittance through a measured
+  camera model — illumination field, black floor, tone response — and the served frame
+  went to **100% intermediate tone, range 32–181, mean 144.5** against C07's ~150. It
+  runs at **serve time only**, so no template and no library changed. See DECISIONS.md
+  §2026-08-10.
+- **Frames go out on the real camera's 704×480 raster, and 640 was never wrong.** The
+  worry was a silent 10% horizontal scale error. The BL831 pixels are **1.110
+  non-square** and 704/640 = 1.100 cancels it: 640 × 7.4 µm and the real 704 × 6.7324 µm
+  cover the same field to **0.08% / 0.98%**. Rendering 704 wide at 7.4 µm would
+  over-cover by +9.9%. The scene stays square-pixel; `field.to_sensor` resamples at
+  delivery, because dcss stores a µm-per-pixel constant and a stand-in emitting 640
+  columns reads 10% wide. `--sensor-pitch off` restores square pixels.
+- **The pin carries its specular glint.** The tracer models the pin as purely opaque, so
+  it rendered as a flat silhouette; real ones show a bright broken streak along the
+  shank, and it was the largest remaining structural difference. Measured on A01 and E02
+  first — which corrected the plan's spec twice (its "1.25× background peak" was a
+  three-pixel frame maximum, and its grain figure was the pin body, not the ridge, which
+  is ~10× grainier). 3.4 ms/frame, camera space, no rebuild. `--pin-streak off`.
+- **`render_sha` closes the last silent-staleness hole.** A renderer edit used to leave
+  every manifest reading `current` while the frames on disk had been traced by code that
+  no longer existed. Now hashed into the manifest and `_BUILD_KEYS`. `field.py` is
+  deliberately excluded — it is serve-time and never enters a template.
+- **⚠ `hampton_300um_realistic` IS OWED A LIBRARY REBUILD.** Slice 3 changed the scene
+  (neutral crystal, flat pin tip, half-maximum drop), so its library reads `missing` and
+  the launch path will try to rebuild before binding the socket. **Held deliberately** —
+  9.5 h that a switch to NA 0.28 would immediately invalidate. Command and the two
+  load-bearing flags: RUNBOOK "Frame libraries".
+- **The NA fork now has its strongest evidence, and it came from fixing the drop.** See
+  "Open questions" below — the drop is fine at every NA; it is the immersed *crystal*
+  that goes 3× too dark at NA 0.10 and recovers halfway at 0.28.
+
+## Earlier state (2026-08-07)
 
 - **The interactive path now works, and it had never been driven by a person before.**
   Templates made frames cheap in 2026-07-31, but the control page was still unusable: the
@@ -99,7 +137,7 @@ the GPU path **correct** (it was producing a "hairy" artifact on the loop fiber)
   would have cost ~1.9 h on the first tab click. Both shipped libraries now read
   `current`. See DECISIONS.md §2026-08-06 for the lock order and the deadlock
   this work uncovered in the existing `_servable` path.
-- **Verify: `pytest tests/` = 149 tests, green** on the local torch env (needs a
+- **Verify: `pytest tests/` = 206 tests, green** on the local torch env (needs a
   torch+CUDA interpreter; GPU-gated parity tests skip on a CPU-only box).
 - **Paused with clear open items** (see below) — nothing half-broken; the engine works.
 
@@ -108,7 +146,7 @@ the GPU path **correct** (it was producing a "hairy" artifact on the loop fiber)
 For a stranger picking this up cold:
 
 1. Build the environment and confirm health: follow **`RUNBOOK.md`** → run `python -m pytest
-   tests/ -q` (should be 149 green). "python" is the torch-enabled interpreter — beamline:
+   tests/ -q` (should be 206 green). "python" is the torch-enabled interpreter — beamline:
    `/programs/pytorch/envs/pt/bin/python`; local dev: a conda env with `torch==2.6.0+cu124`.
    On a CPU-only box the GPU parity tests skip, so green there proves less.
 2. Understand the design before editing: **`../CLAUDE.md`** is the deep engineering doc
@@ -132,13 +170,21 @@ For a stranger picking this up cold:
    sidesteps the frame-rate problem rather than fighting it (RUNBOOK "Frame libraries").
 
 The highest-value open engineering items, in rough priority:
-- **Settle the camera calibration** — the one question still gating fidelity. NA sets how
-  bright a correct drop renders (a 2 nL drop passes ~17% of its area at NA 0.10, ~100%
-  at NA 0.28), and three calibrations still circulate. Two leads (DECISIONS §2026-08-07
-  later): they may be **two zoom settings of one objective** (they are Abbe-consistent;
-  note `eff_px` scales with zoom but NA does not), and one **photograph of a real 300 µm
-  loop carrying a drop** on the beamline camera (up during the shutdown; Jacob captures)
-  would ground both the NA and the volume default.
+- **Settle the objective NA** — the last question gating fidelity, and the thing the
+  held rebuild is waiting on. The pixel half of the old "three cameras" puzzle is
+  settled (2026-08-10): there is one camera with 1.110 non-square pixels at two zoom
+  stops, and the Hampton scenes already render its mid stop correctly on square pixels.
+  NA is what remains, and it now has a measurement rather than an argument: at NA 0.10 a
+  correct half-maximum drop leaves the immersed crystal at **0.218 × background against
+  0.696 in the reference photograph**, recovering to 0.455 at NA 0.28. Two independent
+  hints point at 0.28 — the reference frame is hi mag, whose own calibration is 0.28,
+  and the drop's rim deflection lands at sin 0.273. The cheapest decider is still **one
+  photograph of a real 300 µm loop carrying a drop at a known zoom stop** (Jacob
+  captures). Cost a switch first: the supersample ceiling moves and every library
+  rebuilds.
+- **Rebuild `hampton_300um_realistic`'s frame library** — 9.5 h, held until NA is
+  decided so it is not spent twice. Command and its two load-bearing flags: RUNBOOK
+  "Frame libraries".
 - **Give `TSurfaceMesh` the AABB cull that `TTube` has** — a speed optimisation for mesh
   scenes (they render, but slowly; the fidelity scene is ~5.5k faces now).
 - **Package the TITAN V deployment** (the recipe is measured; see RUNBOOK "Deploy on the
@@ -194,11 +240,22 @@ What is measured:
   its partial product and skips the NA test entirely, so it errs *bright* and cannot
   blacken anything. TIR-as-absorption is what draws the dark rim and is correct. See
   DECISIONS.md §2026-08-07 (later) for all measurements.
-- **Three different cameras are in circulation.** `template.yaml` — which DATA.md calls the
-  authoritative calibration — specifies 0.82 µm pixels and NA 0.28/0.17, but **no shipped
-  scene uses it**: the Hampton scenes use 7.4 µm and NA 0.10/0.07, `mitegen_200um` uses
-  1.0 µm. Since NA is the knob driving the opaque-droplet result, settling which of these
-  matches the real beamline camera is a prerequisite for judging fidelity.
+- **CORRECTED 2026-08-10 — there are not three cameras, and the PIXEL half is settled.**
+  `template.yaml` (0.82 µm, NA 0.28/0.17), the Hampton scenes (7.4 µm, NA 0.10/0.07) and
+  `mitegen_200um` (1.0 µm) look like three calibrations, but the BL831 sample camera has
+  **1.110 non-square pixels** at both usable zoom stops. The Hampton scenes' square
+  640 × 7.4 µm IS that camera's mid stop on square pixels — same field of view to 0.08%
+  horizontally and 0.98% vertically. `template.yaml` is the hi stop's HORIZONTAL pitch
+  used as a square pixel, hence 9.91% short vertically; nothing uses the file. What
+  remains open is **NA alone**, and it now has measured evidence (see Open questions).
+  The original entry follows.
+
+  *(superseded)* Three different cameras are in circulation. `template.yaml` — which
+  DATA.md calls the authoritative calibration — specifies 0.82 µm pixels and NA
+  0.28/0.17, but **no shipped scene uses it**: the Hampton scenes use 7.4 µm and NA
+  0.10/0.07, `mitegen_200um` uses 1.0 µm. Since NA is the knob driving the
+  opaque-droplet result, settling which of these matches the real beamline camera is a
+  prerequisite for judging fidelity.
 - **The fiber is beaded at the default sampling.** Tubes become `n_samples - 1` capsules;
   at the default `n_samples=50` a 300 µm loop yields 19.3 µm segments against a 20.0 µm
   fiber — capsules as long as they are wide. Raise `n_samples` for fidelity renders.
@@ -315,6 +372,9 @@ fallback **6.3 fps**. The three things that decide whether you get 11.9 or 6.3:
   optically-correct value, see the sampling table below): 360 frames, 1840×2296,
   **16 MB**, 102 min at 17.0 s/frame. Like the hampton rebuild, PNG came out *smaller*
   than the JPEG it replaced (16 vs 28 MB). Nothing ships stale any more.
+  **Superseded 2026-08-10:** three libraries ship now, and
+  `hampton_300um_realistic` is `missing` rather than stale — slice 3 changed its
+  scene and its rebuild is deliberately held (see Current state).
 
   **The asymmetry it used to illustrate is still there — and as of 2026-08-08 it is
   LIVE, not latent.** Switching to a stale-but-complete library at runtime serves it
@@ -400,18 +460,34 @@ fallback **6.3 fps**. The three things that decide whether you get 11.9 or 6.3:
 
 ## Open questions
 
-- **Which camera calibration is real?** `template.yaml` (0.82 µm px, NA 0.28/0.17), the
-  Hampton scenes (7.4 µm, NA 0.10/0.07), and `mitegen_200um` (1.0 µm) disagree, and DATA.md
-  names `template.yaml` authoritative although nothing uses it. NA sets how bright a
-  correct drop renders (~17% of a 2 nL drop's area passes at NA 0.10, ~100% at 0.28), so
-  this is now the question gating fidelity. Two leads (DECISIONS §2026-08-07 later): the
-  calibrations are Abbe-consistent as **two zoom settings of one objective** rather than
-  three cameras — and note `eff_px` divides by `zoom` while `na_objective` does not, which
-  cannot be right for a zoom microscope; and the cheapest ground truth is **one photograph
-  of a real 300 µm loop carrying a drop** on the beamline camera (up during the shutdown;
-  Jacob captures — it also calibrates the drop-volume default, since near-background
-  brightness at NA 0.10 needs h ≲ 11 µm). Cost any switch to NA 0.28 first: the
-  supersample ceiling moves and both frame libraries rebuild.
+- **Which camera calibration is real? — the PIXEL half is settled, the NA half is now
+  the single open front, and it has hard evidence.**
+
+  *Settled 2026-08-10 (pixel scale).* The three "cameras" are not three cameras. The
+  BL831 sample camera has **1.110 non-square pixels** at both usable zoom stops
+  (6.7324 × 7.4729 µm mid, 0.8233 × 0.9139 hi — `sample_camera_constant` in
+  `wash_pin/claude/BL-831.dat`, halved for 704×480). The Hampton scenes' square
+  640 × 7.4 µm is that camera's **mid stop rendered on square pixels**, matching its
+  field of view to 0.08% horizontally and 0.98% vertically. `template.yaml` is the **hi
+  stop's horizontal pitch used as a square pixel**, which makes it 9.91% short
+  vertically — the one real 10% error in the set, in a file nothing uses. Nothing here
+  needs changing; see DECISIONS §2026-08-10.
+
+  *Open (NA).* NA sets how much of a refracting body's light clears the objective, and
+  the drop-volume fix made this measurable for the first time. **The drop is not the
+  problem at any NA** (0.955–0.989 × background throughout). The **crystal** is: once a
+  correct half-maximum drop immerses it, it reads 0.218 × background at NA 0.10 against
+  **0.696 in the reference photograph**, recovering only to 0.455 at NA 0.28. Two things
+  point the same way — the reference frame `D01` is **hi mag**, whose own calibration is
+  NA 0.28; and the drop's rim-ray deflection lands at **sin 0.273**, which is NA 0.28
+  almost exactly. Neither number is proof, and the crystal's absorption was deliberately
+  **not** tuned to hide the gap.
+
+  The cheapest remaining ground truth is unchanged: **one photograph of a real 300 µm
+  loop carrying a drop, at a known zoom stop**, on the beamline camera (Jacob captures).
+  Cost any switch to NA 0.28 first — the supersample ceiling moves and every frame
+  library rebuilds. **This is why `hampton_300um_realistic`'s rebuild is being held**:
+  9.5 h that the switch would invalidate.
 - **Is the bundled `hampton_300um` loop mislabelled, or digitized at another size?** Its
   waypoints span 69 × 200 µm, not ~300 µm. Worth comparing against the physical part before
   assuming the geometry is wrong rather than the name.
@@ -467,8 +543,12 @@ those numbers don't have to be re-derived.
 - `loop_sim/` — the package: `scene/` (YAML loader, `next_interface`, primitives, `tube.py`,
   `surface_mesh.py`, `thin_shell.py`, CSG), `motors/goniometer.py`, `renderer/`
   (`microscope.py` numpy reference tracer, `beam.py` X-ray, **`engine_torch.py`**
-  GPU-resident engine), `server/camera_server.py` (AXIS HTTP server + control page +
-  runtime scene switching),
+  GPU-resident engine, `optics.py` objective PSF, **`field.py`** the camera model —
+  sensor raster, illumination field, black floor, tone, the pin's specular streak;
+  numpy-only, applied at SERVE time and inside neither tracer, which is what keeps it
+  off the templates), `server/camera_server.py` (AXIS HTTP server + control page +
+  runtime scene switching; `encode_frame` is the one place a served frame becomes
+  bytes),
   **`library/`** (pre-computed rotation sweeps — `build_library` / `ensure_library`,
   `library_status` / `library_diff` (current/stale/missing, and what differs),
   `frame_for_angle`, `pose_crop`, `zoom_limits`; CLI `python -m loop_sim.library`).
@@ -477,7 +557,11 @@ those numbers don't have to be re-derived.
   `.gitignore` carries explicit re-includes for both under this tree. **Currently shipped:
   `hampton_300um`** (360 frames, 1° steps, `--supersample 4`, 5578×2570 each, 28.7 MB PNG) and
   **`mitegen_200um`** (360 frames, `--supersample 1`, 1840×2296, 16 MB PNG, rebuilt
-  2026-08-07) — both verified against live renders at 0.00 px, and both now current. The supersample differs because the two cameras sample
+  2026-08-07) and **`hampton_300um_realistic`** (360 frames, `--supersample 1`,
+  1396×644, 2.9 MB PNG) — all verified against live renders at 0.00 px. The first two
+  are current; **the third is `missing` since 2026-08-10 and awaits a rebuild** (see
+  Current state, and RUNBOOK "Frame libraries" for the command and its two load-bearing
+  flags). The supersample differs because the two cameras sample
   the same NA 0.10 optics very differently; RUNBOOK "Frame libraries" has the rule. Note
   library size in git (see DATA.md "Known gaps") — `--supersample 2` is 4× cheaper than 4
   if that matters for a future scene.
@@ -490,12 +574,21 @@ those numbers don't have to be re-derived.
   correct for the mount *and* the solvent since 2026-08-07 (later).
 - `digitize_fiber.py → add_stem.py → add_droplet.py → add_crystal.py → generate_scene.py`
   — the pipeline that builds a scene from a real loop image (README).
-- `scene_files/` — complete example scenes (`hampton_300um.yaml` tube-based;
-  `mitegen_200um.yaml` mesh-based). `template.yaml` — camera/material properties.
+- `scene_files/` — complete example scenes (`hampton_300um.yaml` tube-based and the
+  frozen performance baseline — never edit it; `hampton_300um_realistic.yaml` the
+  fidelity scene, generated; `mitegen_200um.yaml` mesh-based). `template.yaml` — camera
+  and material properties, and the hi zoom stop's horizontal pitch used as a square
+  pixel, so 9.91% short vertically; nothing reads it.
+- `real_images/` — **44 tracked BL831 sample-camera frames, the realism reference.** Not
+  inputs: this is the ground truth the output is judged against. `MANIFEST.tsv` gives
+  magnification, subject, why each was kept and its source path; `README.md` carries the
+  three limits that make it a FALSIFICATION set rather than a fitting set (no single
+  real background, two mutually exclusive calibrations inside the directory, and the
+  A/C sets' scale is inferred and not self-consistent).
 - `bench_frame.py` — warm-frame benchmark (`--compiled`, `--fp32`). `acceptance_voltron.py`
   — self-contained TITAN V acceptance test (fps + VRAM + compile check → GO/NO-GO +
   `acceptance_report.json`; auto-picks a free GPU). `run_gpu.slurm` — voltron GPU job (no
-  `--time`!). `tests/` — 149 tests (the verify command).
+  `--time`!). `tests/` — 206 tests (the verify command).
 - `README.md` — user guide (repo root). `CLAUDE.md` — deep engineering notes (repo root:
   architecture, precision, concurrency, the recentre bug). `docs/` — the handoff docs
   (this file + `RUNBOOK.md`, `DECISIONS.md`, `DATA.md`). `scratch/` — git-ignored,
@@ -504,6 +597,28 @@ those numbers don't have to be re-derived.
   `/home/jadoughty/projects/loop_sim_MINE/investigation/`.
 
 ## Work log (append-only)
+
+- **2026-08-10 — the renders were compared against photographs for the first time,
+  and four of the six named gaps closed.** Suite **206** (was 167). Seven commits;
+  full reasoning and every measurement in DECISIONS.md §2026-08-10.
+  `4b2a2a4` camera emulation (tone: 1.5% → 100% intermediate, range 0–255 → 32–181,
+  mean 239.6 → 144.5 against C07's ~150), `8c29003` generator hygiene (six falsy-zero
+  `or` bugs; `--pin-bevel 0` was a documented lie), `a7053a1` `real_images/` tracked,
+  `ab0c90c` the 704×480 sensor raster, `468665c` the pin's specular streak,
+  `557c418` `render_sha`, `f19fcbf` slice 3.
+  **Three things the plan got wrong, all caught by measuring before building.**
+  (1) 640 vs 704 was not a 10% error — the pixel aspect cancels it exactly, and the
+  error would have been introduced by "fixing" it. (2) The streak spec's "peak 1.25×
+  background" was a **three-pixel** frame maximum, and its grain figure was the pin
+  body, not the ridge. (3) The drop-volume dissent was void on both sides: the "core
+  0.72×" it turned on came from sampling about the origin, and the drop has not been
+  at the origin since 2026-08-07.
+  **Three defects found by DRIVING the streak, not writing it** — a glint that blinked
+  six times a revolution on `mitegen_200um`, a fake taper on the last 8 px of every
+  hampton frame, and an arbitrary ridge angle on compact bodies. Each became a rule
+  (a side the frame cuts / an end the frame cuts / `min_aspect`), not a patch.
+  **Next:** the NA fork (Open questions), then the held rebuild. Nothing is
+  half-finished; the only outstanding artifact is `hampton_300um_realistic`'s library.
 
 - **2026-08-08 — the droplet scene's frame library shipped, after two traps fired.**
   `frame_library/hampton_300um_realistic/`: 360 frames, 1396×644 (supersample 1,

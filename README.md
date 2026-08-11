@@ -349,6 +349,13 @@ illustrative, not absolute dosimetry.
 `template.yaml` controls camera geometry, NA, pixel size, beam profile, and
 material optical/X-ray properties.  Key fields:
 
+> **`template.yaml` is a reference file, not the calibration, and no shipped scene
+> reads it.** It uses the camera's *hi* zoom stop and takes that stop's HORIZONTAL
+> pitch (0.8233 µm) as a square pixel — but the BL831 sample camera's pixels are
+> 1.110 non-square, so its vertical field of view comes out 9.91% short. The scenes
+> that ship use 640 × 7.4 µm square, which is the *mid* stop rendered correctly on
+> square pixels (same field of view to under 1%). See `real_images/README.md`.
+
 ```yaml
 camera:
   width:        704

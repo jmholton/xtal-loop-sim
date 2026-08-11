@@ -8,6 +8,190 @@
 
 ## Decisions
 
+### 2026-08-10 — the renders became photographs: camera emulation, the sensor
+### raster, the pin's glint, and the scene fixes that needed a rebuild
+
+The renderer had never been compared against a **photograph**, because no
+reference set existed. One now does (`real_images/`, 44 frames). Side by side
+the renders did not look like the camera, and the gap was not what anyone
+named first.
+
+**The dominant gap was TONE, not the background.** Measured on the delivered
+hampton frame: **84.6% of pixels exactly 255, 14.4% exactly 0, 1.1% anything
+else.** Real frames carry **19–27% genuinely intermediate tone** (C07 27.4%,
+D03 19.0%), an empty field at ~0.65 of full scale and an opaque pin at ~0.18 —
+neither rail ever reached. The render was a binary silhouette and the
+photograph is continuous-tone; compositing a mottled background under a binary
+cut-out reads *more* uncanny, not less. So tone landed first, as
+
+```
+observed = (E(x,y) − B) · T(x,y) + B
+```
+
+a lerp between the only two anchors actually measured. Both rails become
+unreachable **by construction** — "40–226, nothing clipped" for free, with no
+clamp and no tone curve. `E` is an analytic vignette (6 quadratic
+coefficients, 83.5% of the field's variance), **not** a captured image.
+
+**Why not a captured field: the between-session control falsified it.** Within
+one session the background correlates at r = 0.93–1.00 across four spindle
+angles and a sample translation, which is what suggested capturing it. Against
+other epochs it correlates 0.11 / −0.31 / −0.18 / +0.35 (2005 / 2021 / 2025 /
+2026), and the 2020 amplitude (sd/median 0.090) is **5–7× larger** than every
+other epoch measured. There is no permanent pattern to capture. A plane
+explains under 1% of the field (the linear terms cancel by symmetry, which is
+why an earlier gradient fit looked like it failed); a 6-coefficient quadratic
+explains 74.6%. Six floats replace a stored image, a schema key and a rebuild.
+
+**Placement is the decision that made everything else cheap.** The whole camera
+stage lives in `loop_sim/renderer/field.py` and runs at **serve time**, called
+only from `encode_frame` — downstream of `pose_crop`, inside neither tracer.
+That single choice is why `content_window`, `test_torch_render_parity`, the
+crop-match tests and "must not pan with the sample" all never fire, and why
+**no library rebuilt**. Templates keep storing raw transmittance. It is also
+why `field.py` is deliberately excluded from `render_sha` below.
+
+**640 vs 704 was settled, and 640 was right.** The open worry was that the
+shipped 640-wide render was a silent 10% horizontal scale error against
+704-wide photographs. It is not: the BL831 pixels are **1.110 non-square**, so
+640 × 7.4 µm covers 4736.0 µm where the real 704 × 6.7324 covers 4739.6, and
+480 × 7.4 covers 3552.0 against 3587.0 — **0.08% and 0.98%**. 704/640 = 1.100
+cancels the pixel aspect. The feared error is real but points the other way:
+rendering 704 wide at 7.4 µm would over-cover by **+9.92%**. `template.yaml`
+(hi stop, 704 at the horizontal pitch) is 9.91% short vertically and is the one
+place a genuine 10% error lives; nothing uses the file.
+
+What 640 does not reproduce is the frame SHAPE, and dcss stores a µm-per-pixel
+constant for this camera — so a stand-in emitting 640 columns reads 10% wide.
+`field.to_sensor` resamples to 704×480 in the same camera-space stage, **after**
+the defocus blur (the optical PSF is isotropic; it is the SENSOR that samples
+at two pitches, so blurring in square-pixel space and resampling after
+reproduces that for free) and **before** the field (so illumination is evaluated
+on the delivered grid, and pixel-scale terms land in true camera pixels).
+Measured on a served frame: pin still 95 px tall (703.0 µm, the documented
+dimensional check, unmoved because the resample is horizontal), implied
+horizontal pitch 6.7273 µm/px against the real 6.7324.
+
+**The pin's specular streak was measured before it was written, and the plan's
+spec for it was wrong twice.** The plan carried "specular peak 219 = 1.25×
+local bg" from C07 — that is the frame MAXIMUM, and it is **three pixels**
+(0.001% of the frame), not a streak. Painting the pin at 1.25× background
+would have been badly wrong. And its "grain sd 0.6–2.5 levels" is the pin
+BODY (measured 0.50 and 1.30); the ridge is ~10× grainier, because surface
+slope modulates what is *reflected*, not what is absorbed. What the two frames
+that clearly show a pin actually say:
+
+| | A01 | E02 | shipped default |
+|---|---|---|---|
+| ridge centre, half-widths off axis | +0.48 | −0.42 | −0.45 |
+| ridge FWHM, fraction of pin width | 0.150 | 0.112 | 0.13 |
+| peak above the floor, × background | 0.82 | 0.15 | 0.35 × the field |
+| grain sd on the ridge | 6.6 lv | 10.0 lv | 5.5 lv |
+| grain correlation length | 2 px | 2 px | 2 px |
+
+Served hampton frame: peak at f = 0.274, 2.40× the pin floor and 0.89×
+background — between the two references on every axis. The sign of the offset
+is an illumination property, not a pin property, hence signed and defaulting to
+E02. Geometry comes from the IMAGE (second moments of the eroded opaque mask),
+never the scene, so the glint tracks the pin through any pose without this
+stage seeing the goniometer. Grain is value noise hashed on the **pin's own
+frame** — roughness belongs to the pin, so it rides with it rather than
+crawling across the shank as the stage pans, which would also be a
+localisation shortcut for anything trained on these frames.
+
+**Three defects in it were found by driving it, not by writing it**, and each
+is a rule rather than a patch: `mitegen_200um` blinked the glint on and off six
+times a revolution (1 µm pixels put a 0.7 mm pin wider than the frame, so its
+moment aspect wanders 1.1–2.2 and any bare threshold cuts through it) → a body
+whose **side** the frame cuts has no measurable width, and half_w sets both the
+ridge's position and its FWHM, so it draws nothing; the end taper faded the
+streak over the last 8 px of every hampton frame → an end the **frame** cut is
+not an end; and a compact blob has no long axis worth finding → `min_aspect`
+1.8, chosen because a pin only ever enters from one side (2.87 on hampton, 2.0
+on E02, against 4.1 on A01).
+
+Cost 3.4 ms/frame after two optimisations worth recording: the box erosion is a
+**doubling shift-and** (0.15 ms against 1.6 ms for an integral image and ~8 ms
+for a minimum filter, byte-identical to both), and the ridge is evaluated only
+inside its own 3.5σ band and scattered into the pin's ~6% of the frame rather
+than added frame-wide. `acceptance_voltron.py` times `render_torch` and never
+reaches this stage, so the 11.9 fps TITAN V figure is untouched.
+
+**`render_sha` closes the last staleness hole.** `scene_sha256` catches a
+changed scene and `_BUILD_KEYS` catches changed settings, but a RENDERER edit
+left every manifest reading `current` while the frames had been traced by code
+that no longer existed. Hashed: `renderer/microscope.py`,
+`renderer/engine_torch.py`, `renderer/optics.py`, `scene/*.py`,
+`motors/goniometer.py`. **Deliberately not hashed:** `renderer/field.py`
+(serve-time, never enters a template — being able to change it without a
+rebuild is the entire reason it was placed there), `renderer/beam.py` (X-ray),
+and `library/` and `server/` (delivery — `pose_crop` lives in `library/`, so
+hashing it would invalidate every library for a change to how frames are
+*cropped*). Getting the set wrong is silent both ways, so
+`render_source_paths` is public and a test asserts both halves of it. The three
+shipped manifests were stamped, which is honest: `git log` shows no change to
+any hashed file since the oldest of the three builds. Without the stamp all
+three would grade stale and the LAUNCH path rebuilds a stale library before it
+binds the socket — 47 min / 102 min / 9.5 h. That launch-path rebuild is now
+reachable by editing the renderer, where before only `mitegen_200um`'s
+supersample got there; it is the already-open "should launching on a stale
+library behave like switching to one?" question, unchanged but much easier to
+hit.
+
+### The scene changes, and the NA evidence they produced
+
+Three changes to `hampton_300um_realistic.yaml` only —`hampton_300um.yaml` is
+untouched, because every fps number and the 11.9 fps acceptance figure are
+measured on it.
+
+**Crystal `[0.7,0.9,1.0]`/0.02 → `[1,1,1]`/4.09.** Colour is an absorption
+spectrum, so the old value was (9.02, 3.02, 0.02)/mm and rendered the crystal
+strongly blue against neutral reference frames. Deriving the replacement needs
+one non-obvious step: the crystal refracts (n 1.52) and light bent past the NA
+gate darkens it whether or not anything absorbs. The BLUE channel measures that
+floor directly — its mu is 0.02/mm, essentially nothing — at T = 0.8686. Divide
+it out and red and green finally agree on the path length (0.0809 / 0.0832 mm,
+2.8% apart) where inverting them raw does not. Control render (old drop,
+neutral crystal): luma 0.6170 against the 0.6207 it replaced. **Skipping the
+floor gives 3.56 and a crystal three times too dark** — that was the first
+value tried, and the control is what caught it.
+
+**Pin bevel 45° → 0.** The reference photos settle it: the pins in A01 and E02
+end square, not chiselled. `pin_geometry.py` still models a scored-and-snapped
+tube, so `--pin-bevel 45` restores the old tip.
+
+**Drop 0.002 → 0.00893 mm³**, half-thickness 20.7 → 85.6 µm. Clears all three
+validator warnings: aspect 8.23:1 → 1.99:1, rim deflection sin 0.081 → 0.273
+against NA 0.10 (so the drop draws a real rim instead of collecting whole), and
+the crystal no longer pokes out of the solvent. Edge-on the drop goes 111 →
+170 µm, which is the gap the change exists to close.
+
+**The dissent this plan recorded is VOID — both sides had the wrong premise.**
+It turned on the drop core being 0.72× background. Measured with the drop
+located from its own mesh it is **0.94–0.99×**: the 0.72× came from sampling a
+0.15 mm disc **about the origin**, and the drop has sat at x = −0.262 mm since
+the 2026-08-07 placement fix. The drop was already at or above the 0.93×
+target, so thickening it moves toward that target, not away.
+
+**And the volume change produced the NA evidence the plan asked for.** The drop
+stays near-background bright at every NA. What goes dark is the CRYSTAL, once
+an 85.6 µm drop immerses a body that used to poke out of a 20.7 µm one:
+
+| | drop/bg | crystal/bg | crystal/solvent |
+|---|---|---|---|
+| real `D01` (hi mag) | 0.871 | **0.696** | 0.799 |
+| new drop, NA 0.10 | 0.989 | **0.218** | 0.220 |
+| new drop, NA 0.17 | 0.955 | 0.317 | 0.332 |
+| new drop, NA 0.28 | 0.957 | **0.455** | 0.476 |
+
+Per the plan that is **evidence for the NA fork and not a reason to revert the
+volume**, and the crystal's mu is deliberately NOT tuned to compensate — doing
+so would bury the signal in an absorption coefficient. Two things sharpen it:
+the reference frame is **hi mag**, whose own calibration (`template.yaml`) is
+NA 0.28; and the drop's own rim deflection lands at **0.273**, which is NA 0.28
+almost exactly. **The library rebuild is held** for this reason: 9.5 h that a
+switch to NA 0.28 would immediately invalidate.
+
 ### 2026-08-07 (later) — the black droplet was two scene-side mechanisms; the
 ### solver is replaced by the closed form and scenes are validated mesh-back
 
