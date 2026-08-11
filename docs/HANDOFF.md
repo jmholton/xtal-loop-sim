@@ -1,8 +1,8 @@
 ---
 project: loop-sim (xtal-loop-sim) — bright-field microscope + X-ray simulator for protein crystals in cryo-loops
-status: active — camera served from pre-computed templates (no GPU at runtime) and usable interactively; renders now go out through a measured camera model on the real 704x480 raster; the NA half of the camera-calibration fork is the open front, and hampton_300um_realistic is owed a library rebuild
-last_verified: 2026-08-10        # `pytest tests/` = 206 passed in 123 s on this tree (branch performance-correctness-optimizations, RTX 4080 SUPER)
-verify: python -m pytest tests/ -q        # 206 tests; "python" = the torch-enabled project interpreter (see docs/RUNBOOK.md "Environment")
+status: active — camera served from pre-computed templates (no GPU at runtime) and usable interactively; renders go out through a measured camera model on the real 704x480 raster; all three frame libraries current; the NA half of the camera-calibration fork is the one open front
+last_verified: 2026-08-11        # `pytest tests/` = 213 passed in 119 s on this tree (branch performance-correctness-optimizations, RTX 4080 SUPER)
+verify: python -m pytest tests/ -q        # 213 tests; "python" = the torch-enabled project interpreter (see docs/RUNBOOK.md "Environment")
 ---
 
 # HANDOFF — loop-sim (xtal-loop-sim)
@@ -23,7 +23,7 @@ generation, and dose estimation. James Holton wrote it; Jacob's contribution was
 the GPU path **correct** (it was producing a "hairy" artifact on the loop fiber) and
 **fast enough to drive as a live camera** (10 image files/s).
 
-## Current state (2026-08-10)
+## Current state (2026-08-11)
 
 - **The output is now judged against PHOTOGRAPHS, and that changed what the top
   problem was.** `real_images/` (44 tracked frames, `MANIFEST.tsv`) is the first
@@ -48,6 +48,22 @@ the GPU path **correct** (it was producing a "hairy" artifact on the loop fiber)
   first — which corrected the plan's spec twice (its "1.25× background peak" was a
   three-pixel frame maximum, and its grain figure was the pin body, not the ridge, which
   is ~10× grainier). 3.4 ms/frame, camera space, no rebuild. `--pin-streak off`.
+- **The glint survives being DRIVEN, which is how its remaining defects were
+  found.** Four came out of an operator turning the spindle and the zoom rather
+  than out of any test or still frame: it sloped +/-6.4 degrees with phi (the
+  chisel tip dragging the fitted axis), its grain read as parallax in motion
+  (anchored to a centroid that drifts as the pin leaves frame), it vanished
+  above ~1.5x zoom (the in-frame piece becomes wider than long, so the moments
+  called the shank vertical), and it stayed razor-sharp on a defocused pin.
+  All four are fixed and measured; DECISIONS.md §2026-08-11 has the numbers and
+  the two dead ends that did NOT separate the cases.
+- **Rotating frame rate is decode-bound, and the levers are known.** A rotating
+  frame is 97.2 ms: **template decode 73.2 ms (75%)**, camera stage 15.8 ms,
+  the rest 8.2 ms. The socket delivers 10-12 fps and a browser shows about half
+  that. Two ways out, neither taken: a prefetch decode pool (~30 fps, no
+  rebuild — PIL releases the GIL during PNG decode and a slew's direction is
+  predictable) or rebuilding at `--supersample 2` (~24 fps, 47 min, zoom
+  ceiling 4x -> 2x). float32 in the camera stage was measured and buys nothing.
 - **The pin's glint is inferred from the SILHOUETTE, and that is an accepted
   limitation, not an oversight.** Because the geometry comes from what is in
   frame, the glint disappears when the pin's side leaves the frame, and on a
@@ -150,7 +166,7 @@ the GPU path **correct** (it was producing a "hairy" artifact on the loop fiber)
   would have cost ~1.9 h on the first tab click. Both shipped libraries now read
   `current`. See DECISIONS.md §2026-08-06 for the lock order and the deadlock
   this work uncovered in the existing `_servable` path.
-- **Verify: `pytest tests/` = 206 tests, green** on the local torch env (needs a
+- **Verify: `pytest tests/` = 213 tests, green** on the local torch env (needs a
   torch+CUDA interpreter; GPU-gated parity tests skip on a CPU-only box).
 - **Paused with clear open items** (see below) — nothing half-broken; the engine works.
 
@@ -159,7 +175,7 @@ the GPU path **correct** (it was producing a "hairy" artifact on the loop fiber)
 For a stranger picking this up cold:
 
 1. Build the environment and confirm health: follow **`RUNBOOK.md`** → run `python -m pytest
-   tests/ -q` (should be 206 green). "python" is the torch-enabled interpreter — beamline:
+   tests/ -q` (should be 213 green). "python" is the torch-enabled interpreter — beamline:
    `/programs/pytorch/envs/pt/bin/python`; local dev: a conda env with `torch==2.6.0+cu124`.
    On a CPU-only box the GPU parity tests skip, so green there proves less.
 2. Understand the design before editing: **`../CLAUDE.md`** is the deep engineering doc
@@ -195,9 +211,10 @@ The highest-value open engineering items, in rough priority:
   photograph of a real 300 µm loop carrying a drop at a known zoom stop** (Jacob
   captures). Cost a switch first: the supersample ceiling moves and every library
   rebuilds.
-- **Rebuild `hampton_300um_realistic`'s frame library** — 9.5 h, held until NA is
-  decided so it is not spent twice. Command and its two load-bearing flags: RUNBOOK
-  "Frame libraries".
+- **Decide how to spend the decode budget** — 75% of a rotating frame is PNG
+  decode. A prefetch pool would roughly triple the rate for no rebuild and no
+  loss of zoom range; `--supersample 2` is simpler but costs both. Neither is
+  urgent: 10-12 fps at the socket already clears the 10 fps goal.
 - **Give `TSurfaceMesh` the AABB cull that `TTube` has** — a speed optimisation for mesh
   scenes (they render, but slowly; the fidelity scene is ~5.5k faces now).
 - **Package the TITAN V deployment** (the recipe is measured; see RUNBOOK "Deploy on the
@@ -601,7 +618,7 @@ those numbers don't have to be re-derived.
 - `bench_frame.py` — warm-frame benchmark (`--compiled`, `--fp32`). `acceptance_voltron.py`
   — self-contained TITAN V acceptance test (fps + VRAM + compile check → GO/NO-GO +
   `acceptance_report.json`; auto-picks a free GPU). `run_gpu.slurm` — voltron GPU job (no
-  `--time`!). `tests/` — 206 tests (the verify command).
+  `--time`!). `tests/` — 213 tests (the verify command).
 - `README.md` — user guide (repo root). `CLAUDE.md` — deep engineering notes (repo root:
   architecture, precision, concurrency, the recentre bug). `docs/` — the handoff docs
   (this file + `RUNBOOK.md`, `DECISIONS.md`, `DATA.md`). `scratch/` — git-ignored,
@@ -610,6 +627,27 @@ those numbers don't have to be re-derived.
   `/home/jadoughty/projects/loop_sim_MINE/investigation/`.
 
 ## Work log (append-only)
+
+- **2026-08-11 — the camera model met an operator, and the droplet library was
+  rebuilt.** Suite **213** (was 206). Four commits.
+  `1e35cf9` fixed four things found by DRIVING the viewer rather than by any
+  test: the glint sloped ±6.4° with φ (the 45° chisel dragging the fitted
+  axis — now fitted from the shank's two long sides, worst tilt 0.42°), its
+  grain read as parallax in motion (now scintillates per pose), it vanished
+  above ~1.5× zoom (the in-frame piece is wider than long, so the moments
+  called the shank vertical — both orientations are now fitted and the
+  consistent one wins), and the background was invisible (the residual was
+  re-measured at 3.4–3.9% with a proper mask, not 2.6–2.9%, and its energy is
+  multi-scale — now six octaves of fBm).
+  `bb0d36d` rebuilt `hampton_300um_realistic` for slice 3: 8.06 h at
+  80.6 s/frame, verified against a live f64 render at **0,0 px / mean |diff|
+  0.00056 / 99.1% identical**. All three libraries are current again.
+  `f19f5d9` corrected a doc claim that had become wrong in the dangerous
+  direction, and `09aaafb` made the glint defocus with the sample.
+  **Two negatives worth not re-deriving:** float32 in the camera stage is not
+  faster (index-bound, not bandwidth-bound), and neither aspect nor
+  bar-likeness can separate a zoomed-in pin from a mount whose sides are off
+  frame. **Next:** the NA fork, unchanged and now the only open front.
 
 - **2026-08-10 — the renders were compared against photographs for the first time,
   and four of the six named gaps closed.** Suite **206** (was 167). Seven commits;

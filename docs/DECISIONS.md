@@ -8,6 +8,82 @@
 
 ## Decisions
 
+### 2026-08-11 — the glint met an operator: four defects that only motion shows
+
+Every one of these passed the test suite and looked right in a still frame.
+They were found by turning the spindle and the zoom, which is worth recording
+as a method: a camera model has properties that no single frame can expose.
+
+**It sloped with phi.** The pin's silhouette was giving up its axis via second
+moments, and `hampton_300um`'s 45-degree chisel sweeps up and down as the
+spindle turns — so the fitted axis followed it, **-6.40 to +6.39 degrees,
+sinusoidal in phi**, tilting the ridge 54.5 px across the pin. A horizontal pin
+lit from a fixed direction shows a horizontal glint at every angle. The axis is
+now fitted from the body's two long SIDES, across slices at least 90% of the
+widest, which drops the tapering tip: worst tilt 0.42 degrees, measured
+end-to-end slope <= 3.6 px.
+
+**Its grain read as parallax.** It had been hashed in the pin's own frame so it
+would ride with the pin — right for a static surface texture, wrong for this.
+A machined shank is rough at the wavelength scale, so as it turns, different
+micro-facets enter the specular condition and the glint TWINKLES. And the
+anchor was the eroded mask's centroid, which drifts differently from the pin as
+parts of it leave frame, so the pattern slid against the shank. It now re-rolls
+per POSE: scintillation, and the anchor problem disappears. Determinism holds
+because the phase comes from the pose rather than a clock — a held pose is
+byte-identical, which the settle-parity guard requires, and any real move
+re-rolls it.
+
+**It vanished above ~1.5x zoom.** Past that the pin's in-frame piece is WIDER
+THAN IT IS LONG (211 x 59 px at 2.77x), so the moments called it vertical and
+the fit measured the shank's width as its length — half_w came out 17.8 px on a
+187 px pin. Both orientations are now fitted and the consistent one wins,
+judged on whether the body's sides run off frame and whether a clipped end is a
+clean sever (hampton reads 1.00-1.05 at every zoom; mitegen 0.63).
+
+**TWO THINGS THAT DO NOT WORK, recorded so they are not retried.** Separating a
+zoomed-in pin from `mitegen_200um` (a mount wider than the frame) cannot be
+done on **aspect** — the zoomed pin is 0.28 against mitegen's 0.85 — nor on
+**bar-likeness**, the fraction of slices holding a constant width: 35% against
+57%, so the pin is the LESS bar-like of the two. What separates them is that
+mitegen's fitted body is 528 px wide in a 480 px frame. Nothing wider than the
+frame's short side is a pin whose sides can be seen.
+
+**The background was invisible, and the earlier measurement was wrong.** It had
+been fitted to a residual of 2.6-2.9% of level, taking "background" to mean
+brighter than the 60th percentile — which clips the dark half of every cloud
+and biases the spread down. Masking by dilating the dark body instead gives
+**3.38 / 3.48 / 3.92%**. Worse, the energy is spread across scale (3.0-3.8% at
+16-64 px, 4.6-7.0% at 128-256) where it had all been put at one 200 px cell,
+which reads as a smooth wash. Now six octaves of fBm from ~280 px to ~9 px at
+gain **0.90** — not the textbook 0.5, which leaves sub-33 px detail at 0.39%
+against the real ~3.2%. Two constraints the tests caught: the mottle must be
+zero-mean AND renormalised or it moves the field's LEVEL rather than its shape
+(6.7%, then 0.24% residual), and it lives on normalised coordinates so the
+field still describes the same illumination at any render size.
+
+**The glint now defocuses with the sample.** It is light off the pin's surface,
+so it softens with everything else on that plane; it had stayed sharp because
+the template crop blurs the silhouette and the glint was added afterwards.
+Measured: grain sd falls 5.70 -> 0.26 (22x) from focus to 1 mm of depth, peak
+54 -> 38 as the energy spreads. **Not done by swapping the stage order**, which
+is the obvious fix and is wrong — that would also soften the illumination
+field, whose finest octave is ~9 px, and the background is not imaged from the
+sample plane.
+
+**Where the frame time actually goes.** A rotating frame is 97.2 ms: template
+decode **73.2 ms (75%)**, camera stage 15.8 ms, rest 8.2 ms. The socket
+delivers 10-12 fps; a browser shows about half. The levers are a prefetch
+decode pool (~30 fps, no rebuild) or `--supersample 2` (~24 fps, 47 min, zoom
+ceiling 4x -> 2x). Neither taken.
+
+**ACCEPTED LIMITATION.** All of the above still infers the pin from its
+SILHOUETTE, so the glint stays a function of what is in frame: it disappears
+when the pin's side leaves the frame, and follows the tip's curve on a tip-only
+view. Judged a small incorrectness and accepted. The fix is not a better
+inference — it is to take the pin's axis and radius from the SCENE, which the
+server already knows, deleting ~150 lines of heuristic for ~40 of projection.
+
 ### 2026-08-10 — the renders became photographs: camera emulation, the sensor
 ### raster, the pin's glint, and the scene fixes that needed a rebuild
 
@@ -1053,6 +1129,17 @@ numbers, not just the renderer.
   caps the 4080 to a Titan-V-sized 12 GB *today*.
 
 ## Already Tried
+
+### float32 in the camera-delivery stage
+
+Tried 2026-08-11 to claw back some of the 15.8 ms the camera stage costs on a
+rotating frame. **No gain: 11.45 ms against float64's 11.14 ms.** The stage is
+index-bound (fancy-indexed gathers for the sensor resample and the streak
+scatter), not bandwidth-bound, so halving the element width buys nothing. The
+quantised output differed in 3 pixels of 1,013,760 by one grey level, so it was
+not rejected for accuracy — it simply is not faster. Distinct from the fp32
+PREVIEW rejection below, which was about the tracer and about precision.
+
 
 <!-- Evidence, not fences. Each entry is here so nobody spends a week re-deriving a
      number that already exists. -->
