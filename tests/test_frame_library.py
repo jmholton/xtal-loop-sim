@@ -499,25 +499,31 @@ def test_render_sha_difference_reads_as_english_not_a_digest():
     assert "fingerprint" in never
 
 
-def test_the_shipped_libraries_are_current_against_this_renderer():
+def test_no_shipped_library_is_stale_on_build_parameters():
     """Adding a build key silently marks every shipped library stale, and the
     LAUNCH path rebuilds a stale library before it binds the socket -- so a
     bare `camera_server --scene ...` would start hours of work.  The three
     manifests carry the sha of the renderer that actually built them.
-    """
-    from loop_sim.library.frame_library import library_status, load_manifest
 
-    for scene, name in (("hampton_300um", "hampton_300um"),
-                        ("hampton_300um_realistic", "hampton_300um_realistic"),
-                        ("mitegen_200um", "mitegen_200um")):
+    Asserted on `library_diff`, NOT on `library_status`, because the two catch
+    different things and only one of them is a mistake.  A build-PARAMETER
+    mismatch means a key was added without stamping the manifests -- always a
+    bug.  A `missing` status means the SCENE changed and a rebuild is owed,
+    which is deliberate and is exactly the state `hampton_300um_realistic` is
+    in after slice 3.  `library_diff` excludes the scene fingerprint by
+    design, so it separates the two cleanly.
+    """
+    from loop_sim.library.frame_library import library_diff, load_manifest
+
+    for name in ("hampton_300um", "hampton_300um_realistic", "mitegen_200um"):
         lib = os.path.join(REPO_ROOT, "frame_library", name)
         man = load_manifest(lib)
         if man is None:
             pytest.skip(f"{name} library not present")
         # graded against its OWN supersample, which is per-scene by design
         params = build_params(supersample=man["supersample"])
-        path = os.path.join(REPO_ROOT, "scene_files", scene + ".yaml")
-        assert library_status(path, lib, **params) == "current", name
+        path = os.path.join(REPO_ROOT, "scene_files", name + ".yaml")
+        assert library_diff(path, lib, **params) == {}, name
 
 
 # ---------------------------------------------------------------------------

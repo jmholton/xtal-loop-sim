@@ -66,7 +66,7 @@ class HamptonPreset:
     def __init__(self, loop_diameter_um, fiber_diameter_um=20.0,
                  loop_shape="teardrop", stem_length_mm=0.5,
                  stem_pitch_ratio=5.0, pin_diameter_mm=0.5,
-                 pin_length_mm=6.0, pin_bevel_deg=45.0,
+                 pin_length_mm=6.0, pin_bevel_deg=0.0,
                  youngs_modulus_gpa=2.5):
         self.loop_diameter_um   = loop_diameter_um
         self.fiber_diameter_um  = fiber_diameter_um
@@ -122,10 +122,27 @@ DEFAULT_BEAM = {
 }
 
 DEFAULT_MATERIALS = {
-    "crystal": {"n": 1.52, "mu_optical": 0.02, "mu_xray": 2.1,  "color": [0.7, 0.9, 1.0]},
     # color is an ABSORPTION spectrum in the renderer (mu_per_ch = mu_optical
     # + 30*(1-color) per mm, microscope.py) — NOT a display tint.  A saturated
     # color makes the material strongly absorbing; water must be near-white.
+    #
+    # The crystal used to be color [0.7, 0.9, 1.0], which is (9.02, 3.02, 0.02)
+    # per mm: it rendered strongly BLUE (measured R 0.403 / G 0.634 / B 0.808
+    # through the shipped crystal) against reference frames that are neutral.
+    # The absorption is now in mu_optical and the color is white, so the
+    # crystal is grey without needing `--mono` in camera space to hide it.
+    # 4.09 is the value that preserves what the frame already delivered.
+    # Deriving it needs one non-obvious step: the crystal refracts (n = 1.52),
+    # and light bent past the NA 0.10 gate darkens it whether or not anything
+    # absorbs.  The BLUE channel measures that floor directly -- its mu is
+    # 0.02/mm, essentially nothing -- at T = 0.8686.  Dividing it out makes the
+    # red and green channels agree on the path length (0.0809 and 0.0832 mm,
+    # 2.8% apart) where inverting them raw does not, and 4.09/mm over that path
+    # reproduces the measured luma of 0.6207.  Skipping the floor gives 3.56,
+    # which renders the crystal far too dark.  Whether a real protein crystal
+    # should absorb this strongly AT ALL is a separate question, and not one
+    # the reference set can answer yet.
+    "crystal": {"n": 1.52, "mu_optical": 4.09, "mu_xray": 2.1,  "color": [1.0, 1.0, 1.0]},
     "solvent": {"n": 1.34, "mu_optical": 0.00, "mu_xray": 0.3,  "color": [0.97, 0.98, 1.0]},
     "nylon":   {"n": 1.53, "mu_optical": 0.10, "mu_xray": 0.1,  "color": [0.9, 0.8, 0.6]},
     "metal":   {"n": 2.50, "mu_optical": 500., "mu_xray": 100., "color": [0.7, 0.7, 0.8]},
@@ -147,7 +164,7 @@ def build_hampton_scene(
     pin_length_mm       : float = None,
     pin_bevel_deg       : float = None,
     youngs_modulus_gpa  : float = None,
-    solvent_volume_mm3  : float = 0.002,
+    solvent_volume_mm3  : float = 0.00893,
     contact_angle_deg   : float = 30.0,
     crystal_preset      : Optional[str]  = "hexagonal",
     crystal_dims_mm     : Optional[list] = None,

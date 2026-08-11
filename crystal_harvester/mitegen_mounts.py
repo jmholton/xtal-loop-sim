@@ -167,9 +167,11 @@ DEFAULT_BEAM = {
 }
 
 DEFAULT_MATERIALS = {
-    "crystal": {"n": 1.52, "mu_optical": 0.02, "mu_xray": 2.1,   "color": [0.7, 0.9, 1.0]},
     # color is an ABSORPTION spectrum in the renderer (mu_per_ch = mu_optical
-    # + 30*(1-color) per mm, microscope.py) — NOT a display tint.
+    # + 30*(1-color) per mm, microscope.py) — NOT a display tint.  The crystal
+    # is neutral for the reason given in hampton_loops.py; kept in step so the
+    # two generators cannot drift.
+    "crystal": {"n": 1.52, "mu_optical": 4.09, "mu_xray": 2.1,   "color": [1.0, 1.0, 1.0]},
     "solvent": {"n": 1.34, "mu_optical": 0.00, "mu_xray": 0.3,   "color": [0.97, 0.98, 1.0]},
     "kapton":  {"n": 1.70, "mu_optical": 0.08, "mu_xray": 0.005, "color": [0.9, 0.7, 0.2]},
     "metal":   {"n": 2.50, "mu_optical": 500., "mu_xray": 100.,  "color": [0.7, 0.7, 0.8]},
@@ -193,7 +195,7 @@ def build_mitegen_scene(
     lattice_abc         : Optional[dict] = None,
     pin_diameter_mm     : float = 0.5,
     pin_length_mm       : float = 6.0,
-    pin_bevel_deg       : float = 45.0,
+    pin_bevel_deg       : float = 0.0,
     geometry            : dict  = None,
     camera              : dict  = None,
     beam                : dict  = None,

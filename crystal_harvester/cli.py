@@ -76,12 +76,20 @@ def _parse_args(argv=None):
     pg.add_argument("--pin-length", type=float, default=None, metavar="MM",
                     help="Pin visible length in mm (default: 6.0)")
     pg.add_argument("--pin-bevel", type=float, default=None, metavar="DEG",
-                    help="Pin bevel angle in degrees (default: 45)")
+                    help="Pin bevel angle in degrees (default: 0, a flat cut). "
+                         "The reference photos settle this: the pins in "
+                         "real_images/A01 and E02 end square, not chiselled. "
+                         "pin_geometry.py still models a scored-and-snapped "
+                         "tube, so pass 45 to get the old tip back")
 
     # --- Solvent options ---
     sg = p.add_argument_group("Solvent options")
-    sg.add_argument("--solvent-volume", type=float, default=0.002, metavar="MM3",
-                    help="Solvent volume in mm³ (default: 0.002)")
+    sg.add_argument("--solvent-volume", type=float, default=0.00893, metavar="MM3",
+                    help="Solvent volume in mm³ (default: 0.00893, half the "
+                         "maximum bulge a 300 um loop will hold). The old "
+                         "0.002 gave a drop reaching 1.44 px past the fiber "
+                         "edge-on, where the reference photos are plainly "
+                         "bulbous")
     sg.add_argument("--contact-angle", type=float, default=None, metavar="DEG",
                     help="DEPRECATED and ignored: the droplet rim is pinned at "
                          "the loop, so the contact angle is determined by "
