@@ -413,6 +413,55 @@ def test_streak_tapers_the_tip_but_not_the_frame_edge():
     assert peak[405] < 0.6 * full, "did not taper at the tip"
 
 
+def test_streak_defocuses_with_the_sample():
+    """The glint is light off the pin's SURFACE, so when the sample goes out of
+    focus the glint must go with it -- it cannot stay razor-sharp on a pin that
+    has visibly softened.  `pose_crop` already blurs the silhouette by this
+    sigma; the glint now gets the same one.
+    """
+    def grain_of(a):
+        """Residual along the ridge after its slow along-axis trend is removed.
+
+        NOT the spread over all lit pixels -- that is dominated by the ridge's
+        own Gaussian cross-section, which barely moves under a small blur, and
+        measuring it that way hides the effect entirely.
+        """
+        row = int(np.argmax(a.max(axis=1)))
+        line = a[row, :]
+        line = line[line > 0]
+        if line.size < 40:
+            return 0.0
+        k = np.ones(9) / 9.0
+        smooth = np.convolve(np.pad(line, 4, mode="edge"), k, "valid")
+        return float((line - smooth).std())
+
+    t, _ = _pin_frame()
+    sharp = F.specular_streak(t)
+    g_sharp = grain_of(sharp)
+    assert g_sharp > 0, "no grain to soften"
+    for sigma, expect in ((1.5, 0.6), (4.0, 0.2)):
+        soft = F.specular_streak(t, defocus=sigma)
+        g_soft = grain_of(soft)
+        assert g_soft < expect * g_sharp, (
+            f"sigma {sigma}: grain {g_soft:.5f} vs sharp {g_sharp:.5f}")
+        # energy is spread, not destroyed, and it reaches further across the pin
+        assert soft.sum() == pytest.approx(sharp.sum(), rel=0.15)
+        assert (soft > 0).sum() > (sharp > 0).sum()
+    assert np.array_equal(F.specular_streak(t, defocus=0.0), sharp)
+
+
+def test_defocus_blur_is_deterministic_and_conserves_energy():
+    """It sits inside the byte-compared delivery chain, so it must be a pure
+    function; and a normalised kernel must not change the total."""
+    a = np.zeros((80, 90))
+    a[40, 45] = 1.0
+    b1, b2 = F._blur2d(a, 2.5), F._blur2d(a.copy(), 2.5)
+    assert np.array_equal(b1, b2)
+    assert b1.sum() == pytest.approx(1.0, rel=1e-9)
+    assert b1[40, 45] < 0.1                              # actually spread
+    assert F._blur2d(a, 5.0)[40, 45] < b1[40, 45]        # wider sigma, flatter
+
+
 def test_streak_can_be_switched_off():
     t, _ = _pin_frame()
     on = F.apply_camera(t)

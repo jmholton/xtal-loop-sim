@@ -111,7 +111,8 @@ def pose_phase(pose):
     return h
 
 
-def encode_frame(img, jpeg_quality, camera=None, sensor=None, phase=0):
+def encode_frame(img, jpeg_quality, camera=None, sensor=None, phase=0,
+                 defocus=0.0):
     """Apply camera emulation to a float (H, W, 3) in [0, 1], return JPEG bytes.
 
     THE single place a served frame becomes bytes.  Both the live path (either
@@ -150,7 +151,14 @@ def encode_frame(img, jpeg_quality, camera=None, sensor=None, phase=0):
             sp = dict(camera.get("streak_params") or {})
             sp["phase"] = int(phase)
             camera = dict(camera, streak_params=sp)
-        img = apply_camera(img, **camera)
+        # `defocus` arrives as sigma in the RENDER's square pixels, and the
+        # glint is drawn after `to_sensor` has widened the frame by 704/640 --
+        # so the true blur is 1.1x wider horizontally than vertically.  It is
+        # applied isotropically at the vertical (unscaled) value on purpose:
+        # the ridge is a thin horizontal band, so what softening reads as is
+        # its spread ACROSS the pin, which is the vertical axis and the one
+        # the resample leaves alone.
+        img = apply_camera(img, defocus=float(defocus), **camera)
     arr = (np.clip(np.asarray(img, dtype=np.float64), 0.0, 1.0) * 255).astype(np.uint8)
     buf = io.BytesIO()
     Image.fromarray(arr, mode="RGB").save(buf, format="JPEG", quality=jpeg_quality)
@@ -242,7 +250,7 @@ class TemplateSource:
         import numpy as np
         return encode_frame(np.asarray(img, dtype=np.float64) / 255.0,
                             self.jpeg_quality, self.camera, self.sensor,
-                            pose_phase(pose))
+                            pose_phase(pose), sigma)
 
 
 # ---------------------------------------------------------------------------

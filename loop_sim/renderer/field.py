@@ -419,6 +419,52 @@ def _wide_opaque(mask, k):
     return out
 
 
+def _gaussian_kernel(sigma):
+    """Normalised 1-D Gaussian, truncated at 3 sigma, cached by sigma.
+
+    Separable, so a 2-D blur is two passes of this.  Deterministic and
+    dependency-free: `optics.py` owns the objective PSF and PIL owns the
+    template's defocus, but neither can be reached from here without either a
+    circular import or a PIL round-trip through uint8.
+    """
+    key = round(float(sigma), 4)
+    hit = _weight_cache.get(("gauss", key))
+    if hit is not None:
+        return hit
+    r = max(int(3.0 * key + 0.5), 1)
+    x = np.arange(-r, r + 1, dtype=np.float64)
+    k = np.exp(-0.5 * (x / max(key, 1e-9)) ** 2)
+    k /= k.sum()
+    _weight_cache[("gauss", key)] = k
+    return k
+
+
+def _blur1d(a, k, axis):
+    """One separable pass, as a weighted sum of SHIFTED copies.
+
+    Not `np.apply_along_axis(np.convolve, ...)`: that runs a Python-level call
+    per row, and on a defocused frame it cost 9.5 ms where this costs under 1.
+    Here the whole array moves at once, once per kernel tap.
+    """
+    r = (len(k) - 1) // 2
+    pad = [(0, 0)] * a.ndim
+    pad[axis] = (r, r)
+    p = np.pad(a, pad, mode="edge")
+    n = a.shape[axis]
+    out = np.zeros_like(a)
+    sl = [slice(None)] * a.ndim
+    for i, kv in enumerate(k):
+        sl[axis] = slice(i, i + n)
+        out += kv * p[tuple(sl)]
+    return out
+
+
+def _blur2d(a, sigma):
+    """Separable Gaussian blur of a 2-D array, edge-extended."""
+    k = _gaussian_kernel(sigma)
+    return _blur1d(_blur1d(a, k, 1), k, 0)
+
+
 def _fit_one_orientation(core, k, horizontal):
     """Width-gated centreline fit for ONE slicing direction, or None.
 
@@ -535,7 +581,7 @@ def _pin_axis(core, k):
     return fits[0] if (dx * dx).mean() >= (dy * dy).mean() else fits[1]
 
 
-def _streak_patch(t, params=None):
+def _streak_patch(t, params=None, defocus=0.0):
     """`(rows, cols, values)` for the pin's glint, or None if there is no pin.
 
     The sparse form.  `specular_streak` is the dense wrapper; `apply_camera`
@@ -652,10 +698,36 @@ def _streak_patch(t, params=None):
     # `band` already carries the opaque mask, so the ridge is only ever drawn
     # where the tracer said the body is opaque: it cannot leak onto the
     # background or onto the loop.
-    return bi + r0, bj + c0, np.maximum(ridge, 0.0) * float(p["gain"])
+    ridge = np.maximum(ridge, 0.0) * float(p["gain"])
+
+    # DEFOCUS.  The glint is light from the pin's SURFACE, so when the sample
+    # sits off the focal plane it blurs with everything else on that plane --
+    # it does not stay razor-sharp on a pin that has visibly gone soft.  Same
+    # sigma the template crop applies to the silhouette (`pose_crop`), so the
+    # two cannot disagree.
+    #
+    # Applied AFTER the opaque mask on purpose: a defocused glint spreads a
+    # little past the pin's edge, exactly as the blurred silhouette does.  And
+    # applied to the GLINT ALONE, not to the whole frame -- swapping the stage
+    # order instead would also soften the illumination field, whose finest
+    # octave is ~9 px against a sigma that reaches 4.7 px at 1 mm of depth, and
+    # the background is not imaged from the sample plane so it must not move.
+    if defocus and defocus > 0.05:
+        pad = int(3.0 * defocus + 1.5)
+        dense = np.zeros((r1 - r0 + 2 * pad, c1 - c0 + 2 * pad))
+        dense[bi + pad, bj + pad] = ridge
+        dense = _blur2d(dense, float(defocus))
+        R0, C0 = max(r0 - pad, 0), max(c0 - pad, 0)
+        dense = dense[R0 - (r0 - pad):dense.shape[0] - max(r1 + pad - h, 0),
+                      C0 - (c0 - pad):dense.shape[1] - max(c1 + pad - w, 0)]
+        gi, gj = np.nonzero(dense > 1e-6)
+        if gi.size == 0:
+            return None
+        return gi + R0, gj + C0, dense[gi, gj]
+    return bi + r0, bj + c0, ridge
 
 
-def specular_streak(t, params=None):
+def specular_streak(t, params=None, defocus=0.0):
     """Additive specular term for the pin, in units of the local illumination.
 
     `t` is the transmittance image, (H, W) or (H, W, 3), on the delivered pixel
@@ -674,7 +746,7 @@ def specular_streak(t, params=None):
     """
     shape = t.shape if t.ndim == 2 else t.shape[:2]
     out = np.zeros(shape, dtype=np.float64)
-    patch = _streak_patch(t, params)
+    patch = _streak_patch(t, params, defocus)
     if patch is not None:
         out[patch[0], patch[1]] = patch[2]
     return out
@@ -696,7 +768,8 @@ def to_luma(img):
 
 
 def apply_camera(img, level=E0, floor=B, coeffs=VIGNETTE, amplitude=1.0,
-                 mono=False, enabled=True, streak=True, streak_params=None):
+                 mono=False, enabled=True, streak=True, streak_params=None,
+                 defocus=0.0):
     """Map transmittance to what the camera would record.  Returns a new array.
 
     `img` is (H, W, 3) float in [0, 1] straight out of the tracer, or a crop of
@@ -708,6 +781,9 @@ def apply_camera(img, level=E0, floor=B, coeffs=VIGNETTE, amplitude=1.0,
     `streak` adds the pin's specular glint (`specular_streak`).  It reads the
     TRANSMITTANCE, before the mono collapse, because the pin is opaque in every
     channel and the geometry must not depend on whether colour was flattened.
+    `defocus` is the sigma the sample's silhouette was blurred by, in output
+    pixels; the glint gets the same blur, because it comes off the same
+    surface.  The illumination field deliberately does NOT.
     """
     if not enabled:
         return img
@@ -715,7 +791,7 @@ def apply_camera(img, level=E0, floor=B, coeffs=VIGNETTE, amplitude=1.0,
     e = float(level) * vignette(t.shape[0], t.shape[1], coeffs, amplitude)
     out = (e[..., None] - float(floor)) * t + float(floor)
     if streak:
-        patch = _streak_patch(img, streak_params)
+        patch = _streak_patch(img, streak_params, defocus)
         if patch is not None:
             # Scaled by the local illumination: a specular return is reflected
             # incident light, so it dims where the field dims, exactly as the
