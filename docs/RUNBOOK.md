@@ -99,12 +99,31 @@ centred field of view, default 0.6), `--axis` (spindle motor, default `rotx`), `
 `--tile-size` (default `auto`), `--vram-fraction` (default 0.80), `--device`.
 Every lever, with defaults and what it costs, is tabulated under "Every lever" below.
 
-> **`hampton_300um_realistic` is OWED A REBUILD (since 2026-08-10).** Slice 3 changed the
-> scene — neutral crystal, flat pin tip, half-maximum drop — so its library reads
-> `missing` and the launch path will try to rebuild it before binding the socket. The
-> rebuild is deliberately held until the NA question is settled, because a switch to
-> NA 0.28 would invalidate anything built now (see HANDOFF "Open questions"). Until then,
-> serve the other two scenes, or run this and wait ~9.5 h:
+> **`hampton_300um_realistic` is OWED A REBUILD (since 2026-08-10), and until it happens
+> DO NOT POINT A TEMPLATE SERVER AT THAT SCENE.** Slice 3 changed the scene — neutral
+> crystal, flat pin tip, half-maximum drop — so its library reads `missing`, and
+> `CameraServer.__init__` calls `ensure_library` before binding the socket, which deletes
+> the manifest and overwrites frames **in place**.
+>
+> **The old `--supersample 1` workaround no longer protects this scene.** It worked while
+> the library was merely *stale* (a supersample mismatch the flag could satisfy);
+> `missing` cannot be satisfied by any flag, because `ensure_library` rebuilds anything
+> that is not current. This fired for real on 2026-08-10 — a launch intended just to open
+> the viewer removed the manifest before being cancelled at the first frame.
+>
+> What is safe meanwhile:
+>
+> - `--templates off` — raytraces live and never calls `ensure_library` (it is gated on
+>   `_want_templates`). Slow per frame, but it touches nothing on disk.
+> - Launch on another scene and reach this one from the **tab strip**. The runtime switch
+>   path deliberately never calls `ensure_library`.
+> - **Safety net if it happens anyway:** all 361 files are tracked (2.9 MB), so
+>   `git checkout -- frame_library/hampton_300um_realistic/` restores every frame and the
+>   manifest. That is what recovered the 2026-08-10 incident.
+>
+> The rebuild itself is deliberately held until the NA question is settled, because a
+> switch to NA 0.28 would invalidate anything built now (see HANDOFF "Open questions").
+> When you do want it, run this and wait ~9.5 h:
 >
 > ```bash
 > $PY -u -m loop_sim.library --scene scene_files/hampton_300um_realistic.yaml \

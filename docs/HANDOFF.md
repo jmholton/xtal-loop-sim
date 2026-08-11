@@ -52,11 +52,18 @@ the GPU path **correct** (it was producing a "hairy" artifact on the loop fiber)
   every manifest reading `current` while the frames on disk had been traced by code that
   no longer existed. Now hashed into the manifest and `_BUILD_KEYS`. `field.py` is
   deliberately excluded — it is serve-time and never enters a template.
-- **⚠ `hampton_300um_realistic` IS OWED A LIBRARY REBUILD.** Slice 3 changed the scene
-  (neutral crystal, flat pin tip, half-maximum drop), so its library reads `missing` and
-  the launch path will try to rebuild before binding the socket. **Held deliberately** —
-  9.5 h that a switch to NA 0.28 would immediately invalidate. Command and the two
-  load-bearing flags: RUNBOOK "Frame libraries".
+- **⚠ `hampton_300um_realistic` IS OWED A LIBRARY REBUILD — and until then, do not point
+  a template server at that scene.** Slice 3 changed the scene, so its library reads
+  `missing`, and `ensure_library` runs before the socket binds: it deletes the manifest
+  and overwrites frames in place. **The documented `--supersample 1` workaround no longer
+  helps** — it could satisfy a *stale* library, but nothing satisfies a *missing* one.
+  This fired on 2026-08-10 (a launch meant only to open the viewer, cancelled at the
+  first frame; the manifest was restored from git). Use `--templates off`, or reach the
+  scene from the tab strip, which never calls `ensure_library`. All 361 files are
+  tracked, so `git checkout -- frame_library/hampton_300um_realistic/` is a full
+  recovery. The rebuild is **held deliberately** — 9.5 h that a switch to NA 0.28 would
+  immediately invalidate. Command and its two load-bearing flags: RUNBOOK "Frame
+  libraries".
 - **The NA fork now has its strongest evidence, and it came from fixing the drop.** See
   "Open questions" below — the drop is fine at every NA; it is the immersed *crystal*
   that goes 3× too dark at NA 0.10 and recovers halfway at 0.28.
