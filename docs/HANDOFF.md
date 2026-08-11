@@ -66,6 +66,10 @@ the GPU path **correct** (it was producing a "hairy" artifact on the loop fiber)
   identical**. It was held pending the NA question and built anyway at the
   owner's call, so **a switch to NA 0.28 would still invalidate it** (RUNBOOK
   "Frame libraries" has the command and the two WSL2-critical flags).
+  **Launching a server on that scene still requires `--supersample 1`** --
+  verified 2026-08-11 with `build_library` patched to raise: a bare launch
+  grades the S=1 library stale against `build_params`' S=4 default and would
+  rebuild it. The tab strip and `--templates off` are safe.
 - **The NA fork now has its strongest evidence, and it came from fixing the drop.** See
   "Open questions" below — the drop is fine at every NA; it is the immersed *crystal*
   that goes 3× too dark at NA 0.10 and recovers halfway at 0.28.

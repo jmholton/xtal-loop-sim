@@ -122,6 +122,21 @@ Every lever, with defaults and what it costs, is tabulated under "Every lever" b
 > files are tracked (2.3 MB), so `git checkout -- frame_library/hampton_300um_realistic/`
 > recovers the previous one -- which is what recovered the 2026-08-10 incident.
 
+> **LAUNCHING ON THIS SCENE STILL NEEDS `--supersample 1`.** Verified 2026-08-11
+> against the rebuilt library, with `build_library` monkeypatched to raise:
+>
+> ```
+>   bare launch (no flags)   -> WOULD REBUILD   (destroys the 8 h library)
+>   launch --supersample 1   -> serves it, no build
+> ```
+>
+> `ensure_library` resolves its kwargs through `build_params`, which fills
+> `supersample=4` from its own default, and this library is 1 -- so a no-flag
+> launch grades it stale and rebuilds before binding the socket. (While the
+> library was MISSING, between slice 3 and the rebuild, no flag helped at all;
+> now that it is `current` the flag works again.) `--templates off` and the
+> runtime tab strip remain safe by construction.
+
 Re-running is a **no-op when the library is current** — the manifest stores a SHA-256 of
 the scene YAML, a SHA-256 of the **renderer source** (`render_sha`, added 2026-08-10),
 *and* the build parameters, so an edited scene, an edited tracer or a different
