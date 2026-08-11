@@ -513,11 +513,28 @@ fallback **6.3 fps**. The three things that decide whether you get 11.9 or 6.3:
   almost exactly. Neither number is proof, and the crystal's absorption was deliberately
   **not** tuned to hide the gap.
 
-  The cheapest remaining ground truth is unchanged: **one photograph of a real 300 µm
-  loop carrying a drop, at a known zoom stop**, on the beamline camera (Jacob captures).
-  Cost any switch to NA 0.28 first — the supersample ceiling moves and every frame
-  library rebuilds. **This is why `hampton_300um_realistic`'s rebuild is being held**:
-  9.5 h that the switch would invalidate.
+  **The reference set already holds drop photographs — do not ask for a capture before
+  checking it.** `real_images/` carries **13 scale-carrying frames of loops holding
+  drops** (B01–B06, B08–B11, D01/D03/D05); `D01` is where the 0.696 above comes from.
+  What it does NOT hold is a drop at the **mid** stop: all 15 drop/solvent/crystal frames
+  are hi mag, while the Hampton scenes model the mid stop — so every comparison so far
+  has been a mid-stop render against a hi-stop photograph. That, not a missing
+  photograph, is the mismatch.
+
+  So the cheapest move needs no beamline time: **render the scene at the hi stop**
+  (0.8233 µm px, NA 0.28/0.17 — `template.yaml`'s calibration) and compare like-for-like
+  against those frames. Direct renders, seconds each, no library rebuild, and at that
+  pixel size a 300 µm loop fills half the frame exactly as B and D show. Prefer the **D**
+  set for anything dimensional: its `fov` 0.579607 × 0.438657 mm is the hi stop's true
+  non-square pitch, where B implies **square** pixels and is 1.1% / 9.8% off — the
+  two-calibrations problem of `real_images/README.md` reaches inside the drop set. Loop
+  sizes are unrecorded in both, so these settle tone and NA well and drop volume poorly.
+  A **mid-stop photograph of a loop with a drop** (Jacob captures) is still worth having,
+  but it is no longer the only move.
+
+  Cost any switch to NA 0.28 before making it: the supersample ceiling moves and every
+  frame library rebuilds — including the 8.06 h `hampton_300um_realistic` build of
+  2026-08-11.
 - **Is the bundled `hampton_300um` loop mislabelled, or digitized at another size?** Its
   waypoints span 69 × 200 µm, not ~300 µm. Worth comparing against the physical part before
   assuming the geometry is wrong rather than the name.
