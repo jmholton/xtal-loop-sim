@@ -8,6 +8,157 @@
 
 ## Decisions
 
+### 2026-08-11 (later still) — the mesh path never culled, and that was 43x
+
+**`hampton_300um_realistic` builds in 11.2 minutes instead of 8.06 hours, and
+every frame is byte-identical.** 80.6 -> 1.86 s/frame. Two changes, both in
+`engine_torch.py`, neither of which touches a pixel.
+
+**What was wrong.** `TSurfaceMesh.ray_intersect` brute-forced every ray against
+every face. The numpy `SurfaceMesh` it is a port OF has always run an AABB slab
+test and fed only survivors to Moller-Trumbore; `TTube` has the same cull
+(`_aabb_survivors`). The torch mesh was the one class that diverged. On the
+shipped droplet scene the mesh's AABB covers **0.284% of the render window**
+(mean over the 360-frame sweep, measured from the scene: a 0.484 x 0.283 x
+0.171 mm box in a 10.33 x 4.766 mm window), so **99.7% of rays were being tested
+against 5472 triangles they could not possibly hit.**
+
+**Why that cost more than the wasted arithmetic.** The 160 B/ray/face law made
+`fit_tile_size` divide the frame down until `tile x faces x 160 B` fitted: 6800
+rays, **133 passes per frame**. So the missing cull was also buying 133x the
+per-pass overhead. Culling alone gave 4.05x (19.90 s); letting the tile return
+to a single pass gave a further **10.2x**. The second half was the larger one.
+
+**The fix is a parity restoration, so byte-exactness is provable, not hoped
+for.** Every triangle point lies inside the vertex AABB, so a ray the slab test
+rejects provably missed every face -- brute force returned INF for exactly those
+rays. Verified three ways: a direct culled-vs-brute-force equality test
+(`test_tile_sizing.py`), new CPU+CUDA render-parity cases on this scene, and a
+**full 360-frame rebuild diffed against the shipped library -- 360/360
+byte-identical, zero differing pixels**, with git confirming only
+`manifest.json` changed.
+
+**The budget moved rather than disappeared.** `TSurfaceMesh` now chunks its own
+survivors (`_mesh_survivor_chunk`), so the mesh's working set is bounded where
+the mesh is instead of by shrinking every caller's tile. `fit_tile_size` lost
+its mesh term entirely and mesh scenes get the same flat default tube scenes
+always had.
+
+**One trap found by watching, not by testing.** Sizing that chunk as a fraction
+of FREE VRAM took ~8 GB on an idle 16 GB card and drove a build to **13.7 GB** --
+inside the WSL2 spill zone, on a GPU shared with a desktop. Capped absolutely at
+2 GiB (`_MESH_CHUNK_MAX_BYTES`): the build then held **5.9 GB and ran no slower**
+(2.01 vs 2.15 s/frame). A fraction of free memory is not a bound on a shared
+card. Test-guarded.
+
+**Measured, all at n_cond 7, f64:**
+
+| scene | before | after | note |
+|---|---|---|---|
+| `hampton_300um_realistic` (5472 tris, build res) | 80.6 s | **1.86 s** | 43x; 8.06 h -> 11.2 min |
+| `mitegen_200um` (234-tri ThinShell, build res) | 17.0 s | **3.00 s** | 5.7x |
+| `hampton_300um` (no mesh) | 7.93 s | 7.97 s | unchanged, as intended |
+
+**Two things this retires.** The `--tile-size 6800` incantation the RUNBOOK
+required for WSL2 mesh builds is no longer needed -- the spill hazard it worked
+around was a consequence of the missing cull. And the `TSurfaceMesh` AABB cull
+stops being an open item that three separate DECISIONS entries deferred as
+"blocking" then "an optimisation".
+
+**What was NOT done, and why.** A per-face BVH or a CUDA port of the CPU's
+uniform grid: dead by Amdahl once the cull lands (the mesh term is ~0.2 s of a
+~20 s frame at the old tile, and less now), and the CPU grid is dead code
+anyway -- `_grid` is written and never read, `_intersect_ray_triangles` has no
+callers. df64 and rasterisation were investigated and rejected; both have
+entries under "Already Tried".
+
+### 2026-08-11 (later) — the NA fork resolves to 0.28, and the confound was the
+### SPACE the comparison was made in, not the zoom stop
+
+**Answer first: NA 0.28. At the hi stop, camera-space crystal/background is
+0.677 against the photograph's 0.691 — a 2% gap. NA 0.10 gives 0.421, 39%
+short.** Harnesses: `scratch/na_fork.py` (renders + measures) and
+`scratch/d01_measure.py` (the photograph, with an auditable region overlay at
+`scratch/d01_regions.png`). No beamline access, no capture, no library rebuild;
+seven direct renders, ~4 min.
+
+**The reference was re-measured first, and it holds.** Independent hand-placed
+boxes on `D01` reproduce the recorded numbers: drop/bg **0.882** (recorded
+0.871), crystal/bg **0.691** (0.696), crystal/solvent **0.783** (0.799). So the
+target was never in doubt; only the render side of the comparison was.
+
+**The fix that mattered was not the one the plan proposed.** The docs called for
+rendering at the hi stop, on the reasoning that every drop photograph is hi mag
+while the Hampton scenes model the mid stop. That is true and it was worth
+doing — but it moves the answer by about **1%**:
+
+| | crystal/bg, camera space |
+|---|---|
+| mid stop, NA 0.10 | 0.416 |
+| hi stop, NA 0.10 | 0.421 |
+| mid stop, NA 0.28 | 0.671 |
+| hi stop, NA 0.28 | 0.677 |
+
+What moved the answer by **2.3×** was the SPACE. Every previous comparison put a
+render's **transmittance** ratio next to a photograph's **grey** ratio.
+`field.apply_camera` is affine — `out = (e − B)·t + B` with a black floor
+B = 0.1765 — so it does **not** preserve ratios; it lifts dark things hard. The
+same NA 0.10 render reads 0.186 in transmittance and 0.416 in camera space. The
+recorded 0.218-vs-0.696 gap was therefore roughly **half units and half
+physics**, and the NA question looked more dramatic than it was.
+
+**Which normalisation is like-for-like had to be measured, not assumed.** Both
+D01 and the render take crystal at frame centre against background at the
+edges, so a raw ratio carries whichever vignette each one has. `field.py`'s
+modelled field is a vertical bowl at **41.6% peak-to-trough**, and its own
+docstring warns the 2020 session it was fitted to is 5–7× stronger than every
+other epoch. **D01 is one of the flat ones:** five sky boxes span **2.8%** of
+level, and centre-column sky against corner sky is **−0.5%**. So the render must
+be divided by its own clear-field level (removing a vignette D01 does not have)
+and D01 needs no correction at all. Skipping that step reads NA 0.28 as 0.818
+against 0.691 and would have pointed at ~0.17 instead — the same class of error
+as comparing the two spaces.
+
+The full grid, camera space, vignette-removed, against D01's 0.691 / 0.783:
+
+| stop | NA | drop/bg | crystal/bg | crystal/solvent |
+|---|---|---|---|---|
+| real `D01` | — | 0.882 | **0.691** | **0.783** |
+| mid | 0.10 | 0.894 | 0.416 | 0.465 |
+| mid | 0.17 | 0.921 | 0.546 | 0.593 |
+| mid | 0.28 | 0.963 | 0.671 | 0.697 |
+| hi | 0.10 | 0.821 | 0.421 | 0.513 |
+| hi | 0.17 | 0.923 | 0.556 | 0.603 |
+| hi | 0.28 | 0.946 | **0.677** | **0.704** |
+
+crystal/solvent comes in at 0.704 against 0.783, a 10% gap — but D01's own
+solvent reads 0.667 / 0.700 / 0.832 across three interior boxes, so the
+photograph's spread covers it. crystal/bg is the tighter constraint and it is
+the one that lands.
+
+**Two negatives worth not re-deriving.** (1) `template.yaml`'s 0.8233 µm and the
+correct square-pixel hi stop of **0.9056 µm** give the same tone to 0.3%
+(crystal/bg 0.679 vs 0.677). The pixel-size half of the old three-cameras puzzle
+does not touch NA; it only ever mattered dimensionally. For the record the
+square-pixel hi stop is built exactly like the mid stop's 7.4 µm —
+704 × 0.8233 / 640 = 0.9056, covering the true field to 0.0% / 0.9% — so a
+future hi-stop scene should use 0.9056, not `template.yaml`'s value. (2) A
+luma-threshold crystal mask is sampling-dependent and cannot be used across
+stops; all regions here are projected from the scene's own geometry (the
+crystal's half-space box, the solvent mesh's extent), which is why the mid and
+hi rows can be compared at all.
+
+**What this costs, unchanged:** switching the scenes to NA 0.28 moves the
+supersample ceiling and invalidates all three frame libraries, including the
+8.06 h `hampton_300um_realistic` build. That is the owner's call and nothing
+here has been changed — this entry is the evidence, not the switch.
+
+**One thing the hi stop did surface, and it is new:** at 0.9 µm pixels the
+solvent mesh's **tessellation is visible** — the drop's edge inside the loop
+reads as a staircase of flat facets (5472 faces). It is invisible at the mid
+stop. Any future hi-mag fidelity work needs a denser drop mesh, which also
+makes the missing `TSurfaceMesh` AABB cull cost more than it does today.
+
 ### 2026-08-11 — the glint met an operator: four defects that only motion shows
 
 Every one of these passed the test suite and looked right in a still frame.
@@ -1129,6 +1280,77 @@ numbers, not just the renderer.
   caps the 4080 to a Titan-V-sized 12 GB *today*.
 
 ## Already Tried
+
+### df64 / "two float32s to emulate float64" (Dekker double-float)
+
+Investigated 2026-08-11 against the sibling repo `nanoBragg`, which implements
+it properly (`cuda/docs/DF64-ARITHMETIC.md`, merged to main). **Rejected. The
+premise that it offers an order of magnitude is false, and it would be slower
+here even if it were free.**
+
+- **nanoBragg measures df64 at 1.38x SLOWER than fp32**, and ~2.04x faster than
+  native fp64 on ONE sub-computation (`sincos`) on an RTX 5090. There is no
+  order-of-magnitude result anywhere in that repo. The 1/32-1/64 figure that
+  circulates is the *hardware fp64 penalty on consumer cards*, cited as
+  motivation, not a measured speedup. Its own doc says: **"on hardware where
+  float64 runs at half the float32 rate, just use float64."**
+- **A df64 value is still 8 bytes**, so it saves zero bandwidth and zero VRAM.
+  The mesh path's 160 B/ray/face law is unchanged by it, and that law -- not
+  arithmetic -- was what actually cost 43x (see the cull entry above).
+- **The frame is not ALU-bound.** Profiling records 73-85% self-CPU, GPU ~29%
+  busy, ~23,600 kernel launches per n_cond=1 frame. df64 replaces each f64 op
+  with 10-20 fp32 ops, i.e. it adds work in the dimension that binds.
+- **It would break the byte-identity anchor.** ~48-49 mantissa bits against
+  fp64's 53 is a *different number*, so every `max diff == 0` test against the
+  numpy reference would have to be renegotiated, and every tracked library
+  rebuilt.
+- **Honest point in its favour, recorded so it is not lost:** the 2026-07-06
+  fp32-preview rejection was caused by f32<->f64 cast traffic at the
+  deliberately-f64 tube-kernel boundary. A df64 scheme has no f64 boundary at
+  all, so that specific failure mode would not apply to it.
+- **A measurement error to avoid repeating.** An fp32-vs-f64 A/B on the real
+  scenes gave 1.22x (tube) and 1.02x (mesh), which looks like a 2% ceiling on
+  all precision work. It is not: `TTube._kernel` and `TSurfaceMesh` **hard-code
+  `torch.float64` regardless of engine dtype**, so both arms ran an f64
+  intersection. That experiment measured fp32 *transport* only. The true fp32
+  ceiling remains unmeasured -- it just does not matter, because the bottleneck
+  was never arithmetic.
+- **Would be worth another look if:** the tracer became a single fused kernel
+  that is genuinely fp64-ALU-bound on a consumer card. Note also the cheaper
+  classical fix for the underlying cancellation, which needs no df64 at all:
+  the 50 mm ray-launch distance is an arbitrary constant, and re-originating to
+  the AABB entry point collapses `oaoa` from 2500 mm^2 to O(r^2). Rejected here
+  only because it changes every `t` value and would invalidate every tracked
+  library for a speedup worth ~1%.
+
+### rasterisation instead of ray tracing
+
+Investigated 2026-08-11. **Rejected: wrong machine for this image, and the
+motivating cost was somewhere else entirely.**
+
+The camera is orthographic and both post-trace stages (the objective PSF and
+the whole `field.py` camera model) are already separable 2-D operations, so a
+rasteriser sounds close. It is not, because three of the effects that define
+the picture are not z-buffer quantities:
+
+- **The NA gate is a binary kill on a ray's FINAL direction after up to 12
+  refractions.** No depth-buffer value encodes it, and it is what makes 97.7%
+  of a raw frame pure 0 or 255.
+- **The droplet's brightness is a focal-length-versus-aperture calculation.**
+  A wrong drop shape gave `f = R/(n-1) = 441 um`, passing only the inner 9% of
+  its area and rendering black; the correct one passes most of the aperture.
+  That swing comes from ray optics, not from shading.
+- **TIR rim width depends on immersion** (nylon/air 40.8 deg critical, nylon in
+  solvent 61.0 deg), and crystal-in-nylon is index-matched at dn=0.01 -- a
+  geometric edge that must render as optically invisible.
+
+Also: the 8-half-space CSG crystal has no bounding box, and objects resolve by
+YAML priority order rather than by depth, which is not a z-buffer rule.
+
+**And the honest framing:** the frame-library path already IS the "don't ray
+trace at runtime" answer, serving at 1-16 ms with no GPU. The cost being
+complained about was the offline BUILD, and that turned out to be a missing
+AABB cull worth 43x with no fidelity cost at all.
 
 ### float32 in the camera-delivery stage
 

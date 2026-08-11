@@ -39,6 +39,23 @@ is the one place a real 10% scale error lives, and nothing uses the file.
 
 ## Read this before calibrating anything against these frames
 
+**COMPARE IN CAMERA SPACE. A raw render is not in the same units as these files**
+(added 2026-08-11, after this cost one wrong conclusion). The tracer emits
+TRANSMITTANCE; a photograph is what the camera RECORDED. `field.apply_camera` maps
+between them and is affine — `out = (e - B)*t + B` with a black floor B = 0.1765 — so
+it does **not** preserve ratios, and the error is largest exactly on dark bodies. A
+crystal that reads 0.186 x background in transmittance reads 0.416 x in camera space.
+Run the render through `to_sensor` then `apply_camera` before putting any number next
+to a number from this directory.
+
+**And divide the render by its own clear-field level.** `field.py`'s vignette is a
+41.6% peak-to-trough bowl fitted to the 2020 session, which its own docstring flags as
+5-7x stronger than every other epoch. Most frames here are much flatter — `D01`'s five
+sky boxes span **2.8%** of level, centre-vs-corner **-0.5%** — so a centre-body /
+corner-background ratio carries a vignette in the render that the photograph does not
+have. Left in, it shifted the NA answer by a whole stop.
+`scratch/na_fork.py` and `scratch/d01_measure.py` are worked examples of both steps.
+
 **Use them to falsify, not to fit.** Three limits, all measured 2026-08-10:
 
 - **The set reproduces the open three-calibration problem rather than resolving it.**

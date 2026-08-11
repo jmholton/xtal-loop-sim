@@ -1,7 +1,7 @@
 ---
 project: loop-sim (xtal-loop-sim) — bright-field microscope + X-ray simulator for protein crystals in cryo-loops
-status: active — camera served from pre-computed templates (no GPU at runtime) and usable interactively; renders go out through a measured camera model on the real 704x480 raster; all three frame libraries current; the NA half of the camera-calibration fork is the one open front
-last_verified: 2026-08-11        # `pytest tests/` = 213 passed in 119 s on this tree (branch performance-correctness-optimizations, RTX 4080 SUPER)
+status: active — camera served from pre-computed templates (no GPU at runtime) and usable interactively; renders go out through a measured camera model on the real 704x480 raster; all three frame libraries current; the camera calibration is now fully settled (pixels 2026-08-10, NA 2026-08-11) and the next front is render-time optimisation
+last_verified: 2026-08-11        # `pytest tests/` = 213 passed in 121 s on this tree (branch performance-correctness-optimizations, 61 commits ahead of master, RTX 4080 SUPER)
 verify: python -m pytest tests/ -q        # 213 tests; "python" = the torch-enabled project interpreter (see docs/RUNBOOK.md "Environment")
 ---
 
@@ -82,13 +82,24 @@ the GPU path **correct** (it was producing a "hairy" artifact on the loop fiber)
   identical**. It was held pending the NA question and built anyway at the
   owner's call, so **a switch to NA 0.28 would still invalidate it** (RUNBOOK
   "Frame libraries" has the command and the two WSL2-critical flags).
-  **Launching a server on that scene still requires `--supersample 1`** --
-  verified 2026-08-11 with `build_library` patched to raise: a bare launch
-  grades the S=1 library stale against `build_params`' S=4 default and would
-  rebuild it. The tab strip and `--templates off` are safe.
-- **The NA fork now has its strongest evidence, and it came from fixing the drop.** See
-  "Open questions" below — the drop is fine at every NA; it is the immersed *crystal*
-  that goes 3× too dark at NA 0.10 and recovers halfway at 0.28.
+  **Launching a server on an S=1 scene requires `--supersample 1`, and TWO of
+  the three shipped scenes are S=1** -- re-measured 2026-08-11 with
+  `build_library` patched to raise. `hampton_300um_realistic` (~8 h) and
+  **`mitegen_200um` (~1.9 h)** both rebuild on a bare launch; `hampton_300um`
+  (S=4) is the one that is safe bare and is destroyed by the flag. There is no
+  blanket-safe launch command -- the flag must match the library. The tab strip
+  and `--templates off` are safe. See RUNBOOK "Frame libraries" for the table.
+- **The NA fork is ANSWERED: 0.28.** Camera-space crystal/background is **0.677
+  against the photograph's 0.691** (2%); the shipped NA 0.10 gives 0.421, 39% short.
+  The confound was never the zoom stop — rendering at the hi stop moves the answer ~1%.
+  It was that every earlier comparison put a render's **transmittance** ratio next to a
+  photograph's **grey** ratio, and `field.apply_camera` is affine with a black floor, so
+  it does not preserve ratios. **Nothing was switched:** the scenes still ship NA
+  0.10/0.07, because a switch rebuilds all three libraries including the 8.06 h one.
+  That is the owner's call. See Open questions and DECISIONS.md §2026-08-11 (later).
+- **The renderer's own frame libraries are current, but the launch path will rebuild two
+  of them.** See Hazards — this is the most expensive trap in the repo and it is wider
+  than the docs previously said.
 
 ## Earlier state (2026-08-07)
 
@@ -100,10 +111,13 @@ the GPU path **correct** (it was producing a "hairy" artifact on the loop fiber)
   arrived as a single-frame jump. All five are fixed and measured — see DECISIONS.md
   §2026-08-06. **The renderer was not touched**; every one of these lived in delivery or
   in the control geometry, and none was visible from server-side timings or the test suite.
-- **Branch `performance-correctness-optimizations`, 30 commits ahead of `master`, NOT
-  pushed to GitHub.** James owns the push/merge decision. (`master` itself is 22 commits
-  ahead of the stale GitHub default `main`, which is a divergent "Initial commit" — always
-  work from `master`/this branch, never `main`.)
+- **Branch `performance-correctness-optimizations`, NOT pushed to GitHub.** It was 30
+  commits ahead of `master` when this section was written and is **61 as of 2026-08-11**;
+  the figure only ever grows, so **measure it — `git rev-list --count master..HEAD` —
+  rather than quoting any line in these docs.** (A session quoted a stale note here and
+  was off by 26.) James owns the push/merge decision. `master` itself is 22 commits ahead
+  of the stale GitHub default `main`, which is a divergent "Initial commit" — always work
+  from `master`/this branch, never `main`.
 - **Delivery has moved to pre-computed templates, and the camera server now serves from
   them.** The camera is orthographic, so the spindle is the only motor that genuinely
   changes image content; everything else is an image-space transform. `loop_sim/library/`
@@ -199,18 +213,13 @@ For a stranger picking this up cold:
    sidesteps the frame-rate problem rather than fighting it (RUNBOOK "Frame libraries").
 
 The highest-value open engineering items, in rough priority:
-- **Settle the objective NA** — the last question gating fidelity, and the thing the
-  held rebuild is waiting on. The pixel half of the old "three cameras" puzzle is
-  settled (2026-08-10): there is one camera with 1.110 non-square pixels at two zoom
-  stops, and the Hampton scenes already render its mid stop correctly on square pixels.
-  NA is what remains, and it now has a measurement rather than an argument: at NA 0.10 a
-  correct half-maximum drop leaves the immersed crystal at **0.218 × background against
-  0.696 in the reference photograph**, recovering to 0.455 at NA 0.28. Two independent
-  hints point at 0.28 — the reference frame is hi mag, whose own calibration is 0.28,
-  and the drop's rim deflection lands at sin 0.273. The cheapest decider is still **one
-  photograph of a real 300 µm loop carrying a drop at a known zoom stop** (Jacob
-  captures). Cost a switch first: the supersample ceiling moves and every library
-  rebuilds.
+- **Decide whether to switch the scenes to NA 0.28** — the measurement is done
+  (2026-08-11 later); what is left is a cost call the owner makes. Camera-space
+  crystal/background is **0.677 at NA 0.28 against the photograph's 0.691**, and 0.421
+  at the shipped NA 0.10. Switching moves the supersample ceiling and **rebuilds all
+  three frame libraries**, including the 8.06 h `hampton_300um_realistic` build. Both
+  halves of the old "three cameras" puzzle are now closed: pixels on 2026-08-10, NA on
+  2026-08-11.
 - **Decide how to spend the decode budget** — 75% of a rotating frame is PNG
   decode. A prefetch pool would roughly triple the rate for no rebuild and no
   loss of zoom range; `--supersample 2` is simpler but costs both. Neither is
@@ -223,16 +232,19 @@ The highest-value open engineering items, in rough priority:
 - **Wire `render.py --device cuda` to the resident engine** — it still uses the legacy
   per-object CUDA path; only `camera_server` uses `engine_torch`. Unifying them removes a
   confusing second GPU path.
-- **Click-to-recentre bug** (paused) — lands ~100–200 px off, non-deterministically;
-  leading hypothesis is a frame/pose lag race. Full resume plan in `../CLAUDE.md` §"Click-to-
-  recentre" and DECISIONS.md. **New evidence 2026-08-06:** on the template path, which
-  serves a frame in ~35 ms instead of the ~1 s an n_cond=7 live render took, a recentre
-  driven over HTTP landed **2.5 px** from target (centroid measured from the server's own
-  served frame, target 320,240 → 317.5,240.0; part of that residual is the centroid
-  including an asymmetric stem stub). That is consistent with the lag hypothesis but does
-  not confirm it: the test drove the endpoint directly, so the browser-side MJPEG
-  buffering the hypothesis blames was absent. Reproducing it by clicking in a real browser
-  on the template path is the check that would settle it.
+- ~~Click-to-recentre bug~~ — **CLOSED 2026-08-11, by observation rather than by a
+  fix.** The owner reports click-to-recentre landing correctly in ordinary use of the
+  viewer, across the sessions since the template path shipped. That is the browser-side
+  check the 2026-08-06 measurement could not supply, and it agrees with it: on the
+  template path, which serves a frame in ~35 ms instead of the ~1 s an n_cond=7 live
+  render took, a recentre driven over HTTP landed **2.5 px** from target (centroid from
+  the server's own served frame, target 320,240 → 317.5,240.0; part of that residual is
+  the centroid including an asymmetric stem stub). Both readings are consistent with the
+  frame/pose lag hypothesis, and with the move to templates having removed the lag that
+  caused it. **No code was changed to close this**, so the standing evidence is two
+  observations rather than a root cause: if it ever returns, it should return on
+  `--templates off`, where the ~1 s render is still there. The original resume plan is
+  preserved in `../CLAUDE.md` §"Click-to-recentre".
 
 ## Hazards & gotchas
 
@@ -397,26 +409,47 @@ fallback **6.3 fps**. The three things that decide whether you get 11.9 or 6.3:
   *only* because compile works, which loops back to risk B.)
 
 **Other traps:**
-- **RESOLVED 2026-08-07 — `mitegen_200um` was rebuilt; both shipped libraries are now
-  current.** It is PNG with the objective PSF baked in, at `--supersample 1` (its own
-  optically-correct value, see the sampling table below): 360 frames, 1840×2296,
-  **16 MB**, 102 min at 17.0 s/frame. Like the hampton rebuild, PNG came out *smaller*
-  than the JPEG it replaced (16 vs 28 MB). Nothing ships stale any more.
-  **Superseded 2026-08-10:** three libraries ship now, and
-  `hampton_300um_realistic` is `missing` rather than stale — slice 3 changed its
-  scene and its rebuild is deliberately held (see Current state).
+- **THE LAUNCH PATH REBUILDS WHAT THE SERVING PATH SERVES, AND IT HITS TWO OF THE
+  THREE SHIPPED SCENES.** This is the single most expensive trap in the repo. Switching
+  to a stale-but-complete library at runtime serves it as-is; launching with
+  `--scene <that scene>` still calls `ensure_library` in `__init__`, which **deletes the
+  manifest and rebuilds before the socket binds**. It fired for real on 2026-08-08 and
+  the manifest had to be reconstructed (see the work log).
 
-  **The asymmetry it used to illustrate is still there — and as of 2026-08-08 it is
-  LIVE, not latent.** Switching to a stale-but-complete library at runtime serves it
-  as-is; launching with `--scene <that scene>` still calls `ensure_library` in
-  `__init__` and rebuilds before the socket binds. `hampton_300um_realistic` is the
-  scene that triggers it: its per-scene-correct `--supersample 1` library grades stale
-  against the launch path's defaults, so a bare
-  `camera_server --scene scene_files/hampton_300um_realistic.yaml` **deletes the
-  manifest and starts a days-long supersample-4 mesh rebuild before serving anything**
-  (it did exactly this on 2026-08-08; the manifest had to be reconstructed — see the
-  work log). **Workaround until fixed: always pass `--supersample 1` when launching
-  the server on this scene.** The tab-switch path is unaffected and serves it fine.
+  The cause is a divergence between two graders. `_grading_params` — what the tab strip
+  and `_pick_library` use — **drops `supersample` unless the operator passed it**,
+  because supersample is per-scene by design (RUNBOOK "Frame libraries" has the table:
+  hampton 4, mitegen 1, following each camera's sampling against the objective's Nyquist
+  limit). `CameraServer.__init__` instead calls `ensure_library` with the raw
+  `_library_kwargs`, and `ensure_library` resolves through `build_params`, which fills
+  `supersample=4` from its own default. So every S=1 library is `current` to the tab
+  strip and `stale` to the launcher.
+
+  **Measured 2026-08-11 with `build_library` patched to raise, so nothing could run:**
+
+  ```
+    hampton_300um            bare launch      -> serves it, no build
+    hampton_300um            --supersample 1  -> WOULD REBUILD   (~45 min)
+    hampton_300um_realistic  bare launch      -> WOULD REBUILD   (~8 h)
+    hampton_300um_realistic  --supersample 1  -> serves it, no build
+    mitegen_200um            bare launch      -> WOULD REBUILD   (~1.9 h)
+    mitegen_200um            --supersample 1  -> serves it, no build
+  ```
+
+  **There is no blanket-safe launch command** — the flag must match the library, and
+  `--supersample 1` rescues two scenes while destroying the third. Pass the value in
+  that library's `manifest.json`. **Correcting an earlier claim:** this hazard was
+  written up as specific to `hampton_300um_realistic`; `mitegen_200um` has carried it
+  the whole time, and the entry below asserting "nothing ships stale any more" was true
+  of the serving path and never of the launch path. All three libraries do read
+  `current` where it counts for serving. The durable fix is making the two paths agree —
+  it is an open question below, not merely a workaround.
+
+  *(superseded 2026-08-11, kept for the rebuild record)* **RESOLVED 2026-08-07 —
+  `mitegen_200um` was rebuilt.** It is PNG with the objective PSF baked in, at
+  `--supersample 1` (its own optically-correct value): 360 frames, 1840×2296,
+  **14.7 MB**, 102 min at 17.0 s/frame. Like the hampton rebuild, PNG came out *smaller*
+  than the JPEG it replaced. Nothing ships stale any more.
 - **CPU/GPU parity is now "±1 grey level", not "byte-identical", once the PSF is on.**
   The two float64 traces always differed by ~3e-8 on ~0.7% of values; that was invisible
   while the image was near-binary and the PSF makes it visible at the quantisation
@@ -503,38 +536,43 @@ fallback **6.3 fps**. The three things that decide whether you get 11.9 or 6.3:
   vertically — the one real 10% error in the set, in a file nothing uses. Nothing here
   needs changing; see DECISIONS §2026-08-10.
 
-  *Open (NA).* NA sets how much of a refracting body's light clears the objective, and
-  the drop-volume fix made this measurable for the first time. **The drop is not the
-  problem at any NA** (0.955–0.989 × background throughout). The **crystal** is: once a
-  correct half-maximum drop immerses it, it reads 0.218 × background at NA 0.10 against
-  **0.696 in the reference photograph**, recovering only to 0.455 at NA 0.28. Two things
-  point the same way — the reference frame `D01` is **hi mag**, whose own calibration is
-  NA 0.28; and the drop's rim-ray deflection lands at **sin 0.273**, which is NA 0.28
-  almost exactly. Neither number is proof, and the crystal's absorption was deliberately
-  **not** tuned to hide the gap.
+  *ANSWERED 2026-08-11 (later) — **NA 0.28**, measured, and the switch is now an
+  owner's decision rather than an open investigation.* At the hi stop, camera-space
+  crystal/background is **0.677 against the photograph's 0.691** — a 2% gap. NA 0.10
+  gives 0.421, 39% short. `scratch/na_fork.py` and `scratch/d01_measure.py` are the
+  harnesses; DECISIONS.md §2026-08-11 (later) has the full grid and the two negatives.
 
-  **The reference set already holds drop photographs — do not ask for a capture before
-  checking it.** `real_images/` carries **13 scale-carrying frames of loops holding
-  drops** (B01–B06, B08–B11, D01/D03/D05); `D01` is where the 0.696 above comes from.
-  What it does NOT hold is a drop at the **mid** stop: all 15 drop/solvent/crystal frames
-  are hi mag, while the Hampton scenes model the mid stop — so every comparison so far
-  has been a mid-stop render against a hi-stop photograph. That, not a missing
-  photograph, is the mismatch.
+  **The confound was not the zoom stop — it was the SPACE the comparison was made in.**
+  Rendering at the hi stop (the move this section used to recommend) changes the answer
+  by ~1%. What changed it by 2.3× is that every previous comparison put a render's
+  **transmittance** ratio against a photograph's **grey** ratio: `field.apply_camera` is
+  affine, `(e − B)·t + B` with a black floor of 0.1765, so it does not preserve ratios
+  and lifts dark things hard. The same NA 0.10 render reads 0.186 in transmittance and
+  0.416 in camera space. The old 0.218-vs-0.696 gap was about half units, half physics.
+  **Anything compared against `real_images/` from here on must go through
+  `field.apply_camera` first** — that is the general lesson, not a detail of this fork.
+  One more step is load-bearing: divide the render by its own clear-field level. The
+  modelled vignette is 41.6% peak-to-trough and D01's real field is flat to 2.8%
+  (centre-vs-corner −0.5%), so leaving it in reads NA 0.28 as 0.818 and points at 0.17.
 
-  So the cheapest move needs no beamline time: **render the scene at the hi stop**
-  (0.8233 µm px, NA 0.28/0.17 — `template.yaml`'s calibration) and compare like-for-like
-  against those frames. Direct renders, seconds each, no library rebuild, and at that
-  pixel size a 300 µm loop fills half the frame exactly as B and D show. Prefer the **D**
+  The reference numbers were re-measured independently and hold: D01 gives drop/bg
+  0.882 (recorded 0.871), crystal/bg 0.691 (0.696), crystal/solvent 0.783 (0.799).
+
+  **What remains is the cost decision, not the measurement.** Switching the scenes to
+  NA 0.28 moves the supersample ceiling and invalidates all three frame libraries,
+  including the 8.06 h `hampton_300um_realistic` build of 2026-08-11. Nothing has been
+  changed; the scenes still ship NA 0.10/0.07.
+
+  *Still true, and still worth having:* `real_images/` holds **13 scale-carrying frames
+  of loops with drops** (B01–B06, B08–B11, D01/D03/D05) but **none at the mid stop**, so
+  a mid-stop photograph of a loop with a drop (Jacob captures) would let the shipped
+  Hampton scenes be judged at their own stop instead of by transfer. Prefer the **D**
   set for anything dimensional: its `fov` 0.579607 × 0.438657 mm is the hi stop's true
-  non-square pitch, where B implies **square** pixels and is 1.1% / 9.8% off — the
-  two-calibrations problem of `real_images/README.md` reaches inside the drop set. Loop
-  sizes are unrecorded in both, so these settle tone and NA well and drop volume poorly.
-  A **mid-stop photograph of a loop with a drop** (Jacob captures) is still worth having,
-  but it is no longer the only move.
-
-  Cost any switch to NA 0.28 before making it: the supersample ceiling moves and every
-  frame library rebuilds — including the 8.06 h `hampton_300um_realistic` build of
-  2026-08-11.
+  non-square pitch, where B implies **square** pixels and is 1.1% / 9.8% off. Loop sizes
+  are unrecorded in both, so these settle tone and NA well and drop volume poorly.
+  Note the square-pixel hi stop is **0.9056 µm**, not `template.yaml`'s 0.8233 — built
+  the same way the mid stop's 7.4 µm is (704 × 0.8233 / 640). The two give the same tone
+  to 0.3%, so it only matters dimensionally.
 - **Is the bundled `hampton_300um` loop mislabelled, or digitized at another size?** Its
   waypoints span 69 × 200 µm, not ~300 µm. Worth comparing against the physical part before
   assuming the geometry is wrong rather than the name.
@@ -558,8 +596,13 @@ fallback **6.3 fps**. The three things that decide whether you get 11.9 or 6.3:
   now shows exactly that.
 - **Should launching on a stale-library scene behave like switching to one?** Runtime
   switching serves a stale-but-complete library as-is; `CameraServer.__init__` still
-  rebuilds it. Both behaviours are defensible on their own and they now disagree with
-  each other — see the `mitegen_200um` trap above.
+  rebuilds it. Both behaviours are defensible on their own and they disagree with each
+  other — see the launch-path trap under Hazards, which as of 2026-08-11 is measured to
+  hit **two of the three shipped scenes**, not one. The narrow fix is one line: have
+  `__init__` grade through `_grading_params` like every other caller, so `supersample`
+  is dropped unless the operator asked for it. The wider question is whether a launch
+  should ever start a multi-hour build before binding the socket, or refuse and say what
+  it would have built.
 - **Push/merge decision for `performance-correctness-optimizations`** — owner: James. Until
   pushed, the branch lives only on this tree + the gateway mirror.
 - **Package the TITAN V software stack.** The 11.9 fps result needs torch 2.6 + a modern
@@ -602,13 +645,14 @@ those numbers don't have to be re-derived.
 - `frame_library/<scene>/` — **tracked deliverable**, not build output: a rendered 360°
   sweep plus a `manifest.json` per scene. The repo ignores `*.png` and `*.jpg` globally, so
   `.gitignore` carries explicit re-includes for both under this tree. **Currently shipped:
-  `hampton_300um`** (360 frames, 1° steps, `--supersample 4`, 5578×2570 each, 28.7 MB PNG) and
-  **`mitegen_200um`** (360 frames, `--supersample 1`, 1840×2296, 16 MB PNG, rebuilt
+  `hampton_300um`** (360 frames, 1° steps, `--supersample 4`, 5578×2570 each, 29.3 MB PNG) and
+  **`mitegen_200um`** (360 frames, `--supersample 1`, 1840×2296, 14.7 MB PNG, rebuilt
   2026-08-07) and **`hampton_300um_realistic`** (360 frames, `--supersample 1`,
-  1396×644, 2.9 MB PNG) — all verified against live renders at 0.00 px. The first two
-  are current; **the third is `missing` since 2026-08-10 and awaits a rebuild** (see
-  Current state, and RUNBOOK "Frame libraries" for the command and its two load-bearing
-  flags). The supersample differs because the two cameras sample
+  1396×644, 2.1 MB PNG, rebuilt 2026-08-11) — all verified against live renders at
+  0.00 px, **all three `current`** (re-measured 2026-08-11; 46.1 MB together). Note that
+  `current` here is the serving path's verdict — the launch path grades the two S=1
+  libraries stale and would rebuild them, which is the trap under Hazards.
+  The supersample differs because the two cameras sample
   the same NA 0.10 optics very differently; RUNBOOK "Frame libraries" has the rule. Note
   library size in git (see DATA.md "Known gaps") — `--supersample 2` is 4× cheaper than 4
   if that matters for a future scene.
@@ -644,6 +688,37 @@ those numbers don't have to be re-derived.
   `/home/jadoughty/projects/loop_sim_MINE/investigation/`.
 
 ## Work log (append-only)
+
+- **2026-08-11 (later) — the NA fork closed, and the doc set was re-measured
+  rather than re-quoted.** No source changes; docs + `scratch/` only. Suite
+  re-run on this tree: **213 passed in 121 s**.
+  **NA resolves to 0.28.** Camera-space crystal/background **0.677 against the
+  photograph's 0.691**; NA 0.10 gives 0.421. The confound was the SPACE, not
+  the zoom stop: hi-stop rendering moves the answer ~1%, while comparing a
+  transmittance ratio against a photograph's grey ratio moved it 2.3×.
+  `real_images/D01` was re-measured independently first and reproduced the
+  recorded reference to within 1% on crystal/bg. **Nothing was switched** — a
+  move to NA 0.28 rebuilds all three libraries including the 8.06 h one, and
+  that is the owner's call. Harnesses in `scratch/`; DECISIONS.md
+  §2026-08-11 (later) carries the grid, the two negatives, and the new finding
+  that the drop mesh's tessellation is visible at hi mag.
+  **Five doc holes closed, all found by measuring what the docs asserted.**
+  RUNBOOK's Verify said 62 tests (213); its Deploy note said ~20 commits ahead
+  of master (61); HANDOFF and DATA still called `hampton_300um_realistic`
+  `missing` and awaiting a rebuild eight days after it was rebuilt; the library
+  sizes were stale in three files. **The one that could have cost real time:**
+  the launch-path rebuild trap was documented as specific to
+  `hampton_300um_realistic`, and `mitegen_200um` carries it identically
+  (~1.9 h, manifest deleted first). Re-measured across all three scenes with
+  `build_library` patched to raise, and there is **no blanket-safe launch
+  command** — `--supersample 1` rescues two scenes and destroys the third.
+  **Click-to-recentre closed** by owner observation (works in ordinary browser
+  use); no code changed, so the diagnosis is kept in `../CLAUDE.md` in case it
+  returns on `--templates off`.
+  **Next:** render-time optimisation. The decode budget is the known lever —
+  75% of a rotating frame is PNG decode, with a prefetch pool (~30 fps, no
+  rebuild) and `--supersample 2` (~24 fps, costs the zoom ceiling) both
+  measured and neither taken.
 
 - **2026-08-11 — the camera model met an operator, and the droplet library was
   rebuilt.** Suite **213** (was 206). Four commits.

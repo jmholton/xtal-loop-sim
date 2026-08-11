@@ -579,8 +579,19 @@ class TTube:
 
 # ---------------------------------------------------------------------------
 # SurfaceMesh (Moller-Trumbore) -- resident port of numpy SurfaceMesh.ray_intersect.
-# Intersection in float64 (same precision rationale). Brute-force over all faces;
-# a GPU broad-phase is deferred to 2f/2g (fine at current mesh sizes).
+# Intersection in float64 (same precision rationale).
+#
+# AABB-culled since 2026-08-11, which is a PARITY RESTORATION rather than a new
+# approximation: the numpy SurfaceMesh.ray_intersect this class ports has always
+# run the same slab test and fed only survivors to Moller-Trumbore.  This class
+# was the one that diverged, brute-forcing every ray against every face.  That
+# cost is why a droplet scene was 162x more expensive per pixel than a tube one
+# and why `fit_tile_size` had to shrink the trace tile to ~6800 rays: the
+# measured law is 160 B per ray per face, and F was never reduced.
+#
+# The cull cannot change a pixel.  Every point of every triangle lies inside the
+# vertex AABB by construction, so a ray missing the box provably misses all
+# faces, and the brute-force path returned INF for exactly those rays.
 # ---------------------------------------------------------------------------
 class TSurfaceMesh:
     def __init__(self, vertices, faces, dev, dt):
@@ -595,6 +606,12 @@ class TSurfaceMesh:
         self._fn = _t(fn, dev, f64)
         self._eps = 1e-8
         self.dev, self.dt = dev, dt
+        # Bounds over the REFERENCED triangle corners, not over `vertices` --
+        # an unreferenced vertex would inflate the box and cost survivors for
+        # nothing.  Both are conservative; this one is tighter.
+        corners = v[f].reshape(-1, 3)
+        self._bbox_lo = _t(corners.min(axis=0), dev, f64)
+        self._bbox_hi = _t(corners.max(axis=0), dev, f64)
 
     def _mt_batch(self, o, d):
         v0, e1, e2 = self._v0, self._e1, self._e2
@@ -622,7 +639,38 @@ class TSurfaceMesh:
         t_back = torch.where(has_bwd, -t_bwd[bi, fi_bwd], torch.zeros_like(t_min))
         return t_min, t_max, fi_min, fi_max, t_back, fi_bwd
 
+    @torch._dynamo.disable
     def ray_intersect(self, o, d, compiled=False):
+        # AABB cull, mirroring TTube.ray_intersect: run the heavy (B,F,3)
+        # Moller-Trumbore only on bbox survivors.  dynamo-disabled for the same
+        # reason TTube is -- the data-dependent survivor count would otherwise
+        # specialize the outer compiled next_interface graph on every pose.
+        N = o.shape[0]
+        te = torch.full((N,), float("inf"), device=o.device, dtype=self.dt)
+        tx = torch.full((N,), float("inf"), device=o.device, dtype=self.dt)
+        ne = torch.zeros((N, 3), device=o.device, dtype=self.dt)
+        nx = torch.zeros((N, 3), device=o.device, dtype=self.dt)
+        surv = _aabb_survivors(o, d, self._bbox_lo, self._bbox_hi)
+        idx = surv.nonzero(as_tuple=False).squeeze(1)
+        # Chunk the survivors so the (B,F,3) working set is bounded HERE rather
+        # than by shrinking the caller's tile.  Per-ray results are independent
+        # of how rays are grouped -- the same argument that makes the outer tile
+        # loop byte-exact -- so this cannot change a pixel.  Bounding it locally
+        # is what lets fit_tile_size stop paying the mesh term for every ray in
+        # the frame when only ~0.3% of them reach a face.
+        step = _mesh_survivor_chunk(self._v0.shape[0], self.dev)
+        for s in range(0, idx.numel(), step):
+            sub = idx[s:s + step]
+            kte, ktx, kne, knx = self._intersect_all(o[sub], d[sub])
+            te[sub] = kte
+            tx[sub] = ktx
+            ne[sub] = kne
+            nx[sub] = knx
+        return te, tx, ne, nx
+
+    def _intersect_all(self, o, d):
+        """The un-culled intersection.  Unchanged from the pre-cull body, so a
+        survivor gets bit-for-bit what brute force gave it."""
         f64 = torch.float64
         of, df = o.to(f64), d.to(f64)
         INF = float("inf")
@@ -983,6 +1031,44 @@ _MESH_BYTES_PER_RAY_FACE = 160
 # on much heavier meshes, where being slow beats spilling.
 _TILE_FIT_MIN = 4_096
 
+# Floor for the survivor chunk. Survivors are ~0.3% of a frame on the shipped
+# droplet scene, so this almost never binds -- it exists for a pose that puts
+# the mesh across the whole field (deep zoom into the drop).
+_MESH_CHUNK_MIN = 2_048
+
+# ABSOLUTE ceiling on the survivor working set, and the reason it is absolute:
+# sizing purely as a fraction of FREE VRAM takes whatever the card happens to
+# have, which on an idle 16 GB card came to ~8 GB and drove nvidia-smi to
+# 13.7 GB mid-build -- inside the WSL2 spill zone and enough to make a shared
+# desktop unusable. The cull already makes survivors scarce (~2.7k rays on the
+# build frame, 0.3% of it), so a bigger budget buys no speed and only takes the
+# card away from whatever else is using it. 2 GiB holds ~2.4k survivors against
+# the shipped 5472-face droplet; more survivors simply take more chunks.
+_MESH_CHUNK_MAX_BYTES = 2 << 30
+
+
+def _mesh_survivor_chunk(faces, dev, vram_fraction=0.25):
+    """How many AABB survivors TSurfaceMesh may push through Moller-Trumbore
+    at once.
+
+    Since 2026-08-11 the mesh bounds its own working set here instead of the
+    caller shrinking the whole trace tile to suit it. The old arrangement made
+    every ray in the frame pay the mesh's memory law even though the AABB cull
+    now rejects ~99.7% of them before a single triangle is touched -- which
+    forced ~133 passes over the build frame and cost 10x more than the
+    brute-force intersection it was protecting against.
+
+    A quarter of free VRAM, capped absolutely: this budget nests inside a caller
+    that has already sized its own tile, so the two must not both claim the same
+    headroom, and the cap keeps a long build from annexing the whole card.
+    """
+    if getattr(dev, "type", None) != "cuda" or faces <= 0:
+        return 1 << 30
+    free, _total = torch.cuda.mem_get_info()
+    budget = min(free * vram_fraction, float(_MESH_CHUNK_MAX_BYTES))
+    per_ray = faces * _MESH_BYTES_PER_RAY_FACE
+    return int(max(_MESH_CHUNK_MIN, budget // per_ray))
+
 
 def _mesh_face_count(shapes):
     """Faces in the LARGEST mesh in a shape tree, or 0 if there is none.
@@ -1013,16 +1099,21 @@ def fit_tile_size(tscene, total_rays, vram_fraction=0.80):
     and nothing allocates the very block it is trying to avoid. plan_tile_size
     remains available for callers that explicitly ask for tile_size=None and
     want the measured answer.
+
+    CHANGED 2026-08-11: the mesh term is gone. It existed because
+    TSurfaceMesh brute-forced every ray against every face, so the frame's whole
+    ray count had to be divided down to fit `tile_rays x faces x 160 B`. The
+    mesh now AABB-culls and chunks its own survivors
+    (`_mesh_survivor_chunk`), so that product no longer depends on the caller's
+    tile and shrinking the tile buys nothing but passes. Measured on
+    hampton_300um_realistic at build resolution (1396x644, n_cond 7): the old
+    sizing gave 6800 rays and 133 passes at 19.90 s; a single full-frame tile
+    is 1.95 s at 2.56 GB peak -- 10.2x, on top of the 4.05x the cull itself
+    gave against the 80.6 s baseline.
     """
     if tscene.dev.type != "cuda":
         return total_rays
-    faces = _mesh_face_count(tscene.shapes)
-    if faces == 0:
-        return min(total_rays, _TILE_DEFAULT)   # no mesh: unchanged behaviour
-    free, _total = torch.cuda.mem_get_info()
-    budget = free * vram_fraction
-    per_ray = faces * _MESH_BYTES_PER_RAY_FACE
-    return int(max(_TILE_FIT_MIN, min(total_rays, budget // per_ray)))
+    return min(total_rays, _TILE_DEFAULT)
 
 
 def _probe_peak(fn):

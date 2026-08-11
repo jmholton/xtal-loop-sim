@@ -24,6 +24,7 @@ from loop_sim.renderer.engine_torch import TorchScene, render_torch
 
 HAMPTON = os.path.join(REPO_ROOT, "scene_files", "hampton_300um.yaml")
 MITEGEN = os.path.join(REPO_ROOT, "scene_files", "mitegen_200um.yaml")
+REALISTIC = os.path.join(REPO_ROOT, "scene_files", "hampton_300um_realistic.yaml")
 
 
 def _u8(img):
@@ -59,6 +60,33 @@ def test_render_parity_cpu_f64_hampton(pose):
 def test_render_parity_cpu_f64_mitegen_thinshell():
     # exercises the ThinShell -> TSurfaceMesh dispatch + CSG
     a, b = _render_pair(MITEGEN, CPU, {}, res=(96, 72))
+    assert int(np.abs(a - b).max()) == 0
+
+
+# The mesh path at PRODUCTION scale.  Until 2026-08-11 the only mesh coverage
+# here was mitegen's 234-face ThinShell; `hampton_300um_realistic` -- 5472 faces,
+# a real SurfaceMesh, and the scene whose library build dominates every timing
+# in the docs -- appeared in no render-parity test at all.  That is the scene
+# whose intersection path gets optimised, so it is the one that has to be
+# pinned.  rotx=45 puts the droplet, the loop fiber and the pin CSG all in frame
+# at once.
+@pytest.mark.parametrize("pose", [{}, {"rotx": 45}])
+def test_render_parity_cpu_f64_realistic_droplet_mesh(pose):
+    a, b = _render_pair(REALISTIC, CPU, pose, res=(96, 72))
+    assert int(np.abs(a - b).max()) == 0
+
+
+@cuda_only
+@pytest.mark.parametrize("pose", [{"rotx": 45}])
+def test_render_parity_cuda_realistic_droplet_mesh(pose):
+    """The CUDA leg of the same guard.
+
+    `TSurfaceMesh` is a different implementation from the numpy `SurfaceMesh`
+    (brute-force vs culled), so CPU parity alone does not prove the CUDA mesh
+    path.  Reduced resolution keeps this affordable -- full res on this scene is
+    ~30 s -- while still running the real kernel over the real 5472 faces.
+    """
+    a, b = _render_pair(REALISTIC, torch.device("cuda"), pose, res=(320, 240))
     assert int(np.abs(a - b).max()) == 0
 
 

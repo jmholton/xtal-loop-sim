@@ -101,9 +101,9 @@ Every lever, with defaults and what it costs, is tabulated under "Every lever" b
 
 > **`hampton_300um_realistic` was rebuilt 2026-08-11** for slice 3 (neutral
 > crystal, flat pin tip, half-maximum drop): 360 frames, 1396x644, supersample 1,
-> **2.3 MB**, 8.06 h at 80.6 s/frame, verified against a live f64 render at phi=30
+> **2.1 MB**, 8.06 h at 80.6 s/frame, verified against a live f64 render at phi=30
 > to **0,0 px registration, mean |diff| 0.00056, 99.1% of pixels identical**.
-> All three libraries now read `current`.
+> All three libraries read `current` (re-measured 2026-08-11).
 >
 > **Both flags in the command below are load-bearing on WSL2.** `--supersample 1`
 > is this scene's own optically-correct value; the default 4 on a mesh scene is
@@ -119,23 +119,45 @@ Every lever, with defaults and what it costs, is tabulated under "Every lever" b
 >
 > A rebuild DELETES the manifest first and overwrites frames in place, so a
 > server launched at that scene mid-rebuild will not find a library. All 361
-> files are tracked (2.3 MB), so `git checkout -- frame_library/hampton_300um_realistic/`
+> files are tracked (2.1 MB), so `git checkout -- frame_library/hampton_300um_realistic/`
 > recovers the previous one -- which is what recovered the 2026-08-10 incident.
+> **The same recovery works for any of the three** -- the libraries are tracked
+> deliverables, so an accidental rebuild is a `git checkout` away as long as it
+> is caught before the working tree is committed.
 
-> **LAUNCHING ON THIS SCENE STILL NEEDS `--supersample 1`.** Verified 2026-08-11
-> against the rebuilt library, with `build_library` monkeypatched to raise:
+> **LAUNCHING ON AN `--supersample 1` SCENE NEEDS `--supersample 1` ON THE
+> COMMAND LINE — AND TWO OF THE THREE SHIPPED SCENES ARE ONE.** Re-measured
+> 2026-08-11 across every bundled scene, with `build_library` monkeypatched to
+> raise so nothing could run:
 >
 > ```
->   bare launch (no flags)   -> WOULD REBUILD   (destroys the 8 h library)
->   launch --supersample 1   -> serves it, no build
+>   hampton_300um            bare launch      -> serves it, no build
+>   hampton_300um            --supersample 1  -> WOULD REBUILD   (~45 min)
+>   hampton_300um_realistic  bare launch      -> WOULD REBUILD   (~8 h)
+>   hampton_300um_realistic  --supersample 1  -> serves it, no build
+>   mitegen_200um            bare launch      -> WOULD REBUILD   (~1.9 h)
+>   mitegen_200um            --supersample 1  -> serves it, no build
 > ```
+>
+> **The flag has to MATCH the library, so there is no blanket-safe launch
+> command.** `--supersample 1` rescues the two S=1 scenes and destroys the S=4
+> one. Pass the value the library on disk was built at — `manifest.json`'s
+> `supersample` field, or `python -m loop_sim.library --scene <s>.yaml` with
+> nothing else, which is a no-op when the library is current.
 >
 > `ensure_library` resolves its kwargs through `build_params`, which fills
-> `supersample=4` from its own default, and this library is 1 -- so a no-flag
-> launch grades it stale and rebuilds before binding the socket. (While the
-> library was MISSING, between slice 3 and the rebuild, no flag helped at all;
-> now that it is `current` the flag works again.) `--templates off` and the
-> runtime tab strip remain safe by construction.
+> `supersample=4` from its own default, so any library built at another value
+> grades stale on the launch path and is rebuilt before the socket binds. The
+> **serving** path does not do this: `_grading_params` drops `supersample`
+> unless the operator passed it explicitly, because supersample is per-scene by
+> design (RUNBOOK "Frame libraries"), so the tab strip correctly reads all three
+> as `current`. The launch path is the one that disagrees — see HANDOFF "Open
+> questions", where reconciling the two is an open item. `--templates off` and
+> the runtime tab strip remain safe by construction.
+>
+> (While `hampton_300um_realistic`'s library was MISSING, between slice 3 and
+> the 2026-08-11 rebuild, no flag helped at all; now that it is `current` the
+> flag works again.)
 
 Re-running is a **no-op when the library is current** — the manifest stores a SHA-256 of
 the scene YAML, a SHA-256 of the **renderer source** (`render_sha`, added 2026-08-10),
@@ -366,10 +388,14 @@ contains it, or it renders as solvent.
 $PY -m pytest tests/ -q
 ```
 
-**Pass = 62 tests green** (last run 2026-07-16: 62 passed in 67 s on an RTX 4080 SUPER;
-43 warnings are expected — benign `divide by zero`/RuntimeWarnings from the numpy
+**Pass = 213 tests green** (last run 2026-08-11: 213 passed in 121 s on an RTX 4080 SUPER;
+60 warnings are expected — benign `divide by zero`/RuntimeWarnings from the numpy
 reference primitives). On a CPU-only box the CUDA-gated parity tests **skip** rather than
 fail, so a green run there is a weaker check — it does not exercise the GPU engine at all.
+
+The count grows with the work; treat the number here as the figure from the last recorded
+run rather than a constant, and `docs/HANDOFF.md`'s front-matter `last_verified` as the
+authority. A run that comes in *below* it is the signal worth chasing.
 
 The suite covers GPU↔CPU render parity (the correctness fix), torch↔numpy shape parity,
 beam attenuation, the compiled preview path, and the server's settle/single-flight
@@ -396,10 +422,11 @@ you start on a host reachable by whatever consumes the stream. To "deploy" a cha
 3. Restart the camera server if one is running (it holds the scene + compiled kernels in
    memory; there is no reload).
 
-**Note on branch state:** this work lives on `performance-correctness-optimizations`, ~20
-commits ahead of `master` and not pushed to GitHub — James owns that decision (see
-HANDOFF "Current state"). Work from `master`/this branch; the GitHub default `main` is a
-stale divergent "Initial commit".
+**Note on branch state:** this work lives on `performance-correctness-optimizations`, **61
+commits ahead of `master`** (measured 2026-08-11) and not pushed to GitHub — James owns
+that decision (see HANDOFF "Current state"). Measure it rather than quoting this line:
+`git rev-list --count master..HEAD`. Work from `master`/this branch; the GitHub default
+`main` is a stale divergent "Initial commit".
 
 ### Deploy on the TITAN V (voltron)
 

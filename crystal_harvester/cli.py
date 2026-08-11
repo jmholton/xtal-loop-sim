@@ -94,6 +94,18 @@ def _parse_args(argv=None):
                     help="DEPRECATED and ignored: the droplet rim is pinned at "
                          "the loop, so the contact angle is determined by "
                          "--solvent-volume and the loop radius")
+    sg.add_argument("--drop-mesh-nz", type=int, default=30, metavar="N",
+                    help="Droplet tessellation along the profile (default 30). "
+                         "With --drop-mesh-nphi this sets the facet size: the "
+                         "defaults give ~10 um facets on a 300 um loop, which "
+                         "is 3x coarser than the 3.35 um Rayleigh limit at "
+                         "NA 0.10. Invisible at the 7.4 um camera pixel; a "
+                         "visible staircase once a supersampled library lets "
+                         "you zoom in. Raise both together")
+    sg.add_argument("--drop-mesh-nphi", type=int, default=48, metavar="N",
+                    help="Droplet tessellation around the azimuth (default 48). "
+                         "Face count scales as nz*nphi, and render cost scales "
+                         "with it linearly, so doubling both is 4x the faces")
 
     # --- Crystal options ---
     cg = p.add_argument_group("Crystal options")
@@ -172,6 +184,8 @@ def main(argv=None):
             crystal_preset     = crystal_preset,
             crystal_dims_mm    = args.crystal_dims,
             lattice_abc        = lattice_abc,
+            drop_mesh_nz       = args.drop_mesh_nz,
+            drop_mesh_nphi     = args.drop_mesh_nphi,
             **hampton_kwargs,
             **pin_kwargs,
         )

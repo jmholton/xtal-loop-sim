@@ -6,11 +6,18 @@ single pass. On a scene with a solvent droplet that is 307200 x 2880 faces x
 160 B = 19.8 GB and a hard OOM -- i.e. every droplet-bearing scene, including a
 routine crystal_harvester Hampton loop, was unrenderable at default settings.
 
-The default now computes the tile from the largest mesh and free VRAM.
-Calculated rather than measured on purpose: plan_tile_size's probing ramp
-resets torch's global peak-memory counters (which bench_frame.py and
-acceptance_voltron.py read) and its upper rungs are exactly the allocations
+The budget is calculated rather than measured on purpose: plan_tile_size's
+probing ramp resets torch's global peak-memory counters (which bench_frame.py
+and acceptance_voltron.py read) and its upper rungs are exactly the allocations
 WSL2 spills on instead of failing, so it cannot be what runs by default.
+
+WHERE THE BUDGET LIVES CHANGED ON 2026-08-11. It used to divide the whole
+frame's ray count down until `tile_rays x faces x 160 B` fitted. TSurfaceMesh
+now AABB-culls (rejecting ~99.7% of rays on the shipped droplet scene before a
+triangle is touched) and chunks its own survivors, so the product no longer
+scales with the caller's tile. The tile went back to the flat default and the
+budget moved to `_mesh_survivor_chunk`. Same law, same constant, enforced one
+level down -- worth 10.2x on the build frame on top of the cull's own 4.05x.
 
 Run:  pytest tests/test_tile_sizing.py -v
 """
@@ -82,18 +89,43 @@ def test_meshless_scene_keeps_the_flat_default():
     assert fit_tile_size(ts, 4_000_000) == et._TILE_DEFAULT
 
 
+# ---------------------------------------------------------------------------
+# The budget moved (2026-08-11), the invariant did not.
+#
+# TSurfaceMesh now AABB-culls and chunks its own survivors, so `tile_rays x
+# faces x 160 B` no longer depends on the caller's tile and shrinking the tile
+# buys only passes. The three tests below used to pin that law on
+# fit_tile_size; they now pin the SAME law on _mesh_survivor_chunk, which is
+# where it is enforced. The end-to-end no-OOM test at the bottom is unchanged
+# and is what actually proves the pair works.
+# ---------------------------------------------------------------------------
+
 @cuda_only
-def test_tile_shrinks_in_proportion_to_face_count():
+def test_tile_is_no_longer_shrunk_by_face_count():
+    """The behaviour change, pinned so it cannot regress by accident.
+
+    A mesh scene gets the same flat default a tube scene does. Measured on
+    hampton_300um_realistic at build resolution: the old face-derived tile was
+    6800 rays / 133 passes / 19.90 s; one full-frame tile is 1.95 s at 2.56 GB.
+    """
     dev = torch.device("cuda")
-    small = fit_tile_size(_FakeScene([_mesh(500, dev)], dev), 10_000_000)
-    big = fit_tile_size(_FakeScene([_mesh(2000, dev)], dev), 10_000_000)
-    # 4x the faces -> ~1/4 the rays per tile (both well clear of the floor).
+    WH = 640 * 480
+    assert fit_tile_size(_FakeScene([_mesh(500, dev)], dev), WH) == WH
+    assert fit_tile_size(_FakeScene([_mesh(5472, dev)], dev), WH) == WH
+
+
+@cuda_only
+def test_survivor_chunk_shrinks_in_proportion_to_face_count():
+    dev = torch.device("cuda")
+    small = et._mesh_survivor_chunk(500, dev)
+    big = et._mesh_survivor_chunk(2000, dev)
+    # 4x the faces -> ~1/4 the survivors per chunk (both clear of the floor).
     assert big < small
     assert small / big == pytest.approx(4.0, rel=0.05)
 
 
 @cuda_only
-def test_tile_keeps_predicted_peak_inside_the_budget():
+def test_survivor_chunk_keeps_predicted_peak_inside_the_budget():
     """The point of the whole exercise: the default must not exceed VRAM.
 
     Checked against the same law the sizing uses, so this pins the arithmetic
@@ -102,21 +134,64 @@ def test_tile_keeps_predicted_peak_inside_the_budget():
     """
     dev = torch.device("cuda")
     faces = 2880                                   # a crystal_harvester droplet
-    ts = _FakeScene([_mesh(faces, dev)], dev)
-    WH = 640 * 480
     free, _ = torch.cuda.mem_get_info()
-    tile = fit_tile_size(ts, WH, vram_fraction=0.80)
-    assert tile < WH, "a 2880-face scene must not go through in one pass"
-    predicted = tile * faces * et._MESH_BYTES_PER_RAY_FACE
-    assert predicted <= free * 0.80
+    chunk = et._mesh_survivor_chunk(faces, dev, vram_fraction=0.50)
+    predicted = chunk * faces * et._MESH_BYTES_PER_RAY_FACE
+    assert predicted <= free * 0.50
 
 
 @cuda_only
-def test_tile_never_falls_below_the_floor():
-    """An absurd mesh must still produce a usable tile, not zero."""
+def test_survivor_chunk_is_capped_absolutely_not_just_as_a_fraction():
+    """A fraction of free VRAM is not a bound on a card someone else is using.
+
+    Sizing purely by fraction took ~8 GB on an idle 16 GB card and pushed a
+    build to 13.7 GB in nvidia-smi -- inside the WSL2 spill zone, on a GPU
+    shared with a desktop. The cull makes survivors scarce enough that the cap
+    costs nothing.
+    """
     dev = torch.device("cuda")
-    ts = _FakeScene([_mesh(200_000, dev)], dev)
-    assert fit_tile_size(ts, 640 * 480) == et._TILE_FIT_MIN
+    for faces in (234, 2880, 5472):
+        chunk = et._mesh_survivor_chunk(faces, dev, vram_fraction=1.0)
+        peak = chunk * faces * et._MESH_BYTES_PER_RAY_FACE
+        assert peak <= et._MESH_CHUNK_MAX_BYTES, f"{faces} faces -> {peak/2**30:.2f} GiB"
+
+
+@cuda_only
+def test_survivor_chunk_never_falls_below_the_floor():
+    """An absurd mesh must still produce a usable chunk, not zero."""
+    dev = torch.device("cuda")
+    assert et._mesh_survivor_chunk(200_000_000, dev) == et._MESH_CHUNK_MIN
+
+
+@cuda_only
+def test_the_cull_is_byte_exact_against_brute_force():
+    """The whole justification for Step 1, asserted directly.
+
+    Every triangle point lies inside the vertex AABB, so a ray the slab test
+    rejects provably misses every face -- brute force returned INF for exactly
+    those rays. Widening the box to infinity disables the cull without touching
+    any other code path, so this compares the two answers on identical input.
+    """
+    dev = torch.device("cuda")
+    mesh = _mesh(1500, dev)
+    rng = np.random.RandomState(7)
+    # A mix: some rays aimed through the unit cube the mesh lives in, some not.
+    o = torch.as_tensor(np.c_[rng.rand(4000, 2), np.full(4000, -50.0)],
+                        device=dev, dtype=torch.float64)
+    d = torch.as_tensor(np.tile([0.0, 0.0, 1.0], (4000, 1)),
+                        device=dev, dtype=torch.float64)
+    culled = mesh.ray_intersect(o, d)
+    lo, hi = mesh._bbox_lo.clone(), mesh._bbox_hi.clone()
+    try:
+        mesh._bbox_lo = torch.full_like(lo, -float("inf"))
+        mesh._bbox_hi = torch.full_like(hi, float("inf"))
+        brute = mesh.ray_intersect(o, d)
+    finally:
+        mesh._bbox_lo, mesh._bbox_hi = lo, hi
+    names = ("t_enter", "t_exit", "n_enter", "n_exit")
+    for nm, a, b in zip(names, culled, brute):
+        assert torch.equal(a, b), f"{nm} differs between culled and brute force"
+    assert torch.isfinite(culled[0]).sum() > 100, "test exercised too few hits"
 
 
 @cuda_only

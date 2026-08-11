@@ -166,6 +166,14 @@ def build_hampton_scene(
     youngs_modulus_gpa  : float = None,
     solvent_volume_mm3  : float = 0.00893,
     contact_angle_deg   : float = 30.0,
+    # Droplet tessellation. The defaults give ~10 um facets on a 300 um loop,
+    # which is 3x COARSER than the objective's 3.35 um Rayleigh limit at
+    # NA 0.10 -- invisible at the camera's own 7.4 um pixel, but a visible
+    # staircase on the drop's edge once a supersampled library lets you zoom
+    # in. Raise both together (they are the two axes of one revolve) when the
+    # library's template pixel is finer than the facet size.
+    drop_mesh_nz        : int   = 30,
+    drop_mesh_nphi      : int   = 48,
     crystal_preset      : Optional[str]  = "hexagonal",
     crystal_dims_mm     : Optional[list] = None,
     lattice_abc         : Optional[dict] = None,
@@ -281,7 +289,8 @@ def build_hampton_scene(
     dense_canon = elastica_loop(fd_mm, ld_mm, E_gpa, shape, n_points=240)
     sol_verts_c, sol_faces, drop_info = droplet_in_loop(
         loop_pts_canon, fd_mm, solvent_volume_mm3,
-        n_z=30, n_phi=48, dense_poly_xy=dense_canon[:, :2])
+        n_z=int(drop_mesh_nz), n_phi=int(drop_mesh_nphi),
+        dense_poly_xy=dense_canon[:, :2])
     sol_verts = (R_rot @ sol_verts_c.T).T
     # Crystal goes at the droplet's VOLUME centroid, not the waypoint
     # centroid: on an asymmetric (teardrop) aperture the liquid body's centre

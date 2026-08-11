@@ -202,8 +202,22 @@ streamed sample glides instead of teleporting.  Non-obvious bits:
   the view is CSS-scaled.  Clicks are captured by a dedicated transparent
   `.clicklayer` (the streaming `<img>` may not deliver clicks reliably).
 
-  **⚠ KNOWN BUG (unresolved, paused — see [[project_loop_sim_phase2]] for the resume
-  plan):** in the live browser, click-to-recentre lands ~100–200 px off, sometimes
+  **CLOSED 2026-08-11 — the bug below no longer reproduces, and no code was changed
+  to close it.** The owner reports click-to-recentre landing correctly in ordinary
+  browser use across the sessions since the template path shipped.  That is exactly
+  the check the 2026-08-06 measurement could not supply (it drove the endpoint
+  directly, so the browser-side buffering the hypothesis blamed was absent), and the
+  two agree: over HTTP on the template path a recentre landed **2.5 px** from target
+  (320,240 → 317.5,240.0, part of it the centroid including an asymmetric stem stub).
+  Both readings fit the lag hypothesis below, and templates removed the ~1 s render
+  the lag came from.  **If it returns, expect it on `--templates off`**, where the
+  slow render still exists; the diagnosis and the ruled-out list are kept here
+  because they are what makes that a one-session check rather than a fresh hunt.
+  The `#dbg` readout in `static/index.html` (view/img sizes, per-click `fx,fy`) is
+  the scaffolding for it and can go once someone is confident it is gone for good.
+
+  *(the original entry, preserved)* **⚠ KNOWN BUG (unresolved, paused):** in the
+  live browser, click-to-recentre lands ~100–200 px off, sometimes
   in the wrong direction, **non-deterministically**.  What is RULED OUT:
   `recenter_target` is proven correct — an arbitrary point and a rendered feature
   centre to **0.0 px** through both the X-ray parallel projection AND the optical
@@ -215,8 +229,7 @@ streamed sample glides instead of teleporting.  Non-obvious bits:
   doesn't match the frame the user clicked.  Offline tests can't catch this
   because they pass a matching pose.  First thing to try next: render at
   **n_cond=1** (minimal latency) and see if recentre becomes accurate → confirms
-  the lag race.  A `#dbg` readout in `static/index.html` reports `view/img` sizes
-  and the per-click `fx,fy` (debug scaffolding — remove once fixed).
+  the lag race.
 
 ## Key API: next_interface()
 

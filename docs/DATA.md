@@ -32,18 +32,20 @@ external dependency is the runtime itself: a torch+CUDA interpreter, unpinned �
 ## Known gaps
 
 - **Supersampled frame libraries are large, and every scene adds another one.** The 1×
-  library was 5.3 MB; `hampton_300um` at the `--supersample 4` default is **28.7 MB**
+  library was 5.3 MB; `hampton_300um` at the `--supersample 4` default is **29.3 MB**
   (360 frames of 5578×2570). It is tracked in git, so each rebuild writes a fresh copy
   into history and every `push-all` moves it. Options if this becomes a problem: drop to
   `--supersample 2` (4× cheaper, still resolves the fiber), track only the reference
   `hampton_300um` library and let the rest build on first use, or stop tracking them and
-  accept a slow first launch per scene. The repo currently ships two, both PNG and both current since the
-  `mitegen_200um` rebuild on 2026-08-07 — `hampton_300um` (30 MB at `--supersample 4`)
-  and `mitegen_200um` (16 MB at `--supersample 1`), **45 MB together**. Note PNG came
-  out smaller than the JPEG it replaced in both cases, so the two rebuilds roughly
-  halved this figure rather than growing it. A third, `hampton_300um_realistic`
-  (2.9 MB at `--supersample 1`), shipped 2026-08-08 and is **awaiting a rebuild since
-  2026-08-10** — its scene changed in slice 3.
+  accept a slow first launch per scene. **The repo ships three, all PNG and all current**
+  (re-measured 2026-08-11): `hampton_300um` 29.3 MB at `--supersample 4`,
+  `mitegen_200um` 14.7 MB at `--supersample 1`, and `hampton_300um_realistic` 2.1 MB at
+  `--supersample 1` (rebuilt 2026-08-11 for slice 3) — **46.1 MB together**, 361 files
+  each. Note PNG came out smaller than the JPEG it replaced in every case, so the
+  rebuilds roughly halved this figure rather than growing it.
+  **Being tracked is also the recovery path:** an accidental rebuild is undone by
+  `git checkout -- frame_library/<scene>/`, which is how the 2026-08-10 incident was
+  recovered. See HANDOFF Hazards for the launch path that causes those accidents.
 - **Benchmark baselines don't travel.** `bench_results/` is gitignored, so the numbers a
   perf claim rests on exist only on the machine that produced them. Comparing this
   machine's results against the beamline's TITAN V (voltron) requires committing a
@@ -70,10 +72,13 @@ external dependency is the runtime itself: a torch+CUDA interpreter, unpinned �
   described here as the authoritative calibration but no shipped scene uses its pixel size
   or NA. Treat `crystal_harvester` output as the dimensionally-trustworthy source and the
   hand-built bundled scenes as unverified. See `docs/HANDOFF.md` "Scene fidelity".
-  **Partly answered 2026-08-10:** the pixel half of the `template.yaml` puzzle is settled
-  (it is the hi stop's horizontal pitch used as a square pixel; the Hampton scenes' square
-  640 × 7.4 µm is the mid stop rendered correctly on square pixels, to under 1%). NA is
-  still open, and now has measured evidence — see `docs/HANDOFF.md` "Open questions".
+  **ANSWERED 2026-08-11 — both halves.** Pixels on 2026-08-10: `template.yaml` is the hi
+  stop's horizontal pitch used as a square pixel, and the Hampton scenes' square
+  640 × 7.4 µm is the mid stop rendered correctly, to under 1%. NA on 2026-08-11:
+  **0.28**, from camera-space crystal/background of 0.677 against `real_images/D01`'s
+  0.691 (NA 0.10 gives 0.421). The shipped scenes still carry NA 0.10/0.07 — switching
+  rebuilds all three frame libraries and is an owner's decision. See `docs/HANDOFF.md`
+  "Open questions" and `docs/DECISIONS.md` §2026-08-11 (later).
 - **The gateway mirror carries gitignored scratch.** `TEST_*.png` / `out_*.png` at the repo
   root are untracked scratch renders that happen to sit in the working tree, so the file
   mirror includes them while a `git clone` will not. Don't treat them as references —
