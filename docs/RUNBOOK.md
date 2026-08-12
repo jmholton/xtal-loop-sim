@@ -136,6 +136,20 @@ Every lever, with defaults and what it costs, is tabulated under "Every lever" b
 > deliverables, so an accidental rebuild is a `git checkout` away as long as it
 > is caught before the working tree is committed.
 
+> **UPDATED 2026-08-12: only `mitegen_200um` still needs the flag.**
+> `hampton_300um_realistic` was rebuilt at `--supersample 4`, which matches
+> `build_params`' default, so a bare launch on it is now safe. Re-measured:
+>
+> ```
+>   hampton_300um            bare launch -> serves it
+>   hampton_300um_realistic  bare launch -> serves it   (was: WOULD REBUILD)
+>   mitegen_200um            bare launch -> WOULD REBUILD (~18 min)
+> ```
+>
+> The rule is unchanged and still bites on mitegen -- the flag must MATCH the
+> library's own supersample, and there is no blanket-safe launch command. The
+> 2026-08-11 measurement follows.
+>
 > **LAUNCHING ON AN `--supersample 1` SCENE NEEDS `--supersample 1` ON THE
 > COMMAND LINE — AND TWO OF THE THREE SHIPPED SCENES ARE ONE.** Re-measured
 > 2026-08-11 across every bundled scene, with `build_library` monkeypatched to

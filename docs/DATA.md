@@ -39,20 +39,21 @@ external dependency is the runtime itself: a torch+CUDA interpreter, unpinned �
   `hampton_300um` library and let the rest build on first use, or stop tracking them and
   accept a slow first launch per scene. **The repo ships three, all PNG and all current**
   (re-measured 2026-08-11): `hampton_300um` 29.3 MB at `--supersample 4`,
-  `mitegen_200um` 14.7 MB at `--supersample 1`, and `hampton_300um_realistic` 2.1 MB at
-  `--supersample 1` (rebuilt 2026-08-11 for slice 3) — **46.1 MB together**, 361 files
-  each. Note PNG came out smaller than the JPEG it replaced in every case, so the
+  `mitegen_200um` 14.7 MB at `--supersample 1`, and `hampton_300um_realistic`
+  **27.6 MB at `--supersample 4`** (rebuilt 2026-08-12 with a Rayleigh-matched
+  droplet mesh) — **~72 MB together**, 361 files each. Note PNG came out smaller than the JPEG it replaced in every case, so the
   rebuilds roughly halved this figure rather than growing it.
   **Being tracked is also the recovery path:** an accidental rebuild is undone by
   `git checkout -- frame_library/<scene>/`, which is how the 2026-08-10 incident was
   recovered. See HANDOFF Hazards for the launch path that causes those accidents.
   **Rebuild cost stopped being the constraint on 2026-08-11** (the mesh AABB
   cull: the droplet library went 8.06 h -> 11.2 min), so library SIZE is now the
-  binding cost rather than build time. Raising `hampton_300um_realistic` to the
-  optically-correct `--supersample 4` would take it from 2.1 MB to roughly
-  25-30 MB, i.e. the tracked total from 46 MB to ~70 MB, and every rebuild
-  writes a fresh copy into git history. That trade -- 4x zoom against ~24 MB
-  per rebuild in history -- is the open decision; see HANDOFF "Open questions".
+  binding cost rather than build time. **That trade was taken on 2026-08-12:**
+  `hampton_300um_realistic` was rebuilt at the optically-correct
+  `--supersample 4` with a Rayleigh-matched droplet mesh, going **2.1 -> 27.6 MB**
+  and taking the tracked total to **~72 MB**. It buys 4x zoom and facets below
+  the resolution limit. Every rebuild of it writes a fresh ~28 MB into git
+  history, which is now the main reason not to rebuild casually.
 - **Benchmark baselines don't travel.** `bench_results/` is gitignored, so the numbers a
   perf claim rests on exist only on the machine that produced them. Comparing this
   machine's results against the beamline's TITAN V (voltron) requires committing a

@@ -1,6 +1,6 @@
 ---
 project: loop-sim (xtal-loop-sim) — bright-field microscope + X-ray simulator for protein crystals in cryo-loops
-status: active — camera served from pre-computed templates (no GPU at runtime) and usable interactively; renders go out through a measured camera model on the real 704x480 raster; all three frame libraries current; the camera calibration is fully settled (pixels 2026-08-10, NA 2026-08-11); library builds are 43x faster since the mesh path learned to cull, and the VRAM budget is now enforced rather than hoped for, so the open front is how much fidelity to spend the speed on
+status: active — camera served from pre-computed templates (no GPU at runtime) and usable interactively; renders go out through a measured camera model on the real 704x480 raster; all three frame libraries current; the camera calibration is fully settled (pixels 2026-08-10, NA 2026-08-11); library builds are 43x faster since the mesh path learned to cull and the VRAM budget is enforced rather than hoped for; the droplet scene now ships at the optically correct supersample 4 with a Rayleigh-matched drop mesh, so zoom reaches 4x
 last_verified: 2026-08-11        # `pytest tests/` = 222 passed in 158 s on this tree (branch performance-correctness-optimizations, 65 commits ahead of master, RTX 4080 SUPER)
 verify: python -m pytest tests/ -q        # 222 tests; "python" = the torch-enabled project interpreter (see docs/RUNBOOK.md "Environment")
 ---
@@ -573,39 +573,16 @@ fallback **6.3 fps**. The three things that decide whether you get 11.9 or 6.3:
   Note the square-pixel hi stop is **0.9056 µm**, not `template.yaml`'s 0.8233 — built
   the same way the mid stop's 7.4 µm is (704 × 0.8233 / 640). The two give the same tone
   to 0.3%, so it only matters dimensionally.
-- **How much fidelity should `hampton_300um_realistic` buy with the 43x?**
-  It ships at `--supersample 1`, so the viewer caps zoom at **1x**, while the
-  optically correct value for its 7.4 um pixel at NA 0.10 is **4** (the same
-  rule that gives `hampton_300um` its 4 -- RUNBOOK "Frame libraries"). It was
-  set to 1 purely because 4 was days of build time on a mesh scene; that
-  argument is gone. Raising it also exposes the droplet's tessellation: at
-  supersample 4 the template pixel is 1.85 um against **10 um facets**, so a
-  hard zoom shows a staircase on the drop's edge. Facet size is now a build
-  parameter (`--drop-mesh-nz` / `--drop-mesh-nphi`). Measured at supersample 4,
-  5584x2576, n_cond 7, one frame each:
-
-  | droplet mesh | faces | facet | s/frame | 360-frame build |
-  |---|---|---|---|---|
-  | shipped | 5,472 | 10.0 um | 20.2 | 2.0 h |
-  | 2x finer | 14,508 | 6.2 um | 31.1 | 3.1 h |
-  | 3x finer | 22,464 | 5.0 um | 37.8 | 3.8 h |
-
-  | Rayleigh-matched | 50,976 | 3.3 um | **71-85** | **~7.8 h** |
-
-  **CORRECTED 2026-08-11 (latest): the Rayleigh-matched mesh builds fine.** It
-  was reported here as spilling past 16 GB and never completing a frame. That
-  was not a property of the scene -- it was the `_mesh_survivor_chunk` floor
-  overriding its own 2 GiB cap and demanding 16.7 GB (see the work log). With
-  that fixed the same render peaks at **10.4 GB** and takes 71-85 s/frame, so
-  the optically correct droplet at the optically correct supersample is a
-  ~7.8 h build. The table row above is the corrected measurement.
-
-  **So the decision is now purely a trade, with no technical blocker:** 4x zoom
-  and 3.28 um facets (against the 3.35 um Rayleigh limit, i.e. tessellation
-  finer than the optics resolve) for ~7.8 h of build and a library going 2.1 MB
-  -> ~30 MB in git. Note this is a SCENE change, not just a build setting: a
-  finer mesh changes `scene_sha256`, so it replaces the current droplet rather
-  than re-rendering it.
+- ~~How much fidelity should `hampton_300um_realistic` buy with the 43x?~~
+  **ANSWERED 2026-08-12: all of it.** The scene now ships a Rayleigh-matched
+  droplet (50,976 faces, 3.28 um facets against the 3.35 um limit) at
+  `--supersample 4`, so zoom reaches 4x and the tessellation is finer than the
+  optics resolve. Cost 7.48 h of build and took the library 2.1 -> 27.6 MB.
+  The measured cost table that informed the choice, at supersample 4, n_cond 7:
+  5,472 faces 20.2 s/frame; 14,508 31.1; 22,464 37.8; 50,976 74.8. Nothing here
+  is blocked any more -- a denser mesh or a higher supersample would simply cost
+  more time and more git, and would stop buying anything the objective can
+  resolve.
 - **Is the bundled `hampton_300um` loop mislabelled, or digitized at another size?** Its
   waypoints span 69 × 200 µm, not ~300 µm. Worth comparing against the physical part before
   assuming the geometry is wrong rather than the name.
@@ -721,6 +698,27 @@ those numbers don't have to be re-derived.
   `/home/jadoughty/projects/loop_sim_MINE/investigation/`.
 
 ## Work log (append-only)
+
+- **2026-08-12 — the droplet scene reached full optical fidelity.** No code
+  changed; one scene regeneration and one overnight build.
+  `hampton_300um_realistic` now carries a **Rayleigh-matched droplet** (50,976
+  faces, **3.28 um facets** against the 3.35 um limit at NA 0.10, so the
+  tessellation is finer than the optics resolve) and ships at
+  **`--supersample 4`**, its optically correct value -- the same rule that
+  gives `hampton_300um` its 4. **Zoom goes 1x -> 4x.**
+  Build: 360 frames at 5578x2570, **7.48 h at 74.8 s/frame**, 27.6 MB, peak
+  **7.3 GB** against a 13.5 GB guard. The preflight approved it before
+  committing (3.30 GB measured against a 10.61 GB budget) and the guard never
+  came close to firing. Verified against a live f64 render at phi=30:
+  **bit-identical, max delta 0**. The generator's validator passed on the new
+  scene (volume 0.008930 mm^3, rim on fiber within 0.0100 mm, thickness
+  +/-0.0851 mm).
+  **A bare launch is now safe on this scene** -- it is supersample 4, which
+  matches `build_params`' default, so the `--supersample 1` workaround no
+  longer applies to it. `mitegen_200um` still needs the flag.
+  This was the trade left open yesterday, taken at the owner's call: ~7.5 h of
+  build and 2.1 -> 27.6 MB in git, for 4x zoom and facets below the resolution
+  limit. Nothing else in the repo changed.
 
 - **2026-08-11 (latest) — the VRAM budget is enforced instead of assumed, and
   the supersample-4 ceiling turned out to be a bug in the enforcement.** Two
