@@ -10,7 +10,7 @@
  "jpeg_quality": 90,
  "format": "png",
  "psf": true,
- "render_sha": "3d11bb4c9acad4457551dac5875013d22a23f6c7b63c07d582a8b52119b1feae",
+ "render_sha": "cf5d2bec4cecfb90f114fa843a73fc379b9da7c1d139693cbee6f6f80cf28f9a",
  "psf_sigma_px": 0.15608108108108107,
  "camera": {
   "width": 640,

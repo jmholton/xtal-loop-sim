@@ -20,6 +20,7 @@ contract exactly:
 
 Built incrementally: 2a = analytic primitives (this file's first cut).
 """
+import os
 import numpy as np
 import torch
 
@@ -1046,6 +1047,24 @@ _MESH_CHUNK_MIN = 2_048
 # the shipped 5472-face droplet; more survivors simply take more chunks.
 _MESH_CHUNK_MAX_BYTES = 2 << 30
 
+# Held back from every budget for the CUDA context, cuBLAS workspaces and the
+# caching allocator's slack. nvidia-smi routinely reads ~1 GB above torch's own
+# max_memory_allocated, and on a shared node that gap is what stops one build
+# from evicting a neighbour.
+_VRAM_HEADROOM_BYTES = 1 << 30
+
+# Resident cost of one ray in flight, measured on the tube scene at
+# ~1.1 GiB per million rays (docs/DECISIONS.md 2026-07-31). Used only to pick a
+# STARTING tile; the real bound comes from check_render_fits measuring a frame.
+_BYTES_PER_RAY_RESIDENT = 1200
+
+# Cost per OUTPUT pixel of the buffers no tile can shrink (the condenser
+# accumulator, the ray grid, the PSF round-trip). Measured on a simulated 12 GB
+# card by varying supersample alone: 5.94 / 7.14 / 8.83 GB at 14.4 / 32.4 /
+# 57.5 Mpx is a slope of ~67 MB per Mpx. This is what makes a too-large render
+# unfixable by tiling, and it is what turns a refusal into a NUMBER.
+_BYTES_PER_PIXEL_UNTILEABLE = 70
+
 
 def _mesh_survivor_chunk(faces, dev, vram_fraction=0.25):
     """How many AABB survivors TSurfaceMesh may push through Moller-Trumbore
@@ -1117,10 +1136,194 @@ def fit_tile_size(tscene, total_rays, vram_fraction=0.80):
     sizing gave 6800 rays and 133 passes at 19.90 s; a single full-frame tile
     is 1.95 s at 2.56 GB peak -- 10.2x, on top of the 4.05x the cull itself
     gave against the 80.6 s baseline.
+
+    CHANGED AGAIN 2026-08-11 (later): it is VRAM-aware again, because for one
+    afternoon it was not. Dropping the mesh term left `min(total_rays,
+    _TILE_DEFAULT)`, which never consulted the card at all -- fine on the
+    16 GB dev box, a hazard on the beamline's 12 GB TITAN V, and silent either
+    way. Peak grows with OUTPUT resolution through terms no tile can shrink
+    (measured on a simulated 12 GB card: 2.16 / 5.94 / 7.14 / 8.83 GB at
+    supersample 1 / 4 / 6 / 8, and OOM at 12), so the tile is now capped by
+    what is actually free.
+
+    This is a STARTING size, not a guarantee. The measured peak does not fit a
+    clean linear model, so the guarantee comes from `check_render_fits`, which
+    renders one frame and reads the real peak before a build commits.
     """
     if tscene.dev.type != "cuda":
         return total_rays
-    return min(total_rays, _TILE_DEFAULT)
+    affordable = int(memory_budget(vram_fraction) // _BYTES_PER_RAY_RESIDENT)
+    return int(max(_TILE_FIT_MIN, min(total_rays, _TILE_DEFAULT, affordable)))
+
+
+def memory_budget(vram_fraction=0.80):
+    """Bytes this process may use, from what is ACTUALLY free right now.
+
+    THE single budget authority -- every consumer sizes against this rather
+    than reading `mem_get_info` itself, so there is one place to audit and one
+    place to override.
+
+    Not from `total_memory`: voltron is a shared 8-GPU node, so another tenant's
+    allocation must reduce ours rather than being discovered as an OOM at
+    frame 300 of 360. `_VRAM_HEADROOM_BYTES` is held back for the CUDA context
+    and allocator slack -- `nvidia-smi` routinely reads a GB or more above
+    torch's own `max_memory_allocated`, because the caching allocator reserves
+    and never returns.
+
+    `LOOPSIM_VRAM_BUDGET_GB` overrides the measurement. Two uses: capping a
+    build so it leaves room for someone else on a shared card, and testing
+    small-card behaviour on a large one -- `set_per_process_memory_fraction`
+    cannot do the latter, because it constrains torch's allocator while
+    `mem_get_info` keeps reporting the real device.
+    """
+    if not torch.cuda.is_available():
+        return None
+    override = os.environ.get("LOOPSIM_VRAM_BUDGET_GB")
+    if override:
+        return max(0.0, float(override) * 2**30 - _VRAM_HEADROOM_BYTES) * vram_fraction
+    free, _total = torch.cuda.mem_get_info()
+    return max(0, free - _VRAM_HEADROOM_BYTES) * vram_fraction
+
+
+def install_vram_ceiling(vram_fraction=0.80):
+    """Make the budget a HARD limit the allocator enforces, not advice.
+
+    Without this the budget is only consulted by code that chooses to; anything
+    that miscalculates sails past it and, on WSL2, spills to host RAM instead of
+    failing -- a 10-50x slowdown that looks like a hang. With it, an overrun is
+    a loud `torch.OutOfMemoryError` at the budget, which callers can catch,
+    shrink and retry.
+
+    Returns the ceiling in bytes, or None on CPU. Deliberately left INSTALLED:
+    the build that follows a preflight needs the same protection the preflight
+    had. `release_vram_ceiling()` undoes it.
+    """
+    if not torch.cuda.is_available():
+        return None
+    budget = memory_budget(vram_fraction)
+    total = torch.cuda.get_device_properties(0).total_memory
+    torch.cuda.set_per_process_memory_fraction(min(1.0, budget / total), 0)
+    return budget
+
+
+def release_vram_ceiling():
+    """Undo `install_vram_ceiling` (process-wide state; tests restore with it)."""
+    if torch.cuda.is_available():
+        torch.cuda.set_per_process_memory_fraction(1.0, 0)
+
+
+class RenderTooLargeError(RuntimeError):
+    """A render cannot fit this GPU at any tile size.
+
+    Carries the arithmetic and a concrete suggestion, because the person who
+    hits this is building a library on a beamline node and needs to know what
+    to change, not that something was too big.
+    """
+
+
+def check_render_fits(tscene, n_cond=7, psf=True,
+                      vram_fraction=0.80, supersample=None, progress=None):
+    """Render ONE frame and verify the real peak fits, before a build commits.
+
+    This is the guarantee, and it is deliberately a MEASUREMENT rather than a
+    model: peak memory here comes from several terms (mesh temporaries, the
+    resident ray arrays, and O(W x H) buffers that no tile shrinks) whose sum
+    did not fit a clean linear fit when measured, so a predictive formula would
+    be a guess with a safety factor. One frame costs seconds against a build
+    that costs hours.
+
+    Shrinks the tile and retries while that can help. Raises
+    `RenderTooLargeError` when it cannot -- with the largest `--supersample`
+    that would fit, derived by scaling the measured peak.
+    """
+    if tscene.dev.type != "cuda":
+        return None
+    from ..motors.goniometer import Goniometer
+    # Enforce the budget before measuring against it: the probe below RENDERS,
+    # so without a hard ceiling the measurement itself can overshoot -- on the
+    # dev box it spilled to 13.8 GB while "checking" whether 12 GB was enough.
+    # Left installed on success so the build inherits the same protection.
+    budget = install_vram_ceiling(vram_fraction)
+    # Dimensions come from the SCENE, never from arguments. An earlier version
+    # took width/height as parameters and never applied them -- it rendered at
+    # whatever the scene's camera said and reported the caller's numbers, so a
+    # 40000x20000 request measured a 640x480 frame at 0.20 GB and cheerfully
+    # approved it. The probe must measure the render that is actually about to
+    # run, so there is exactly one source of truth for its size.
+    cam = tscene.scene.camera_cfg
+    width, height = int(cam["width"]), int(cam["height"])
+    total_rays = width * height
+    tile = fit_tile_size(tscene, total_rays, vram_fraction)
+    gono = Goniometer(tscene.scene.geometry)
+
+    def probe(t):
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
+        try:
+            render_torch(tscene, gono, n_cond=n_cond, psf=psf, tile_size=t)
+            return torch.cuda.max_memory_allocated()
+        except torch.OutOfMemoryError:
+            return float("inf")
+
+    # At most TWO probes, not a halving ladder. Each probe renders the whole
+    # frame, so a ladder costs a full render per rung -- measured at 421 s for
+    # eight rungs on a 129 Mpx frame, all of them doomed. The second probe goes
+    # straight to the smallest tile: if the untileable O(W x H) terms already
+    # exceed the budget there, no intermediate tile can help either.
+    peak = probe(tile)
+    if peak > budget and tile > _TILE_FIT_MIN:
+        # Scale the tile by how far over we were, rather than dropping to the
+        # floor. The cost curve is steep at small tiles and flat at large ones
+        # (measured at 14.4 Mpx: 1M->6M tiles span 18.6->17.1 s, only 8%, while
+        # 133 tiny passes cost 10x on a 0.9 Mpx frame), so overshooting
+        # downward turns a memory problem into a speed problem. An OOM gives no
+        # peak to scale from, so that case halves instead.
+        if peak == float("inf"):
+            nxt = tile // 2
+        else:
+            nxt = int(tile * (budget / peak) * 0.9)
+        tile = max(_TILE_FIT_MIN, min(tile - 1, nxt))
+        if progress:
+            progress(f"[preflight] over budget; retrying at tile {tile}")
+        peak = probe(tile)
+        if peak > budget and tile > _TILE_FIT_MIN:
+            tile = _TILE_FIT_MIN          # last resort before refusing
+            peak = probe(tile)
+    if peak <= budget:
+        if progress:
+            progress(f"[preflight] {width}x{height} n_cond={n_cond}: "
+                     f"{peak/2**30:.2f} GB peak against a {budget/2**30:.2f} GB "
+                     f"budget, tile {tile} -- fits")
+        torch.cuda.empty_cache()
+        return tile
+    # Even the smallest tile does not fit: the untileable O(W x H) terms
+    # dominate, so the only remedy is fewer output pixels.
+    torch.cuda.empty_cache()
+    msg = (f"render of {width}x{height} ({total_rays/1e6:.1f} Mpx, "
+           f"n_cond={n_cond}) needs more memory than this GPU has: peak "
+           f"{peak/2**30:.2f} GB against a {budget/2**30:.2f} GB budget "
+           f"(free VRAM minus headroom, x{vram_fraction}). Tiling cannot "
+           f"help -- the cost that does not fit scales with OUTPUT PIXELS, "
+           f"which no tile size reduces.")
+    if supersample and supersample > 1:
+        if peak != float("inf"):
+            ok = max(1, int(supersample * (budget / peak) ** 0.5))
+            msg += (f" At this scene's settings --supersample {ok} is the "
+                    f"largest that fits (you asked for {supersample}).")
+        else:
+            # OOM gives no peak to scale from, so fall back on the measured
+            # per-output-pixel cost. Pixels scale as supersample^2.
+            # 0.75 because this constant is a floor on the true per-pixel
+            # cost (it omits the scene's own residency), and a suggestion that
+            # still does not fit is worse than none. Clamped strictly below the
+            # request: an estimate that equals what we are refusing is wrong on
+            # its face, and the first version printed exactly that.
+            max_px = 0.75 * budget / _BYTES_PER_PIXEL_UNTILEABLE
+            ok = max(1, int(supersample * (max_px / max(1, total_rays)) ** 0.5))
+            ok = min(ok, supersample - 1)
+            msg += (f" At this scene's settings --supersample {ok} is the "
+                    f"largest that fits (you asked for {supersample}).")
+    raise RenderTooLargeError(msg)
 
 
 def _probe_peak(fn):

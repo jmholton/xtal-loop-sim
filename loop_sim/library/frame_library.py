@@ -474,7 +474,8 @@ def build_library(scene_path, root=DEFAULT_ROOT, axis="rotx",
     from PIL import Image
     from ..scene.scene import load
     from ..motors.goniometer import Goniometer
-    from ..renderer.engine_torch import TorchScene, render_torch
+    from ..renderer.engine_torch import (TorchScene, render_torch,
+                                         check_render_fits, RenderTooLargeError)
     from ..renderer.optics import psf_sigma_px
 
     if axis != "rotx":
@@ -555,6 +556,19 @@ def build_library(scene_path, root=DEFAULT_ROOT, axis="rotx",
                  f"({RW*RH/1e6:.2f} Mpx, supersample {supersample}x)")
 
     cam["width"], cam["height"], cam["pixel_size"] = RW, RH, tpl_px
+
+    # PREFLIGHT: prove one frame fits this GPU before committing to hours of
+    # them.  A build that discovers its memory ceiling at frame 300 of 360 has
+    # wasted the whole night and leaves a half-written library behind; the
+    # beamline's TITAN V has 12 GB against this dev box's 16, and voltron is a
+    # shared 8-GPU node where "free" is whoever else is on the card.  Costs one
+    # frame.  Shrinks the trace tile itself if that is enough (byte-exact, so
+    # the library is unaffected) and raises RenderTooLargeError naming the
+    # largest --supersample that WOULD fit if it is not.
+    if tile_size is None:
+        tile_size = check_render_fits(tscene, n_cond=n_cond, psf=psf,
+                                      vram_fraction=vram_fraction,
+                                      supersample=supersample, progress=progress)
 
     angles = [round(i * step_deg, 6) for i in range(int(round(360.0 / step_deg)))]
     # Report ~20 times whatever the frame count, rather than every 20th frame:

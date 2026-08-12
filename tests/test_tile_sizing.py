@@ -264,3 +264,107 @@ def test_default_render_of_a_mesh_scene_does_not_oom():
     finally:
         del ts
         torch.cuda.empty_cache()
+
+
+# ---------------------------------------------------------------------------
+# The VRAM guarantee for the beamline's 12 GB TITAN V.
+#
+# These exist because "it worked when I tried it on the 16 GB dev box" is not a
+# guarantee, and twice in one day it was wrong: a survivor-chunk floor that
+# demanded 16.7 GB passed a cap test whose face counts all sat just under the
+# threshold, and fit_tile_size spent an afternoon not consulting the card at
+# all. torch.cuda.set_per_process_memory_fraction imposes a synthetic ceiling,
+# so a 12 GB card can be asserted here on whatever hardware CI has.
+# ---------------------------------------------------------------------------
+
+import contextlib
+import re
+
+
+@contextlib.contextmanager
+def _simulated_card(gb):
+    """Constrain this process to `gb` of VRAM, then restore."""
+    total = torch.cuda.get_device_properties(0).total_memory
+    if gb * 2**30 > total:
+        pytest.skip(f"cannot simulate {gb} GB on a {total/2**30:.1f} GB card")
+    torch.cuda.empty_cache()
+    torch.cuda.set_per_process_memory_fraction(gb * 2**30 / total, 0)
+    try:
+        yield
+    finally:
+        torch.cuda.set_per_process_memory_fraction(1.0, 0)
+        torch.cuda.empty_cache()
+
+
+@cuda_only
+def test_tile_size_shrinks_when_the_card_is_smaller():
+    """The tile must come from the CARD, not from a constant.
+
+    For one afternoon `fit_tile_size` was `min(total_rays, _TILE_DEFAULT)` and
+    never called `mem_get_info()` -- fine on 16 GB, silent on 12.
+    """
+    dev = torch.device("cuda")
+    ts = _FakeScene([], dev)
+    big = fit_tile_size(ts, 50_000_000)
+    # set_per_process_memory_fraction cannot be used here: it constrains the
+    # allocator while mem_get_info keeps reporting the real device, so the
+    # SIZING would not see it. The budget override is the seam.
+    os.environ["LOOPSIM_VRAM_BUDGET_GB"] = "2"
+    try:
+        small = fit_tile_size(ts, 50_000_000)
+    finally:
+        del os.environ["LOOPSIM_VRAM_BUDGET_GB"]
+    assert small < big, "tile ignored a smaller card"
+    assert small >= et._TILE_FIT_MIN
+
+
+@cuda_only
+def test_memory_budget_tracks_free_not_total():
+    """A shared 8-GPU node means another tenant's allocation must reduce ours."""
+    b = et.memory_budget()
+    free, total = torch.cuda.mem_get_info()
+    assert b <= free, "budget exceeded what is actually free"
+    assert b <= total - et._VRAM_HEADROOM_BYTES + 1
+
+
+@cuda_only
+def test_preflight_accepts_a_build_that_fits_and_refuses_one_that_does_not():
+    """The end-to-end guarantee, on a simulated small card.
+
+    A team member re-rendering a scene on the beamline's 12 GB TITAN V must get
+    either a build or an actionable refusal -- never an OOM at frame 300 of
+    360, and never a WSL2-style silent spill.
+
+    THE REFUSAL IS PROVOKED BY SHRINKING THE BUDGET, NOT BY GROWING THE RENDER.
+    The first version of this test asked for 40000x20000, whose accumulator
+    alone is 17.9 GB; on WSL2 that spills into host RAM and killed the VM. A
+    test for a memory guard must never itself be the allocation that breaks the
+    machine -- and it does not need to be, since the guard compares a render
+    against a budget and either side can be moved.
+    """
+    from loop_sim.scene.scene import load
+    from loop_sim.renderer.engine_torch import (TorchScene, check_render_fits,
+                                                RenderTooLargeError)
+    scene_path = os.path.join(REPO_ROOT, "scene_files", "hampton_300um.yaml")
+    ts = None
+    try:
+        sc = load(scene_path, device="cpu")
+        sc.camera_cfg = dict(sc.camera_cfg, width=1396, height=644)
+        ts = TorchScene(sc, torch.device("cuda"), torch.float64)
+
+        os.environ["LOOPSIM_VRAM_BUDGET_GB"] = "12"      # a TITAN V
+        tile = check_render_fits(ts, n_cond=1, psf=False, supersample=1)
+        assert tile and tile > 0, "a routine template render must be allowed"
+
+        os.environ["LOOPSIM_VRAM_BUDGET_GB"] = "1.05"    # smaller than the render
+        with pytest.raises(RenderTooLargeError) as exc:
+            check_render_fits(ts, n_cond=1, psf=False, supersample=4)
+        msg = str(exc.value)
+        assert "supersample" in msg, "refusal must name the knob to turn"
+        m = re.search(r"--supersample (\d+) is the largest", msg)
+        assert m and int(m.group(1)) < 4, "suggestion must be below the request"
+    finally:
+        del ts
+        et.release_vram_ceiling()
+        os.environ.pop("LOOPSIM_VRAM_BUDGET_GB", None)
+        torch.cuda.empty_cache()
