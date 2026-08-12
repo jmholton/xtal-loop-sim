@@ -226,10 +226,47 @@ Notes:
   torch's own counter** -- the caching allocator reserves and never returns, so
   `max_memory_allocated()` under-reports what the card is actually holding, by
   8 GB in one measured case.
-- **Raising `--supersample` on a mesh scene has a ceiling.** See
+- **A build sizes itself to the GPU, and refuses rather than dying half-way.**
+  Since 2026-08-11 you should not need to pass `--tile-size` or `--vram-fraction`
+  on any card. What happens automatically:
+
+  1. **The budget comes from FREE VRAM, not the card's total** — on a shared
+     node like voltron another tenant's allocation reduces yours, rather than
+     surfacing as an out-of-memory error at frame 300 of 360. A gigabyte is
+     held back for the CUDA context and allocator slack.
+  2. **The budget is a hard limit**, so an overrun raises instead of silently
+     spilling to host RAM (see "Dev-environment caveat" for why a spill is the
+     worse failure).
+  3. **A preflight renders ONE frame and reads the real peak before the build
+     commits.** It prints a line like
+     `[preflight] 1396x644 n_cond=7: 2.26 GB peak against a 10.82 GB budget,
+     tile 899024 -- fits`. If it does not fit, the trace tile is reduced (this
+     changes no pixels) and re-probed.
+  4. **If it still does not fit, the build refuses before rendering anything**,
+     naming the largest `--supersample` that would work:
+     `... needs more memory than this GPU has: peak 12.4 GB against a 8.8 GB
+     budget. Tiling cannot help -- the cost that does not fit scales with
+     OUTPUT PIXELS. At this scene's settings --supersample 4 is the largest
+     that fits (you asked for 8).`
+     A too-large request is never silently downgraded: a library that quietly
+     differs from what was asked for would pass every staleness check.
+
+  `LOOPSIM_VRAM_BUDGET_GB` overrides the measured budget. Two uses: leaving room
+  for someone else on a shared card, and rehearsing a smaller card's behaviour
+  before deploying to it (`LOOPSIM_VRAM_BUDGET_GB=12` on a 16 GB box mimics the
+  TITAN V's sizing decisions).
+- **Tile size is not worth hand-tuning.** Measured at 14.4 Mpx: tiles of
+  1M / 2M / 4M / 6M rays run 18.6 / 17.5 / 17.3 / 17.1 s, all byte-identical.
+  Six times the tile buys 8% and costs 1.8 GB of peak, so the default stays at
+  1M. The curve is steep in the other direction, though -- a tile small enough
+  to force ~130 passes costs ~10x -- which is why the preflight reduces the
+  tile proportionally rather than dropping to its floor.
+- **Raising `--supersample` on a mesh scene costs time, not correctness.** See
   docs/HANDOFF.md "Open questions" for the measured table: supersample 4 on the
-  droplet scene costs 20-38 s/frame depending on droplet tessellation, and a
-  50,976-face droplet spills past 16 GB and does not complete a frame.
+  droplet scene runs 20-85 s/frame depending on droplet tessellation, i.e. a
+  2-8 h build. (An earlier note here said a 50,976-face droplet spilled past
+  16 GB and could not complete a frame; that was a defect in the survivor-chunk
+  sizing, not a limit of the scene, and it peaks at 10.4 GB now.)
 - **Cost** *(historical, pre-cull)* (RTX 4080 SUPER, n_cond 7): `hampton_300um` ~7.2 s/frame at `--supersample 4`
   (5578×2570), a 360-frame sweep in ~45 min. `mitegen_200um` ~18 s/frame at
   `--supersample 1` (1840×2296) — **slower despite being 3.4× smaller**, because it is a

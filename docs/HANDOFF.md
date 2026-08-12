@@ -1,8 +1,8 @@
 ---
 project: loop-sim (xtal-loop-sim) — bright-field microscope + X-ray simulator for protein crystals in cryo-loops
-status: active — camera served from pre-computed templates (no GPU at runtime) and usable interactively; renders go out through a measured camera model on the real 704x480 raster; all three frame libraries current; the camera calibration is fully settled (pixels 2026-08-10, NA 2026-08-11); library builds are 43x faster since the mesh path learned to cull, so the open front is how much fidelity to spend that on
-last_verified: 2026-08-11        # `pytest tests/` = 219 passed in 148 s on this tree (branch performance-correctness-optimizations, 62 commits ahead of master, RTX 4080 SUPER)
-verify: python -m pytest tests/ -q        # 219 tests; "python" = the torch-enabled project interpreter (see docs/RUNBOOK.md "Environment")
+status: active — camera served from pre-computed templates (no GPU at runtime) and usable interactively; renders go out through a measured camera model on the real 704x480 raster; all three frame libraries current; the camera calibration is fully settled (pixels 2026-08-10, NA 2026-08-11); library builds are 43x faster since the mesh path learned to cull, and the VRAM budget is now enforced rather than hoped for, so the open front is how much fidelity to spend the speed on
+last_verified: 2026-08-11        # `pytest tests/` = 222 passed in 158 s on this tree (branch performance-correctness-optimizations, 65 commits ahead of master, RTX 4080 SUPER)
+verify: python -m pytest tests/ -q        # 222 tests; "python" = the torch-enabled project interpreter (see docs/RUNBOOK.md "Environment")
 ---
 
 # HANDOFF — loop-sim (xtal-loop-sim)
@@ -589,21 +589,23 @@ fallback **6.3 fps**. The three things that decide whether you get 11.9 or 6.3:
   | shipped | 5,472 | 10.0 um | 20.2 | 2.0 h |
   | 2x finer | 14,508 | 6.2 um | 31.1 | 3.1 h |
   | 3x finer | 22,464 | 5.0 um | 37.8 | 3.8 h |
-  | Rayleigh-matched | 50,976 | 3.3 um | **spills** | — |
 
-  **The Rayleigh-matched mesh does not currently build.** At 50,976 faces and
-  14.4 Mpx the card pins at ~16.1 GB with the GPU reporting 100% busy at 70 W
-  of 320 W -- the WSL2 spill signature (RUNBOOK "Dev-environment caveat") --
-  and a single frame does not complete. Matching the facet size to the 3.35 um
-  Rayleigh limit is the principled place to stop tessellating, so this is worth
-  resolving rather than working around.
-  **Cause unknown; the prime suspect is `fit_tile_size` itself.** It no longer
-  reduces the tile for face count (correct, now the mesh culls and chunks its
-  own survivors) and returns a flat 1,000,000 rays -- but that change was only
-  validated against 5,472 faces, 9x below the case that fails. The accounted
-  terms come to roughly 4 GB, not 16, so a memory term is unexplained. The
-  cheapest test is one frame at an explicit small `--tile-size` with a guard
-  that aborts the moment `nvidia-smi` crosses ~12 GB.
+  | Rayleigh-matched | 50,976 | 3.3 um | **71-85** | **~7.8 h** |
+
+  **CORRECTED 2026-08-11 (latest): the Rayleigh-matched mesh builds fine.** It
+  was reported here as spilling past 16 GB and never completing a frame. That
+  was not a property of the scene -- it was the `_mesh_survivor_chunk` floor
+  overriding its own 2 GiB cap and demanding 16.7 GB (see the work log). With
+  that fixed the same render peaks at **10.4 GB** and takes 71-85 s/frame, so
+  the optically correct droplet at the optically correct supersample is a
+  ~7.8 h build. The table row above is the corrected measurement.
+
+  **So the decision is now purely a trade, with no technical blocker:** 4x zoom
+  and 3.28 um facets (against the 3.35 um Rayleigh limit, i.e. tessellation
+  finer than the optics resolve) for ~7.8 h of build and a library going 2.1 MB
+  -> ~30 MB in git. Note this is a SCENE change, not just a build setting: a
+  finer mesh changes `scene_sha256`, so it replaces the current droplet rather
+  than re-rendering it.
 - **Is the bundled `hampton_300um` loop mislabelled, or digitized at another size?** Its
   waypoints span 69 × 200 µm, not ~300 µm. Worth comparing against the physical part before
   assuming the geometry is wrong rather than the name.
@@ -719,6 +721,36 @@ those numbers don't have to be re-derived.
   `/home/jadoughty/projects/loop_sim_MINE/investigation/`.
 
 ## Work log (append-only)
+
+- **2026-08-11 (latest) — the VRAM budget is enforced instead of assumed, and
+  the supersample-4 ceiling turned out to be a bug in the enforcement.** Two
+  commits, `cfb18bf` and `b906f54`. Suite **222** (was 219).
+  **The ceiling was not real.** `_mesh_survivor_chunk` applied its floor
+  (`_MESH_CHUNK_MIN` = 2048) unconditionally, overriding the 2 GiB cap beside
+  it: at 50,976 faces the budget asked for 263 rays and the floor forced 2048,
+  demanding **2048 x 50976 x 160 B = 16.7 GB**. Fixed, the same render goes
+  from *never completing* to **19 s**, with torch's reserved pool 16.11 ->
+  2.36 GB. It crosses over at ~6,553 faces, which is why nothing caught it --
+  the cap test's face counts were all just under, and the floor test asserted
+  the floor WINS, which was the defect written down as an assertion.
+  **So supersample 4 is affordable after all**: the Rayleigh-matched droplet
+  (50,976 faces, 3.28 um facets against the 3.35 um limit) renders at
+  **71-85 s/frame at 10.4 GB peak, a ~7.8 h build** -- see Open questions.
+  **The rest is the guarantee the beamline needs.** `memory_budget()` is now
+  the single authority and derives from FREE VRAM, `install_vram_ceiling()`
+  makes it a hard allocator limit so an overrun raises instead of spilling,
+  `fit_tile_size()` consults the card again (for one afternoon it did not), and
+  `check_render_fits()` renders one frame and reads the real peak before a
+  build commits -- shrinking the tile proportionally if that helps, refusing
+  with the largest workable `--supersample` if it does not. Regression-tested
+  at a simulated 12 GB. Verified end to end: a full 360-frame build with the
+  preflight in the loop is **byte-identical to the shipped library (360/360)**
+  at 1.96 s/frame, so the safety layer costs nothing.
+  **Measured and deliberately NOT acted on:** a bigger trace tile barely pays.
+  At 14.4 Mpx, tiles of 1M/2M/4M/6M run 18.6/17.5/17.3/17.1 s -- 6x the tile
+  for 8%, at 1.8 GB more peak. The 1M default stays; on a 12 GB card that
+  memory is worth more than 8%.
+  **Next:** the supersample-4 rebuild of `hampton_300um_realistic`.
 
 - **2026-08-11 (later still) — the mesh path learned to cull, and an 8-hour
   build became 11 minutes.** One commit, `bef28eb`. Suite **219** (was 213).

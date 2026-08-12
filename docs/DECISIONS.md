@@ -8,6 +8,67 @@
 
 ## Decisions
 
+### 2026-08-11 (latest) — the VRAM budget is enforced, not assumed
+
+**Why this exists as a decision rather than a fix.** The project is handed to a
+team who will re-render scenes on a 12 GB TITAN V and must not have to think
+about memory. "It worked on the 16 GB dev box" is not a guarantee, and twice in
+one day it was actively wrong: a survivor-chunk floor that silently demanded
+16.7 GB, and `fit_tile_size` spending an afternoon as `min(total_rays, 1e6)`
+without ever consulting the card.
+
+**The mechanism, in four parts.**
+
+- `memory_budget()` is the single authority. It derives from `mem_get_info`'s
+  **free**, not total, because voltron is a shared 8-GPU node -- a neighbour's
+  allocation must reduce ours rather than surface as an OOM at frame 300 of
+  360. One GiB is held back for the CUDA context and allocator slack, because
+  `nvidia-smi` routinely reads ~1 GB above torch's own `max_memory_allocated`.
+- `install_vram_ceiling()` makes the budget a **hard allocator limit**. Without
+  it the budget is only advice, and on WSL2 an overrun spills to host RAM: a
+  10-50x slowdown that looks like a hang rather than a failure. With it,
+  overruns are catchable `OutOfMemoryError`s.
+- `fit_tile_size()` consults the card again.
+- `check_render_fits()` renders ONE frame and reads the real peak before a
+  build commits.
+
+**Why the preflight measures rather than predicts.** Peak memory here is a sum
+of mesh temporaries, resident ray arrays and O(W x H) buffers that no tile
+shrinks, and the measured points do not fit a clean linear model -- a formula
+would be a guess wearing a safety factor. One frame costs seconds against a
+build that costs hours, and it is the only thing that can catch a term nobody
+thought of.
+
+**Refuse, do not downgrade.** A too-large request fails with the largest
+`--supersample` that would fit rather than quietly building something smaller.
+A library that differs from what was asked for would pass every staleness check
+in the system, so the failure would be invisible in exactly the place the
+project keeps its integrity.
+
+**Deliberately NOT done: a bigger trace tile.** Measured at 14.4 Mpx, tiles of
+1M / 2M / 4M / 6M rays run 18.6 / 17.5 / 17.3 / 17.1 s, all byte-identical. Six
+times the tile buys **8%** and costs 1.8 GB of peak. The 1M default stays: on a
+12 GB card shared with other tenants that memory is worth more than 8%. The
+curve is steep in the other direction (~130 tiny passes cost ~10x), which is
+why the preflight scales the tile *proportionally* on a miss instead of
+dropping to its floor -- overshooting downward converts a memory problem into a
+speed problem.
+
+**Testability is the guarantee.** `LOOPSIM_VRAM_BUDGET_GB` overrides the
+measured budget, so 12 GB behaviour is asserted in the suite on whatever card
+CI has. `set_per_process_memory_fraction` cannot do this on its own: it
+constrains the allocator while `mem_get_info` keeps reporting the real device,
+so the sizing never sees it. Both are used -- the env var to drive the sizing,
+the fraction to enforce the ceiling.
+
+**Two lessons worth keeping.** A test for a memory guard must never itself be
+the allocation that breaks the machine: an early version proved "oversized gets
+refused" by attempting a 40000x20000 render, whose accumulator alone is 17.9 GB,
+and took the WSL2 VM down with it. Provoke the refusal by shrinking the BUDGET.
+And a preflight that measures by rendering needs the ceiling installed BEFORE it
+measures, or the measurement itself overshoots -- it spilled to 13.8 GB while
+"checking" whether 12 GB was enough.
+
 ### 2026-08-11 (later still) — the mesh path never culled, and that was 43x
 
 **`hampton_300um_realistic` builds in 11.2 minutes instead of 8.06 hours, and
