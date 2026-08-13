@@ -521,12 +521,28 @@ $PY bench_serve.py --scene scene_files/hampton_300um_realistic.yaml --frames 40
 
 It reports three regimes separately because they differ ~3x and one number would hide it:
 **slew** (spindle turning — every frame is a fresh PNG decode), **pan** (fixed angle — the
-decoded template is reused from the 8-entry cache), and **hold**. Dev box, 2026-08-13:
-slew 91.1 ms / 11.0 fps, pan 32.4 ms / 30.9 fps, stage split decode 66.6, crop+scale 15.3,
-camera model 12.3, jpeg 2.7 ms. Decode is 73% of a slew, which is why a prefetch pool is
-the identified lever. Warmup deliberately uses angles the timed run never revisits —
-warming on the timed poses reads 78 ms with a p10 of 25.8, and that p10 is the pan number
-leaking in.
+decoded template is reused from the 8-entry cache), and **hold**. Measured 2026-08-13 on
+`hampton_300um_realistic`, 40 frames:
+
+| | dev box (RTX 4080S host) | **voltron** (2x Xeon E5-2650 v4) | ratio |
+|---|---|---|---|
+| slew | 91.1 ms / 11.0 fps | **288.3 ms / 3.47 fps** | 3.2x |
+| pan | 32.4 ms / 30.9 fps | 69.1 ms / 14.5 fps | 2.1x |
+| hold | 32.8 ms | 73.7 ms | 2.2x |
+| decode | 66.6 ms | 205.4 ms | 3.1x |
+| crop+scale / camera / jpeg | 15.3 / 12.3 / 2.7 | 32.6 / 33.0 / 5.9 | ~2.2x |
+
+**voltron misses the 10 fps goal on a slew by 3x, and that is the number to design
+against** — it is the likely viewer host, and the beamline node is never idle, so a
+figure taken under load is the deployment figure rather than a degraded one. The p90/p10
+spread is 1.34 there against 1.31 on the dev box, i.e. the same distribution shape, so
+this is systematic CPU speed and not contention noise; re-measuring on a quiet node would
+not move it much.
+
+Decode is 73% of a slew on both machines, which is why the prefetch pool is the lever —
+see HANDOFF "Open questions". Warmup deliberately uses angles the timed run never
+revisits: warming on the timed poses reads 78 ms with a p10 of 25.8, and that p10 is the
+pan number leaking in.
 
 Benchmarking the **render** path: `bench_frame.py` (flags `--compiled`, `--fp32`); soak the live server with
 `soak_server.py`, which lives **outside this repo** in the analysis tree at

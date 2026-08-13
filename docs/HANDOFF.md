@@ -226,10 +226,20 @@ The highest-value open engineering items, in rough priority:
   three frame libraries**, including the 8.06 h `hampton_300um_realistic` build. Both
   halves of the old "three cameras" puzzle are now closed: pixels on 2026-08-10, NA on
   2026-08-11.
-- **Decide how to spend the decode budget** — 75% of a rotating frame is PNG
-  decode. A prefetch pool would roughly triple the rate for no rebuild and no
-  loss of zoom range; `--supersample 2` is simpler but costs both. Neither is
-  urgent: 10-12 fps at the socket already clears the 10 fps goal.
+- **Build the prefetch decode pool — it stopped being optional on 2026-08-13.**
+  75% of a rotating frame is PNG decode. On the dev box that is a nice-to-have:
+  10-12 fps at the socket already clears the 10 fps goal. **On voltron it is a
+  blocker.** `bench_serve.py` measures a spindle slew there at **288.3 ms /
+  3.47 fps** against the dev box's 91.1 ms / 10.98 — the target missed by 3x,
+  on the machine most likely to host the viewer.
+  The arithmetic says a pool fixes it and nothing else has to change. Strip the
+  decode and voltron's remaining stages total **71.4 ms (14.0 fps)**; the dev
+  box's total 30.3 ms (33 fps), which independently reproduces the "~30 fps"
+  estimate this entry used to carry. A pool decodes AHEAD along a slew's
+  predictable direction rather than parallelising one decode, so ~3 workers is
+  enough to hide 205 ms behind 71 ms — and voltron has 48 threads to spend.
+  `--supersample 2` is the alternative and is worse on both counts: it lands
+  voltron near 8 fps, still short, and costs the zoom ceiling.
 - **Give `TSurfaceMesh` the AABB cull that `TTube` has** — a speed optimisation for mesh
   scenes (they render, but slowly; the fidelity scene is ~5.5k faces now).
 - **Package the TITAN V deployment** (the recipe is measured; see RUNBOOK "Deploy on the
@@ -740,6 +750,14 @@ those numbers don't have to be re-derived.
   a slew. It needs no GPU and binds no socket, so it runs on a fully loaded
   node — and since voltron is never quiet, a number taken under load *is* the
   deployment number rather than a degraded one.
+  **And voltron fails the 10 fps goal on the CPU path: slew 288.3 ms / 3.47 fps
+  against the dev box's 91.1 / 10.98.** That is an inversion worth sitting with
+  — the same machine PASSES the GPU acceptance test at 11.9 fps compiled. The
+  template path was adopted precisely to take the GPU out of serving, and on
+  voltron that trade moves the bottleneck onto the half of the machine that is
+  worst. The prefetch decode pool is therefore promoted from optimisation to
+  prerequisite; see Open questions for the arithmetic (strip the decode and
+  voltron's remaining stages are 71.4 ms = 14.0 fps).
   **Confirmed:** voltron and the gateway share one ZFS `/home`
   (`petabyte://zpoo1/test/home`), so `push-all.sh` lands where voltron reads —
   previously inferred, now measured. The torch-2.6 venv is absent there.
