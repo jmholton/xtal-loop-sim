@@ -67,7 +67,9 @@ from PIL import Image
 
 from loop_sim.library.frame_library import (frame_for_angle, library_dir,
                                             load_manifest, pose_crop)
+from loop_sim.motors.goniometer import Goniometer
 from loop_sim.renderer import field as _field
+from loop_sim.renderer.pin_projection import project_pin, template_mapper
 from loop_sim.scene.scene import load as load_scene
 from loop_sim.server.camera_server import (TemplateSource, encode_frame,
                                            plan_template_cache, pose_phase)
@@ -125,7 +127,7 @@ def _drop_cache(src):
         src._order.clear()
 
 
-def _stage_split(man, lib_dir, scene, camera, sensor, angles):
+def _stage_split(man, lib_dir, scene, camera, sensor, angles):  # noqa: C901
     """Cost of each stage of one frame, in ms, measured separately.
 
     Not a profiler: each stage is run on its own, on a cold cache, so the
@@ -153,10 +155,18 @@ def _stage_split(man, lib_dir, scene, camera, sensor, angles):
         arr = np.asarray(crop_im, dtype=np.float64) / 255.0
         crop.append(time.perf_counter() - t0)
 
+        # The pin is projected exactly as TemplateSource._pin does it.  An
+        # earlier version passed pin=None here, which quietly dropped the
+        # specular glint from the camera stage and under-counted it -- the
+        # timed regimes above always drew it, so the split did not add up.
+        to_px, frame_wh = template_mapper(man, box, out_size, sensor)
+        gono = Goniometer(scene.geometry).set(**{man["axis"]: float(ang)})
+        pin = project_pin(scene, gono, to_px, frame_wh)
+
         t0 = time.perf_counter()
         img = _field.to_sensor(arr, sensor) if sensor else arr
         if camera:
-            img = _field.apply_camera(img, defocus=float(sigma), pin=None,
+            img = _field.apply_camera(img, defocus=float(sigma), pin=pin,
                                       **camera)
         cam_stage.append(time.perf_counter() - t0)
 
@@ -204,7 +214,11 @@ def main():
     man = load_manifest(lib_dir)
     scene = load_scene(args.scene, device="cpu")
 
-    camera = None if args.no_camera else {"mono": False, "streak": True}
+    # MUST match the server's own defaults or the number describes a
+    # configuration nobody runs: camera_server defaults --mono on and
+    # --pin-streak on.  mono is not free -- to_luma is a whole-frame matmul
+    # plus a 3x repeat -- so benching with it off silently under-reports.
+    camera = None if args.no_camera else {"mono": True, "streak": True}
     sensor = tuple(_field.SENSOR_WH)
     cache = (8 if args.template_cache == "off"
              else "auto" if args.template_cache == "auto"
