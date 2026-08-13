@@ -206,41 +206,81 @@ PIN_H, PIN_W = 480, 704
 
 
 def _pin_frame(width=95, tilt=0.04, x_from=300):
-    """A transmittance frame holding one opaque bar, like a pin in view."""
+    """A transmittance frame holding one opaque bar, and the `pin` for it.
+
+    Returns `(t, bar, pin)`.  The geometry is derived from the SAME numbers the
+    bar is drawn from, so a test can never accidentally assert that a fit found
+    the bar -- there is no fit any more.  `pin` is what
+    `pin_projection.project_pin` would produce for this bar: the perpendicular
+    half-width is the vertical one foreshortened by the tilt, and the tip at
+    `x_from` is a real end while the right-hand end is one the frame cut.
+    """
     yy, xx = np.mgrid[0:PIN_H, 0:PIN_W].astype(float)
     bar = (np.abs((yy - 240) - tilt * (xx - 350)) < width / 2.0) & (xx > x_from)
     t = np.ones((PIN_H, PIN_W, 3))
     t[bar] = 0.0
-    return t, bar
+    norm = (1.0 + tilt * tilt) ** 0.5
+    x0 = 0.5 * (x_from + PIN_W - 1)
+    pin = (x0, 240.0 + tilt * (x0 - 350.0), 1.0 / norm, tilt / norm,
+           0.5 * width / norm, 0.5 * (PIN_W - 1 - x_from) * norm, False, True)
+    return t, bar, pin
 
 
 def test_streak_is_absent_when_there_is_no_pin():
-    """Safe to leave on: a frame with nothing opaque gets nothing added."""
-    assert F.specular_streak(np.ones((PIN_H, PIN_W, 3))).max() == 0.0
+    """Safe to leave on: no pin projected means nothing is added.
+
+    `pin=None` is the answer for a pose that has panned or zoomed past the pin,
+    for a mount seen end-on, and for a scene with no shiny body at all.  It is
+    also the DEFAULT, so a caller that does not know where the pin is gets no
+    glint rather than a guessed one -- a missing glint is a small
+    incorrectness, a glint on the wrong body is a false feature.
+    """
+    t, _, pin = _pin_frame()
+    assert F.specular_streak(np.ones((PIN_H, PIN_W, 3)), None).max() == 0.0
+    assert F.specular_streak(t, None).max() == 0.0
+    assert np.array_equal(F.apply_camera(t), F.apply_camera(t, streak=False))
 
 
-def test_streak_ignores_a_body_that_is_not_shank_shaped():
-    """A compact blob has no long axis to speak of -- the two eigenvalues are
-    nearly equal and the ridge angle would be whichever way the noise fell."""
+def test_streak_is_absent_when_the_only_dark_body_is_not_the_pin():
+    """THE DROPLET BUG, in miniature and without a library.
+
+    The old stage thresholded every dark pixel, eroded anything under 13 px and
+    fitted a bar to what survived -- with no connected-component step anywhere,
+    so it fitted whatever dark thing was in frame.  A big dark blob that is not
+    the pin therefore got a glint.  Now the geometry comes from the scene, so a
+    frame whose pin is out of view gets nothing no matter what else is dark.
+    """
     blob = np.ones((PIN_H, PIN_W, 3))
-    blob[180:300, 300:420] = 0.0                         # 120 x 120
-    assert F.specular_streak(blob).max() == 0.0
-
-
-def test_streak_ignores_the_loop_fiber():
-    """A 20 um fiber is under 3 px across.  The erosion is what keeps the
-    glint on the pin and off the loop, so this is the guard on `min_width`."""
-    yy, xx = np.mgrid[0:PIN_H, 0:PIN_W].astype(float)
-    fiber = np.ones((PIN_H, PIN_W, 3))
-    fiber[(np.abs(yy - 240) < 1.5) & (xx > 100)] = 0.0
-    assert F.specular_streak(fiber).max() == 0.0
+    blob[150:330, 240:480] = 0.0                         # 240 x 180, well eroded
+    assert F.specular_streak(blob, None).max() == 0.0
 
 
 def test_streak_stays_inside_the_pin():
     """It may never touch the background: the ridge is masked by the tracer's
-    own opacity, so a leak would mean the geometry escaped the body."""
-    t, bar = _pin_frame()
-    assert not F.specular_streak(t)[~bar].any()
+    own opacity AND by the projected shank, so a leak would mean the geometry
+    escaped the body."""
+    t, bar, pin = _pin_frame()
+    assert not F.specular_streak(t, pin)[~bar].any()
+
+
+def test_streak_stays_off_a_second_dark_body():
+    """THE SECOND HALF OF THE DROPLET BUG.
+
+    The ridge used to be masked by the frame-wide opaque mask over the bounding
+    box of everything dark, so it ran the width of the frame and landed on any
+    dark pixel it crossed -- which is how the loop fiber and the droplet's rim
+    picked up a glint that the fit had specifically excluded.  Measured on the
+    shipped library before the fix: 43% of the streak's pixels were off the pin
+    at 2x zoom.  The band is now bounded by the projected shank as well, so a
+    second body on the ridge's own line gets nothing.
+    """
+    t, bar, pin = _pin_frame()
+    intruder = np.zeros_like(bar)
+    intruder[200:280, 40:240] = True        # dark, wide, ON the ridge's line
+    t[intruder] = 0.0
+    s = F.specular_streak(t, pin)
+    assert not s[intruder].any(), "the glint leaked onto a second body"
+    assert s[bar].max() > 0.1, "and it must still draw on the pin"
 
 
 def test_streak_matches_the_measured_cross_section():
@@ -248,8 +288,8 @@ def test_streak_matches_the_measured_cross_section():
 
     Grain off, because a single column of a grainy ridge is not a shape.
     """
-    t, bar = _pin_frame()
-    out = F.apply_camera(t, streak_params={"grain": 0.0})[:, 550, 0] * 255
+    t, bar, pin = _pin_frame()
+    out = F.apply_camera(t, streak_params={"grain": 0.0}, pin=pin)[:, 550, 0] * 255
     rows = np.nonzero(bar[:, 550])[0]
     floor = np.percentile(out[rows], 20)
     pk = rows[int(np.argmax(out[rows]))]
@@ -268,8 +308,9 @@ def test_streak_grain_is_deterministic():
     """Load-bearing.  `test_server_settle_parity` compares JPEG bytes between
     the live server and a fresh render; an RNG here would break that guard
     instead of this one."""
-    t, _ = _pin_frame()
-    assert np.array_equal(F.specular_streak(t), F.specular_streak(t.copy()))
+    t, _, pin = _pin_frame()
+    assert np.array_equal(F.specular_streak(t, pin),
+                          F.specular_streak(t.copy(), pin))
 
 
 def test_streak_grain_scintillates_with_the_pose_but_holds_at_rest():
@@ -285,10 +326,10 @@ def test_streak_grain_scintillates_with_the_pose_but_holds_at_rest():
     at a FIXED pose is what keeps the whole chain a pure function of what is
     being rendered, which `test_server_settle_parity` compares bytes against.
     """
-    t, _ = _pin_frame()
-    a = F.specular_streak(t, {"phase": 1234})
-    again = F.specular_streak(t, {"phase": 1234})
-    moved = F.specular_streak(t, {"phase": 5678})
+    t, _, pin = _pin_frame()
+    a = F.specular_streak(t, pin, {"phase": 1234})
+    again = F.specular_streak(t, pin, {"phase": 1234})
+    moved = F.specular_streak(t, pin, {"phase": 5678})
 
     assert np.array_equal(a, again), "a held pose must not shimmer"
     assert not np.array_equal(a, moved), "the pattern must re-roll on a new pose"
@@ -315,69 +356,44 @@ def test_pose_phase_is_stable_and_discriminating():
 def test_streak_does_not_put_the_white_rail_back_in_reach():
     """The whole point of the affine operator is that neither rail is
     reachable.  An additive term could undo that; this says it does not."""
-    t, _ = _pin_frame()
-    out = F.apply_camera(t)
+    t, _, pin = _pin_frame()
+    out = F.apply_camera(t, pin=pin)
     assert out.min() > 0.0 and out.max() < 1.0
 
 
 def test_streak_follows_a_rotated_pin():
-    """The axis comes from the image's own second moments, so the glint tracks
-    the pin through any spindle angle without this stage seeing the pose."""
-    yy, xx = np.mgrid[0:PIN_H, 0:PIN_W].astype(float)
+    """The axis is projected from the scene, so the glint tracks the pin
+    through any spindle angle, and it never wanders off the body."""
     for tilt in (-0.6, 0.0, 0.6):
-        bar = (np.abs((yy - 240) - tilt * (xx - 352)) < 47.5) & (np.abs(xx - 352) < 180)
-        t = np.ones((PIN_H, PIN_W, 3))
-        t[bar] = 0.0
-        s = F.specular_streak(t)
+        t, bar, pin = _pin_frame(width=95, tilt=tilt, x_from=172)
+        s = F.specular_streak(t, pin)
         assert s.max() > 0.1, f"no streak at tilt {tilt}"
         assert not s[~bar].any(), f"streak leaked off the pin at tilt {tilt}"
 
 
-def test_streak_axis_is_immune_to_the_shape_of_the_tip():
-    """THE BUG THIS REPLACED WAS VISIBLE.  `hampton_300um`'s pin carries a
-    45-degree chisel, and as the spindle turns that bevel's silhouette sweeps
-    up and down.  Fitting the axis from the filled mask's second moments
-    followed it: -6.40 to +6.39 degrees over a revolution, which slid the
-    specular ridge 54.5 px across the pin.  A horizontal pin lit from a fixed
-    direction shows a horizontal glint at every angle.
-
-    Simulated here by putting a differently-angled wedge on the end of an
-    otherwise identical horizontal bar: the fitted axis must not care.
-    """
-    def bar_with_tip(slope):
-        yy, xx = np.mgrid[0:PIN_H, 0:PIN_W].astype(float)
-        body = (np.abs(yy - 240) < 47.5) & (xx > 300)
-        # a wedge cut off the tip, at a different angle each time
-        cut = (xx - 300) < slope * (yy - 192.5)
-        t = np.ones((PIN_H, PIN_W, 3))
-        t[body & ~cut] = 0.0
-        return t
-
-    angles = []
-    for slope in (-0.8, -0.4, 0.0, 0.4, 0.8):
-        t = bar_with_tip(slope)
-        th = F.STREAK["opaque"]
-        m = (t[..., 0] <= th) & (t[..., 1] <= th) & (t[..., 2] <= th)
-        fit = F._pin_axis(F._wide_opaque(m, 13), 13)
-        assert fit is not None, f"no fit at tip slope {slope}"
-        angles.append(np.degrees(np.arctan2(fit[3], fit[2])))
-    assert max(abs(a) for a in angles) < 0.5, f"tip tilted the axis: {angles}"
-
-
 def test_streak_refuses_mitegen_at_every_angle():
-    """`mitegen_200um`'s 1 um pixels put a 0.7 mm pin WIDER than the frame, so
-    its width is never measurable and there is nothing to draw.  It has to be
-    refused at EVERY angle, not most: a glint that blinks on and off six times
-    a revolution is far worse than one that never appears, and that is exactly
-    what an earlier aspect-threshold version did.
+    """`mitegen_200um`'s mount is not a shank the glint models, and it has to
+    be refused at EVERY angle, not most: a glint that blinks on and off six
+    times a revolution is far worse than one that never appears, and that is
+    exactly what an earlier aspect-threshold version did.
+
+    Now settled from the scene rather than guessed from the picture.  Its pin
+    is `axis [0,0,1]` -- the BEAM axis -- so at phi=0 it is end-on with no
+    shank in view, and at every other angle its 0.5 mm diameter is 500 px
+    against a 480-row frame at 1 um pixels, which is wider than the frame's
+    short side and leaves the ridge's position undefined.  Both refusals are
+    computed, not measured off a silhouette.
 
     Run against the shipped library rather than a synthetic, because the
     synthetic that replaced it was a clean bar running off two edges -- a body
-    the fit should and does accept -- so it tested the opposite of the bug.
+    the old fit should and did accept -- so it tested the opposite of the bug.
     """
     import json
     from PIL import Image
     from loop_sim.library.frame_library import frame_for_angle, pose_crop
+    from loop_sim.motors.goniometer import Goniometer
+    from loop_sim.renderer.pin_projection import project_pin, template_mapper
+    from loop_sim.scene.scene import load as load_scene
 
     lib = os.path.join(REPO_ROOT, "frame_library", "mitegen_200um")
     man_path = os.path.join(lib, "manifest.json")
@@ -385,6 +401,7 @@ def test_streak_refuses_mitegen_at_every_angle():
         pytest.skip("mitegen_200um library not present")
     with open(man_path) as fh:
         man = json.load(fh)
+    scene = load_scene(os.path.join(REPO_ROOT, "scene_files", "mitegen_200um.yaml"))
 
     fired = []
     for ang in range(0, 360, 15):
@@ -393,18 +410,129 @@ def test_streak_refuses_mitegen_at_every_angle():
         with Image.open(os.path.join(lib, rec["file"])) as im:
             crop = im.convert("RGB").resize(out, Image.BILINEAR, box=box)
         t = F.to_sensor(np.asarray(crop, np.float64) / 255.0)
-        if F._streak_patch(t) is not None:
+        to_px, frame_wh = template_mapper(man, box, out, F.SENSOR_WH)
+        gono = Goniometer(scene.geometry).set(**{man["axis"]: float(ang)})
+        pin = project_pin(scene, gono, to_px, frame_wh)
+        if F._streak_patch(t, pin) is not None:
             fired.append(ang)
     assert not fired, f"glint drawn on mitegen at {fired}"
+
+
+def test_streak_never_lands_on_the_droplet():
+    """THE REGRESSION THIS FIX EXISTS FOR, on the real library.
+
+    On `hampton_300um_realistic` the pin's metal starts at lab x = 1.000 mm and
+    the loop, stem and droplet all live below x = 0.9.  Before 2026-08-12 the
+    glint was drawn on the loop-plus-droplet whenever the pin left the frame:
+    100% of the streak at zoom >= 2.5 at EVERY spindle angle, and already 6-9%
+    of it at zoom 1.0 at phi = 15/30/45/150, where the global silhouette fit
+    merged the two bodies into one.  Not one streak pixel may fall there.
+
+    Driven through the real delivery chain -- `pose_crop`, `to_sensor`,
+    `project_pin`, `_streak_patch` -- because every defect this glint has had
+    was found by driving it and none by a synthetic frame.
+    """
+    import json
+    from PIL import Image, ImageFilter
+    from loop_sim.library.frame_library import frame_for_angle, pose_crop
+    from loop_sim.motors.goniometer import Goniometer
+    from loop_sim.renderer.pin_projection import project_pin, template_mapper
+    from loop_sim.scene.scene import load as load_scene
+
+    lib = os.path.join(REPO_ROOT, "frame_library", "hampton_300um_realistic")
+    man_path = os.path.join(lib, "manifest.json")
+    if not os.path.exists(man_path):
+        pytest.skip("hampton_300um_realistic library not present")
+    with open(man_path) as fh:
+        man = json.load(fh)
+    scene = load_scene(os.path.join(REPO_ROOT, "scene_files",
+                                    "hampton_300um_realistic.yaml"))
+    win, tw = man["window_mm"], int(man["rendered"]["width"])
+    sensor_w = F.SENSOR_WH[0]
+
+    leaks, drawn = [], 0
+    for zoom in (1.0, 1.5, 2.0, 2.5, 3.0, 4.0):
+        for ang in (0, 15, 30, 45, 90, 135, 180, 270):
+            rec = frame_for_angle(man, float(ang))
+            box, out, sigma, _ = pose_crop(man, angle_deg=float(ang),
+                                           zoom=zoom, clamp=True)
+            with Image.open(os.path.join(lib, rec["file"])) as im:
+                crop = im.convert("RGB").resize(out, Image.BILINEAR, box=box)
+            if sigma > 0.05:
+                crop = crop.filter(ImageFilter.GaussianBlur(radius=sigma))
+            t = F.to_sensor(np.asarray(crop, np.float64) / 255.0)
+            to_px, frame_wh = template_mapper(man, box, out, F.SENSOR_WH)
+            gono = Goniometer(scene.geometry).set(**{man["axis"]: float(ang)})
+            patch = F._streak_patch(t, project_pin(scene, gono, to_px, frame_wh),
+                                    {"phase": 0}, sigma)
+            if patch is None:
+                continue
+            drawn += 1
+            # column -> lab x, through the crop box and the sensor resample
+            src = box[0] + (patch[1] / sensor_w) * (box[2] - box[0])
+            lab_x = win["x0"] + src * (win["x1"] - win["x0"]) / tw
+            off = int((lab_x < 0.9).sum())
+            if off:
+                leaks.append((zoom, ang, off, patch[0].size))
+    assert not leaks, f"glint drew on the loop/droplet at {leaks[:6]}"
+    assert drawn >= 8, "the glint must still be drawn where the pin IS in view"
+
+
+def test_projected_pin_matches_the_rendered_silhouette():
+    """Architecture-independent check: the projection must agree with the
+    picture, where the picture is unambiguous.
+
+    On `hampton_300um_realistic` at zoom 1 the pin is the only wide dark body
+    in the right half of the frame, so its band can be measured straight off a
+    column.  The projected centre row and half-width must match it.  This is
+    the class of check DATA.md's "Known gaps" asks for -- it compares against
+    the render rather than against another computation on the same box, so a
+    wrong transform cannot pass it.
+    """
+    import json
+    from PIL import Image
+    from loop_sim.library.frame_library import frame_for_angle, pose_crop
+    from loop_sim.motors.goniometer import Goniometer
+    from loop_sim.renderer.pin_projection import project_pin, template_mapper
+    from loop_sim.scene.scene import load as load_scene
+
+    lib = os.path.join(REPO_ROOT, "frame_library", "hampton_300um_realistic")
+    man_path = os.path.join(lib, "manifest.json")
+    if not os.path.exists(man_path):
+        pytest.skip("hampton_300um_realistic library not present")
+    with open(man_path) as fh:
+        man = json.load(fh)
+    scene = load_scene(os.path.join(REPO_ROOT, "scene_files",
+                                    "hampton_300um_realistic.yaml"))
+
+    for zoom, col in ((1.0, 660), (1.5, 660), (2.0, 690)):
+        rec = frame_for_angle(man, 0.0)
+        box, out, _, _ = pose_crop(man, angle_deg=0.0, zoom=zoom, clamp=True)
+        with Image.open(os.path.join(lib, rec["file"])) as im:
+            crop = im.convert("RGB").resize(out, Image.BILINEAR, box=box)
+        t = F.to_sensor(np.asarray(crop, np.float64) / 255.0)
+        dark = np.nonzero(t[:, col, 0] <= F.STREAK["opaque"])[0]
+        assert dark.size > 20, f"no pin band at zoom {zoom}, column {col}"
+
+        to_px, frame_wh = template_mapper(man, box, out, F.SENSOR_WH)
+        gono = Goniometer(scene.geometry).set(rotx=0.0)
+        pin = project_pin(scene, gono, to_px, frame_wh)
+        assert pin is not None, f"pin not projected at zoom {zoom}"
+        _, y0, _, _, half_w, _, _, _ = pin
+
+        assert abs(y0 - 0.5 * (dark[0] + dark[-1])) < 2.0, (
+            f"zoom {zoom}: projected row {y0:.1f} vs measured "
+            f"{0.5 * (dark[0] + dark[-1]):.1f}")
+        assert abs(half_w - 0.5 * dark.size) < 3.0, (
+            f"zoom {zoom}: projected half-width {half_w:.1f} vs measured "
+            f"{0.5 * dark.size:.1f}")
 
 
 def test_streak_tapers_the_tip_but_not_the_frame_edge():
     """An end the FRAME cut is not an end: the shank continues past it, and
     fading there put a fake taper on the last 8 px of every hampton frame."""
-    yy, xx = np.mgrid[0:PIN_H, 0:PIN_W].astype(float)
-    t = np.ones((PIN_H, PIN_W, 3))
-    t[(np.abs(yy - 240) < 47.5) & (xx > 400)] = 0.0     # tip at 400, runs off right
-    r, c, val = F._streak_patch(t, {"grain": 0.0})       # grain is not a shape
+    t, _, pin = _pin_frame(width=95, tilt=0.0, x_from=400)
+    r, c, val = F._streak_patch(t, pin, {"grain": 0.0})   # grain is not a shape
     peak = np.zeros(PIN_W)
     for cc in np.unique(c):
         peak[cc] = val[c == cc].max()
@@ -435,19 +563,19 @@ def test_streak_defocuses_with_the_sample():
         smooth = np.convolve(np.pad(line, 4, mode="edge"), k, "valid")
         return float((line - smooth).std())
 
-    t, _ = _pin_frame()
-    sharp = F.specular_streak(t)
+    t, _, pin = _pin_frame()
+    sharp = F.specular_streak(t, pin)
     g_sharp = grain_of(sharp)
     assert g_sharp > 0, "no grain to soften"
     for sigma, expect in ((1.5, 0.6), (4.0, 0.2)):
-        soft = F.specular_streak(t, defocus=sigma)
+        soft = F.specular_streak(t, pin, defocus=sigma)
         g_soft = grain_of(soft)
         assert g_soft < expect * g_sharp, (
             f"sigma {sigma}: grain {g_soft:.5f} vs sharp {g_sharp:.5f}")
         # energy is spread, not destroyed, and it reaches further across the pin
         assert soft.sum() == pytest.approx(sharp.sum(), rel=0.15)
         assert (soft > 0).sum() > (sharp > 0).sum()
-    assert np.array_equal(F.specular_streak(t, defocus=0.0), sharp)
+    assert np.array_equal(F.specular_streak(t, pin, defocus=0.0), sharp)
 
 
 def test_defocus_blur_is_deterministic_and_conserves_energy():
@@ -463,11 +591,12 @@ def test_defocus_blur_is_deterministic_and_conserves_energy():
 
 
 def test_streak_can_be_switched_off():
-    t, _ = _pin_frame()
-    on = F.apply_camera(t)
-    off = F.apply_camera(t, streak=False)
+    t, _, pin = _pin_frame()
+    on = F.apply_camera(t, pin=pin)
+    off = F.apply_camera(t, streak=False, pin=pin)
     assert not np.array_equal(on, off)
-    assert np.array_equal(off, F.apply_camera(t, streak_params={"gain": 0.0}))
+    assert np.array_equal(off, F.apply_camera(t, streak_params={"gain": 0.0},
+                                              pin=pin))
 
 
 def test_value_noise_has_unit_sd_and_the_measured_correlation_length():
@@ -481,21 +610,6 @@ def test_value_noise_has_unit_sd_and_the_measured_correlation_length():
     lag = next(k for k in range(1, 10)
                if float((r[:, :-k] * r[:, k:]).mean()) / c0 < 1 / np.e)
     assert 2 <= lag <= 4
-
-
-def test_wide_opaque_is_a_box_erosion():
-    """The doubling shift-and must agree with the obvious implementation --
-    it is 10x faster and that is the only reason it is written that way."""
-    rng = np.random.default_rng(7)
-    m = rng.random((80, 90)) < 0.6
-    m[20:60, 30:70] = True
-    k = 9
-    got = F._wide_opaque(m, k)
-    want = np.zeros_like(m)
-    for i in range(k // 2, m.shape[0] - k // 2):
-        for j in range(k // 2, m.shape[1] - k // 2):
-            want[i, j] = m[i - k//2:i + k//2 + 1, j - k//2:j + k//2 + 1].all()
-    assert np.array_equal(got, want)
 
 
 # --- mono ------------------------------------------------------------------

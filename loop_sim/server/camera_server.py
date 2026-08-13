@@ -112,7 +112,7 @@ def pose_phase(pose):
 
 
 def encode_frame(img, jpeg_quality, camera=None, sensor=None, phase=0,
-                 defocus=0.0):
+                 defocus=0.0, pin=None):
     """Apply camera emulation to a float (H, W, 3) in [0, 1], return JPEG bytes.
 
     THE single place a served frame becomes bytes.  Both the live path (either
@@ -133,6 +133,14 @@ def encode_frame(img, jpeg_quality, camera=None, sensor=None, phase=0,
     grid, or None to deliver the render's own square pixels.  Quantisation
     truncates rather than rounds, matching what `microscope.render` and the
     torch path already did.
+
+    `pin` is where the mounting pin lands on THIS frame, from
+    `pin_projection.project_pin` -- the specular glint is drawn there and
+    nowhere else.  It must be computed in the caller, because it needs the
+    scene and the pose and this function has neither; None means "no pin in
+    view", which draws no glint.  Both callers pass it, and they must agree:
+    `test_server_settle_parity` compares JPEG bytes between the live path and a
+    fresh render.
 
     The resample runs BEFORE the field, so the illumination is evaluated on the
     delivered pixel grid rather than interpolated onto it -- and so anything
@@ -158,7 +166,7 @@ def encode_frame(img, jpeg_quality, camera=None, sensor=None, phase=0,
         # the ridge is a thin horizontal band, so what softening reads as is
         # its spread ACROSS the pin, which is the vertical axis and the one
         # the resample leaves alone.
-        img = apply_camera(img, defocus=float(defocus), **camera)
+        img = apply_camera(img, defocus=float(defocus), pin=pin, **camera)
     arr = (np.clip(np.asarray(img, dtype=np.float64), 0.0, 1.0) * 255).astype(np.uint8)
     buf = io.BytesIO()
     Image.fromarray(arr, mode="RGB").save(buf, format="JPEG", quality=jpeg_quality)
@@ -181,12 +189,16 @@ class TemplateSource:
     """
 
     def __init__(self, manifest, lib_dir, jpeg_quality=85, cache_size=8,
-                 camera=None, sensor=None):
+                 camera=None, sensor=None, scene=None):
         self.manifest = manifest
         self.lib_dir = lib_dir
         self.jpeg_quality = jpeg_quality
         self.camera = camera
         self.sensor = sensor
+        # Held ONLY to project the pin for the specular glint. Templates are
+        # replayed without touching the scene otherwise, and that stays true --
+        # nothing here loads geometry, traces a ray or reads a material.
+        self.scene = scene
         self._cache_size = max(1, int(cache_size))
         self._cache = {}
         self._order = []
@@ -250,7 +262,28 @@ class TemplateSource:
         import numpy as np
         return encode_frame(np.asarray(img, dtype=np.float64) / 255.0,
                             self.jpeg_quality, self.camera, self.sensor,
-                            pose_phase(pose), sigma)
+                            pose_phase(pose), sigma,
+                            self._pin(angle, box, out_size))
+
+    def _pin(self, angle, box, out_size):
+        """Where the pin lands on this crop, for the specular glint, or None.
+
+        The goniometer here carries the SPINDLE ROTATION ONLY.  The template
+        already has that angle baked into its pixels, and `box` already carries
+        the translation and the zoom -- passing the pose's tx/ty/tz as well
+        applies them twice.  `angle` is the REQUESTED angle rather than the
+        nearest template's, because that is the one `pose_crop` built the box
+        from and the two have to agree.
+        """
+        if self.scene is None or not self.camera:
+            return None
+        from ..motors.goniometer import Goniometer
+        from ..renderer.pin_projection import project_pin, template_mapper
+        to_px, frame_wh = template_mapper(self.manifest, box, out_size,
+                                          self.sensor)
+        gono = Goniometer(self.scene.geometry).set(
+            **{self.manifest["axis"]: float(angle)})
+        return project_pin(self.scene, gono, to_px, frame_wh)
 
 
 # ---------------------------------------------------------------------------
@@ -946,7 +979,7 @@ class CameraServer(ThreadingHTTPServer):
             self._templates = TemplateSource(
                 manifest, library_dir(scene_path, self._library_root),
                 jpeg_quality=jpeg_quality, camera=self._camera,
-                sensor=self._sensor)
+                sensor=self._sensor, scene=scene)
 
     # ------------------------------------------------------------------
     # Cache management
@@ -1009,7 +1042,8 @@ class CameraServer(ThreadingHTTPServer):
                 img = render_torch(self._tscene, gono, n_cond=n_cond, compiled=False)
             jpeg = encode_frame(img.detach().cpu().numpy(),
                                 self._jpeg_quality, self._camera, self._sensor,
-                                pose_phase(gono.get()))
+                                pose_phase(gono.get()), 0.0,
+                                self._live_pin(gono))
         else:
             # microscope_render encodes internally; we take its float image and
             # re-encode through the shared path so the emulation and the
@@ -1018,8 +1052,24 @@ class CameraServer(ThreadingHTTPServer):
             img, _ = microscope_render(self._scene, gono, n_cond=n_cond,
                                        jpeg_quality=self._jpeg_quality)
             jpeg = encode_frame(img, self._jpeg_quality, self._camera,
-                                self._sensor, pose_phase(gono.get()))
+                                self._sensor, pose_phase(gono.get()), 0.0,
+                                self._live_pin(gono))
         return jpeg
+
+    def _live_pin(self, gono):
+        """Where the pin lands on a LIVE render, for the specular glint.
+
+        Simpler than the template path: no crop to compose with, so the
+        goniometer is used whole -- it carries the translation and the zoom,
+        and `camera_mapper` turns the zoom into an effective pixel size exactly
+        as `microscope.py` does when it builds the ray grid.
+        """
+        if not self._camera:
+            return None
+        from ..renderer.pin_projection import project_pin, camera_mapper
+        to_px, frame_wh = camera_mapper(self._scene.camera_cfg, gono.zoom,
+                                        self._sensor)
+        return project_pin(self._scene, gono, to_px, frame_wh)
 
     def _render_now(self):
         """Render the current pose and publish it as the next frame generation.
@@ -1552,7 +1602,8 @@ class CameraServer(ThreadingHTTPServer):
                                        library_dir(scene_path, root),
                                        jpeg_quality=self._jpeg_quality,
                                        camera=self._camera,
-                                       sensor=self._sensor)
+                                       sensor=self._sensor,
+                                       scene=scene)
             if serving_from == "preview":
                 warning = ("serving the coarse PREVIEW library "
                            f"({PREVIEW_BUILD['step_deg']:g}deg steps, "

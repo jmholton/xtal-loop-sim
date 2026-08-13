@@ -1,7 +1,7 @@
 ---
 project: loop-sim (xtal-loop-sim) — bright-field microscope + X-ray simulator for protein crystals in cryo-loops
-status: active — camera served from pre-computed templates (no GPU at runtime) and usable interactively; renders go out through a measured camera model on the real 704x480 raster; all three frame libraries current; the camera calibration is fully settled (pixels 2026-08-10, NA 2026-08-11); library builds are 43x faster since the mesh path learned to cull and the VRAM budget is enforced rather than hoped for; the droplet scene now ships at the optically correct supersample 4 with a Rayleigh-matched drop mesh, so zoom reaches 4x
-last_verified: 2026-08-11        # `pytest tests/` = 222 passed in 158 s on this tree (branch performance-correctness-optimizations, 65 commits ahead of master, RTX 4080 SUPER)
+status: active — camera served from pre-computed templates (no GPU at runtime) and usable interactively; renders go out through a measured camera model on the real 704x480 raster; all three frame libraries current; the camera calibration is fully settled (pixels 2026-08-10, NA 2026-08-11); library builds are 43x faster since the mesh path learned to cull and the VRAM budget is enforced rather than hoped for; the droplet scene now ships at the optically correct supersample 4 with a Rayleigh-matched drop mesh, so zoom reaches 4x; the pin's specular glint is projected from the scene rather than inferred from the silhouette, so it can no longer land on the droplet
+last_verified: 2026-08-12        # `pytest tests/` = 222 passed in 346 s on this tree (branch performance-correctness-optimizations, RTX 4080 SUPER; branch depth is CHEAP TO MEASURE -- `git rev-list --count master..HEAD` -- so measure it rather than quoting a number here)
 verify: python -m pytest tests/ -q        # 222 tests; "python" = the torch-enabled project interpreter (see docs/RUNBOOK.md "Environment")
 ---
 
@@ -47,7 +47,9 @@ the GPU path **correct** (it was producing a "hairy" artifact on the loop fiber)
   shank, and it was the largest remaining structural difference. Measured on A01 and E02
   first — which corrected the plan's spec twice (its "1.25× background peak" was a
   three-pixel frame maximum, and its grain figure was the pin body, not the ridge, which
-  is ~10× grainier). 3.4 ms/frame, camera space, no rebuild. `--pin-streak off`.
+  is ~10× grainier). Camera space, no rebuild. `--pin-streak off`. **Where it goes
+  was rewritten on 2026-08-12** — projected from the scene, not fitted to the picture;
+  the bullet below the next one has why.
 - **The glint survives being DRIVEN, which is how its remaining defects were
   found.** Four came out of an operator turning the spindle and the zoom rather
   than out of any test or still frame: it sloped +/-6.4 degrees with phi (the
@@ -64,14 +66,18 @@ the GPU path **correct** (it was producing a "hairy" artifact on the loop fiber)
   rebuild — PIL releases the GIL during PNG decode and a slew's direction is
   predictable) or rebuilding at `--supersample 2` (~24 fps, 47 min, zoom
   ceiling 4x -> 2x). float32 in the camera stage was measured and buys nothing.
-- **The pin's glint is inferred from the SILHOUETTE, and that is an accepted
-  limitation, not an oversight.** Because the geometry comes from what is in
-  frame, the glint disappears when the pin's side leaves the frame, and on a
-  tip-only view the ridge follows the tip's curve instead of the shank. Judged
-  a small incorrectness and accepted (owner, 2026-08-10). The fix is not a
-  better inference: hand the stage the pin's axis and radius from the SCENE,
-  which the server already knows, and ~150 lines of heuristic in
-  `renderer/field.py` delete. See `_pin_axis`'s docstring.
+- **The pin's glint is PROJECTED FROM THE SCENE, and the silhouette fit is
+  gone (2026-08-12).** It used to be inferred from what was in frame, and that
+  turned out to be worse than the accepted limitation it was booked as: the
+  fit had no notion of a *body* — no connected-component step anywhere — so on
+  `hampton_300um_realistic` past ~2.5x zoom, where the pin is off-frame, the
+  **loop-plus-droplet survived the erosion and took the glint at full
+  strength, at every spindle angle**. It leaked at low zoom too (6–9% of the
+  streak's pixels at zoom 1.0, φ = 15/30/45/150). `renderer/pin_projection.py`
+  now projects the pin's cylinder through the pose; `_wide_opaque`,
+  `_fit_one_orientation`, `_pin_axis` and the `min_width`/`min_aspect`/
+  `axis_gate`/`max_width` knobs are deleted. The two limitations accepted on
+  2026-08-10 closed with them. See DECISIONS.md §2026-08-12.
 - **`render_sha` closes the last silent-staleness hole.** A renderer edit used to leave
   every manifest reading `current` while the frames on disk had been traced by code that
   no longer existed. Now hashed into the manifest and `_BUILD_KEYS`. `field.py` is
@@ -646,7 +652,10 @@ those numbers don't have to be re-derived.
   GPU-resident engine, `optics.py` objective PSF, **`field.py`** the camera model —
   sensor raster, illumination field, black floor, tone, the pin's specular streak;
   numpy-only, applied at SERVE time and inside neither tracer, which is what keeps it
-  off the templates), `server/camera_server.py` (AXIS HTTP server + control page +
+  off the templates; **`pin_projection.py`** says WHERE the pin is, projected from
+  the scene through the pose — also serve-time and also outside `render_sha`, and it
+  must stay in `renderer/` because `_RENDER_SOURCES` globs `scene/*.py`),
+  `server/camera_server.py` (AXIS HTTP server + control page +
   runtime scene switching; `encode_frame` is the one place a served frame becomes
   bytes),
   **`library/`** (pre-computed rotation sweeps — `build_library` / `ensure_library`,
@@ -698,6 +707,36 @@ those numbers don't have to be re-derived.
   `/home/jadoughty/projects/loop_sim_MINE/investigation/`.
 
 ## Work log (append-only)
+
+- **2026-08-12 (later) — the glint stopped guessing where the pin is, and the
+  droplet stopped shining.** Operator-reported: zoom in on
+  `hampton_300um_realistic`, or pan the pin's body off screen, and the grainy
+  specular streak appears **on the droplet**.
+  **Two defects, one cause.** `_streak_patch` had no notion of a BODY — it
+  thresholded every dark pixel, eroded under 13 px and fitted a bar to what
+  survived, with no connected-component step anywhere — so once the pin left
+  the frame the loop-plus-droplet was fitted as the pin. And the ridge was
+  masked by the *global* opaque array rather than by the body it had fitted, so
+  even a correct fit sprayed the ridge across every dark pixel the band
+  crossed. Measured before: **100% of the streak on the droplet at zoom ≥ 2.5
+  at every angle**, 43% at 2x, and already 6–9% at 1x at φ = 15/30/45/150.
+  **No image-only rule fixes it.** Aspect and bar-likeness were already
+  recorded as failures; solidity was measured for the first time and fails in
+  the wrong direction (a contaminated pin reads 0.508, a pure droplet 0.582).
+  So `renderer/pin_projection.py` now projects the pin's cylinder from the
+  scene through the pose, and `_wide_opaque` / `_fit_one_orientation` /
+  `_pin_axis` and four `STREAK` knobs are deleted — ~150 lines out, ~90 in, and
+  the stage got cheaper.
+  Verified against the silhouette it replaces on the shipped library: centre
+  row to ≤ 0.4 px, half-width to ≤ 1.7 px, start column short by exactly the
+  6 px erosion radius. **48 real poses now carry zero off-pin streak pixels.**
+  Suite **222** (4 tests deleted with the machinery, 4 added). **No rebuild** —
+  `render_sha` unchanged, all three libraries still `current`; the new module
+  is in `renderer/` deliberately, because `_RENDER_SOURCES` globs `scene/*.py`
+  and names `motors/goniometer.py`, and the "which body shines" declaration is
+  in code because a scene-YAML flag would have invalidated every library.
+  **Behaviour change:** the two limitations accepted 2026-08-10 are closed, so
+  high zoom now shows a glint where it used to show none.
 
 - **2026-08-12 — the droplet scene reached full optical fidelity.** No code
   changed; one scene regeneration and one overnight build.

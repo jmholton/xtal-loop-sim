@@ -8,6 +8,116 @@
 
 ## Decisions
 
+### 2026-08-12 — the glint is projected from the scene; the silhouette fit is deleted
+
+**The accepted limitation was hiding a real bug.** On 2026-08-10 the glint's
+silhouette inference was booked as "a small incorrectness": it vanished when the
+pin's side left the frame, and followed the tip's curve on a tip-only view.
+Both were true. What nobody had looked for is what happens when the pin is not
+in the frame **at all**. `_streak_patch` thresholded every dark pixel, eroded
+anything under 13 px and fitted a bar to whatever survived — with **no
+connected-component step anywhere in the file**, so `_fit_one_orientation` took
+first-and-last opaque row per column across the *whole image* and two separate
+bodies read as one. `specular_streak`'s own docstring had said so since it was
+written: "ONE body is assumed."
+
+The erosion was the only discriminator, and it does not survive zoom. At 1x the
+loop fiber is ~2.7 px and dies; at 4x the loop-plus-droplet is ~279 x 145 px and
+lives. Measured on the shipped `hampton_300um_realistic` library, fraction of
+streak PIXELS off the pin (metal starts at lab x = 1.000 mm):
+
+| zoom | φ=0 | φ=15 | φ=45 | φ=90 | φ=180 |
+|---|---|---|---|---|---|
+| 1.0 | 0.0% | 9.2% | 6.0% | 0.0% | 0.0% |
+| 1.5 | 18.8% | 19.4% | 13.3% | 5.1% | 18.3% |
+| 2.0 | 43.4% | 43.9% | 33.2% | 22.9% | 42.6% |
+| 2.5 | 100% | — | — | — | — |
+| 4.0 | 100% | 100% | 100% | 100% | 100% |
+
+At zoom ≥ 2.5 the whole glint was on the droplet at full strength (peak
+0.46–0.47, the same as a correct one) at every angle from 0 to 315. **It was
+never zoom-only**: at 1x the fit merged pin and drop into one body and `half_l`
+jumped 100.5 → 209.5 px.
+
+**A SECOND, INDEPENDENT DEFECT, and it is the one to remember.** The ridge was
+masked by `opaque[r0:r1, c0:c1]` — the *global* threshold over the bounding box
+of *everything* dark — not by the body that had been fitted. So even a correctly
+fitted pin sprayed its ridge across every dark pixel the band crossed. The
+comment claiming it "cannot leak onto the background or onto the loop" was half
+wrong: not the background, but the loop and the drop freely. Both halves had to
+be fixed; either alone leaves a leak.
+
+**No image-only rule separates a pin from a droplet.** Three were measured.
+Aspect was already recorded as a failure, and the loop-plus-drop reads 1.92
+against `min_aspect` 1.8 — it passed by 6%, which is luck. Bar-likeness was
+already recorded as a failure. **Solidity** (opaque fill inside the fitted bar)
+was new and fails in the *wrong direction*: a pin view contaminated by the drop
+reads 0.508 against a pure droplet's 0.582, so the gate kills correct glints
+first. That is what makes this a projection problem rather than a tuning one.
+
+**The fix is the one `_pin_axis`'s docstring had prescribed since August.**
+`renderer/pin_projection.py` finds the object the code declares shiny
+(`SHINY = {("pin", "metal")}`), clips its cylinder by the half-spaces that bevel
+it, maps the axis through `gonio.transform()`, projects orthographically onto
+`camera_fast`/`camera_slow`, and converts to delivered pixels. ~150 lines of
+heuristic out, ~90 of geometry in, and the mask and erosion that were most of
+the stage's 3.4 ms/frame go with them.
+
+**Verified against the silhouette it replaces**, on the shipped library —
+predicted vs measured centre row, half-width and start column:
+
+```
+  zoom 1.0    240.4 / 47.3 / 501.1   vs   240.0 / 46.5 / 508
+  zoom 1.5    240.3 / 70.9 / 575.3   vs   240.0 / 70.5 / 582
+  zoom 2.0    240.2 / 94.6 / 649.6   vs   240.0 / 93.3 / 656
+  zoom 4.0    240.0 / 189.2 / 589.8  vs   240.0 / 187.5 / 596   (tx = -0.6)
+```
+
+Row to ≤ 0.4 px, half-width to ≤ 1.7 px, and the start column short by 6.2–6.9
+px — **exactly the (k-1)/2 = 6 px the erosion took off**. The projection is the
+accurate one; the silhouette was the approximation.
+
+**Three constraints shaped where the code could go**, and all three are about
+not triggering a rebuild. The declaration of which body shines had to be in
+CODE, because `scene_sha256` is a build key and a `specular:` flag in the YAMLs
+would invalidate all three libraries. The new module had to go in `renderer/`,
+because `_RENDER_SOURCES` globs `scene/*.py` and names `motors/goniometer.py` —
+a helper in either would have cost the same rebuild. And `to_sensor` runs before
+`apply_camera`, so the projection lands on the 704x480 grid and the columns
+carry the 704/640 scale. `render_sha` is unchanged and all three libraries still
+read `current`.
+
+**Two guards survive, with exact inputs instead of measured ones.** A shank
+seen end-on has no side to run a ridge along, and one wider than 0.90 of the
+frame's short side leaves the ridge's position undefined — `offset` and `width`
+are both fractions of the pin's width. Together they are what keeps
+`mitegen_200um` off at all 24 angles: its pin is `axis [0,0,1]`, the beam axis,
+so it is end-on at φ=0 and 500 px wide against a 480-row frame everywhere else.
+It is now DECLARED not to shine rather than guessed at from its shape.
+
+**The clip margin is not symmetric, and getting that wrong is invisible.** The
+ridge sits off the axis by up to `half_w`, so the frame is inflated by that much
+when clipping the axis segment — but **only perpendicular to the axis**.
+Inflating along it too kept the pin "in frame" for a third of a millimetre after
+it had left, which held `hampton_300um_realistic` alive at zoom 2.5 and 3.0
+where the crop ends 0.2 mm short of the metal, and would have re-created the bug
+in a smaller form.
+
+**What this changes that an operator will notice.** The two limitations accepted
+on 2026-08-10 are closed: the glint no longer vanishes when the pin's side
+leaves the frame, and on a tip-only view it follows the shank rather than the
+tip's curve. Frames at high zoom now show a glint where they used to show none —
+and, at zoom ≥ 2.5 with no pan, no glint where they used to show a wrong one.
+
+**Guarded by** `test_streak_never_lands_on_the_droplet` (48 real poses, zero
+off-pin pixels — the assertion that failed at 100% before),
+`test_projected_pin_matches_the_rendered_silhouette` (architecture-independent:
+projection against the render, not against another computation on the same box),
+`test_streak_stays_off_a_second_dark_body` (the mask half),
+`test_streak_refuses_mitegen_at_every_angle` (re-pointed at the new path), and
+`test_render_sha_covers_the_tracers_and_not_the_delivery_stage`, extended to
+assert `renderer/pin_projection.py` stays out of the hash.
+
 ### 2026-08-11 (latest) — the VRAM budget is enforced, not assumed
 
 **Why this exists as a decision rather than a fix.** The project is handed to a
@@ -289,12 +399,18 @@ delivers 10-12 fps; a browser shows about half. The levers are a prefetch
 decode pool (~30 fps, no rebuild) or `--supersample 2` (~24 fps, 47 min, zoom
 ceiling 4x -> 2x). Neither taken.
 
-**ACCEPTED LIMITATION.** All of the above still infers the pin from its
+**ACCEPTED LIMITATION — and it was hiding a real bug. SUPERSEDED 2026-08-12.**
+All of the above still infers the pin from its
 SILHOUETTE, so the glint stays a function of what is in frame: it disappears
 when the pin's side leaves the frame, and follows the tip's curve on a tip-only
 view. Judged a small incorrectness and accepted. The fix is not a better
 inference — it is to take the pin's axis and radius from the SCENE, which the
 server already knows, deleting ~150 lines of heuristic for ~40 of projection.
+
+**What that judgement missed** is what happens when the pin is not in frame at
+ALL. The fit has no notion of a BODY, so the loop-plus-droplet took the glint
+instead — 100% of it at zoom ≥ 2.5, at every angle. The scene-driven projection
+was built on 2026-08-12 and everything above is now history; see §2026-08-12.
 
 ### 2026-08-10 — the renders became photographs: camera emulation, the sensor
 ### raster, the pin's glint, and the scene fixes that needed a rebuild
@@ -382,7 +498,9 @@ background — between the two references on every axis. The sign of the offset
 is an illumination property, not a pin property, hence signed and defaulting to
 E02. Geometry comes from the IMAGE (second moments of the eroded opaque mask),
 never the scene, so the glint tracks the pin through any pose without this
-stage seeing the goniometer. Grain is value noise hashed on the **pin's own
+stage seeing the goniometer. **(REVERSED 2026-08-12: geometry now comes from
+the SCENE. Inferring it from the image is what painted the glint on the
+droplet — see §2026-08-12.)** Grain is value noise hashed on the **pin's own
 frame** — roughness belongs to the pin, so it rides with it rather than
 crawling across the shank as the stage pans, which would also be a
 localisation shortcut for anything trained on these frames.

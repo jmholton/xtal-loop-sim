@@ -39,16 +39,20 @@ def _u8(img):
     return (img * 255).clamp(0, 255).to(torch.uint8).cpu()
 
 
-def _encode(img, quality=85, camera=None, sensor=None, phase=0):
+def _encode(img, quality=85, camera=None, sensor=None, phase=0, pin=None):
     """Deliver exactly as the server delivers.
 
     Routed through the server's own `encode_frame` rather than reimplementing
     the chain, so the camera-emulation stage cannot drift between the two.
     Pass the server's `_camera` and `_sensor`; None/None gives raw
-    transmittance on the render's own square-pixel grid.
+    transmittance on the render's own square-pixel grid.  `pin` is where the
+    specular glint goes and comes from the server's `_live_pin` for the same
+    reason -- it is pose-dependent, so leaving it out is a second delivery
+    implementation.
     """
     from loop_sim.server.camera_server import encode_frame
-    return encode_frame(img.detach().cpu().numpy(), quality, camera, sensor, phase)
+    return encode_frame(img.detach().cpu().numpy(), quality, camera, sensor,
+                        phase, 0.0, pin)
 
 
 # ---------------------------------------------------------------------------
@@ -92,7 +96,7 @@ def test_compile_off_preview_is_eager_bytes():
         g = Goniometer(scene.geometry).set()
         ref = _encode(render_torch(ts, g, n_cond=1, compiled=False),
                       camera=srv._camera, sensor=srv._sensor,
-                      phase=pose_phase(g.get()))
+                      phase=pose_phase(g.get()), pin=srv._live_pin(g))
         assert served == ref
     finally:
         srv.server_close()

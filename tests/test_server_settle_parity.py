@@ -41,23 +41,29 @@ cuda_only = pytest.mark.skipif(not torch.cuda.is_available(),
                                reason="CUDA not available")
 
 
-def _reference_jpeg(scene, pose, n_cond, quality=85, camera=None, sensor=None):
+def _reference_jpeg(server, pose, n_cond, quality=85):
     """The exact f64 engine output, delivered exactly as the server delivers it.
 
-    `camera` and `sensor` must be the server's own `_camera` / `_sensor`, so
-    the reference and the server share one delivery implementation rather than
-    two that agree today.
+    Everything downstream of the trace is taken FROM THE SERVER -- `_camera`,
+    `_sensor` and `_live_pin` -- so the reference and the server share one
+    delivery implementation rather than two that agree today.  `_live_pin`
+    joined that list on 2026-08-12, when the specular glint stopped inferring
+    the pin from the silhouette and started projecting it from the scene: it is
+    a delivery stage that depends on the pose, so a reference that skipped it
+    would be a second implementation, which is what this guard exists to catch.
 
     The grain phase is taken from the GONIOMETER, not from the `pose` dict, for
     the same reason: the server reads `gono.get()`, which resolves every motor
     including `zoom` to 1.0, while a partial dict would default it to 0.0 and
     silently re-roll the grain. Same source, same bytes.
     """
+    scene = server._scene
     ts = TorchScene(scene, torch.device("cuda"), torch.float64)
     gono = Goniometer(scene.geometry).set(**pose)
     img = render_torch(ts, gono, n_cond=n_cond)
-    return encode_frame(img.detach().cpu().numpy(), quality, camera, sensor,
-                        pose_phase(gono.get()))
+    return encode_frame(img.detach().cpu().numpy(), quality, server._camera,
+                        server._sensor, pose_phase(gono.get()), 0.0,
+                        server._live_pin(gono))
 
 
 @pytest.fixture()
@@ -75,9 +81,7 @@ def test_idle_served_frame_is_exact(server, pose):
     server._goniometer.set(**pose)
     server._anim_active = False
     served = server._render_now()
-    assert served == _reference_jpeg(server._scene, pose, n_cond=server._n_cond,
-                                     camera=server._camera,
-                                     sensor=server._sensor)
+    assert served == _reference_jpeg(server, pose, n_cond=server._n_cond)
 
 
 @cuda_only
@@ -89,9 +93,7 @@ def test_animating_preview_uses_n_cond_1(server):
     """
     server._anim_active = True
     served = server._render_now()
-    assert served == _reference_jpeg(server._scene, {}, n_cond=1,
-                                     camera=server._camera,
-                                     sensor=server._sensor)
+    assert served == _reference_jpeg(server, {}, n_cond=1)
 
 
 @cuda_only
@@ -104,8 +106,6 @@ def test_preview_mode_off_is_always_exact():
     try:
         srv._anim_active = True
         served = srv._render_now()
-        assert served == _reference_jpeg(scene, {}, n_cond=srv._n_cond,
-                                         camera=srv._camera,
-                                         sensor=srv._sensor)
+        assert served == _reference_jpeg(srv, {}, n_cond=srv._n_cond)
     finally:
         srv.server_close()

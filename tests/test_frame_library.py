@@ -438,7 +438,8 @@ def test_render_sha_covers_the_tracers_and_not_the_delivery_stage():
                  "scene/scene.py", "scene/tube.py", "scene/surface_mesh.py",
                  "scene/primitives.py", "scene/csg.py", "scene/materials.py"):
         assert want in covered, f"{want} decides template pixels but is not hashed"
-    for keep_out in ("renderer/field.py", "renderer/beam.py",
+    for keep_out in ("renderer/field.py", "renderer/pin_projection.py",
+                     "renderer/beam.py",
                      "library/frame_library.py", "server/camera_server.py"):
         assert keep_out not in covered, f"{keep_out} must not invalidate a library"
 
