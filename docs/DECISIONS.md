@@ -8,6 +8,56 @@
 
 ## Decisions
 
+### 2026-08-13 — voltron measured on both halves: build there is a wash, serve there needs the cache
+
+**Why this is a decision and not just a benchmark.** "Deploy loop-sim to voltron"
+was one phrase covering two unrelated questions — can it BUILD libraries, and can
+it SERVE them — and the answers point in different directions, so treating them as
+one would get the deployment wrong either way.
+
+**Rendering: the TITAN V is 4% faster than the dev box, and the reason matters
+more than the number.** 74.55 s/frame mean against 77.9, on `hampton_300um_realistic`
+at supersample 4 with the same 1,000,000 tile on both. A full build is ~7.45 h
+against 7.48 — no reason to move builds there for speed, and a positive reason not
+to: it is a shared node, so a 7.5 h job competes with real work.
+
+**The double-precision hypothesis is refuted.** The tracer is deliberately float64
+(the correctness fix), and a TITAN V runs FP64 at 1:2 of FP32 where consumer Ada
+runs 1:64 — roughly 8x on paper. It bought 4%. Critically the card was at **100%
+utilisation** throughout, so this is not the CPU-dispatch-bound regime the 640x480
+tube scene showed at ~29% GPU busy: the mesh render is genuinely GPU-bound and an
+8x FP64 advantage still did nothing, which points at bandwidth or occupancy (652
+vs 736 GB/s, favouring the newer card) rather than double-precision ALU. **Do not
+reach for an FP64-strong card to accelerate this workload.**
+
+**Serving is where the deployment decision actually lives.** Cold, voltron slews at
+265.5 ms / 3.77 fps — a third of the 10 fps goal, on the machine most likely to host
+the viewer. With `--template-cache auto` it is 67.25 ms / 14.87 fps. The proof that
+the mechanism is doing what it claims: the warm slew and the pan agree to **0.05 ms**
+(67.25 vs 67.30), so a rotating frame costs exactly what a translating one costs and
+the decode is eliminated rather than merely reduced. Predicted 71.4 ms from the stage
+split before running it; measured 67.25.
+
+**So the deployment conditions are:**
+
+- The viewer on voltron **requires `--template-cache auto`** (14.4 GiB of its 251 GB).
+  Without the flag it runs at a third of the goal and looks merely sluggish rather
+  than misconfigured.
+- Library builds gain nothing there and cost a shared node hours. Keep them on a
+  workstation unless there is a reason beyond speed.
+- The VRAM margin for a build is thin: the preflight measured a **7.55 GB budget
+  against a known ~7.3 GB build peak**, ~250 MB of headroom. It held across both
+  heavy poses, but only four of 360 were sampled — a full build should be watched,
+  and `--vram-fraction` lowered before `--supersample` if it OOMs.
+
+**A method note worth keeping.** Both figures above were wrong the first time for
+configuration reasons rather than measurement error: the serve benchmark warmed on
+the poses it was about to time (reporting a slew at 78 ms whose p10 was, exactly, the
+pan number) and then benched `mono=off` where the server defaults on. A benchmark is
+only as good as its agreement with the thing it measures, and that agreement is worth
+asserting rather than assuming — `bench_serve.py`'s output is now verified
+byte-identical to `CameraServer._render_frame()` at the same pose.
+
 ### 2026-08-12 — the glint is projected from the scene; the silhouette fit is deleted
 
 **The accepted limitation was hiding a real bug.** On 2026-08-10 the glint's

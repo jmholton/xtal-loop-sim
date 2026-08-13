@@ -526,14 +526,20 @@ decoded template is reused from the 8-entry cache), and **hold**. Measured 2026-
 
 | | dev box (RTX 4080S host) | **voltron** (2x Xeon E5-2650 v4) | ratio |
 |---|---|---|---|
-| slew | 91.1 ms / 11.0 fps | **288.3 ms / 3.47 fps** | 3.2x |
-| pan | 32.4 ms / 30.9 fps | 69.1 ms / 14.5 fps | 2.1x |
+| slew (cold) | 91.1 ms / 11.0 fps | **265.5 ms / 3.77 fps** | 2.9x |
+| **slew (warm, `--template-cache auto`)** | 27.1 ms / 37.0 fps | **67.3 ms / 14.87 fps** | 2.5x |
+| pan | 32.4 ms / 30.9 fps | 67.3 ms / 14.86 fps | 2.1x |
 | hold | 32.8 ms | 73.7 ms | 2.2x |
-| decode | 66.6 ms | 205.4 ms | 3.1x |
+| decode | 66.6 ms | 180.7 ms | 2.7x |
 | crop+scale / camera / jpeg | 15.3 / 12.3 / 2.7 | 32.6 / 33.0 / 5.9 | ~2.2x |
 
-**voltron misses the 10 fps goal on a slew by 3x, and that is the number to design
-against** — it is the likely viewer host, and the beamline node is never idle, so a
+**voltron misses the 10 fps goal on a COLD slew by 3x and clears it warm at 14.87 fps.**
+That is the whole deployment answer for the CPU side: the viewer is usable there only with
+`--template-cache auto`. The measured warm slew (67.25 ms) and pan (67.30 ms) agree to
+**0.05 ms** -- with the library resident a rotating frame costs exactly what a translating
+one costs, i.e. the decode is gone rather than reduced. All 360 frames fit voltron's RAM,
+so a full revolution stays warm; see the LRU caveat below for hosts where they do not.
+The cold figure remains the number to design against for a first revolution — it is the likely viewer host, and the beamline node is never idle, so a
 figure taken under load is the deployment figure rather than a degraded one. The p90/p10
 spread is 1.34 there against 1.31 on the dev box, i.e. the same distribution shape, so
 this is systematic CPU speed and not contention noise; re-measuring on a quiet node would

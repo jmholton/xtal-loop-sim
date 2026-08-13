@@ -1,8 +1,8 @@
 ---
 project: loop-sim (xtal-loop-sim) — bright-field microscope + X-ray simulator for protein crystals in cryo-loops
-status: active — camera served from pre-computed templates (no GPU at runtime) and usable interactively; renders go out through a measured camera model on the real 704x480 raster; all three frame libraries current; the camera calibration is fully settled (pixels 2026-08-10, NA 2026-08-11); library builds are 43x faster since the mesh path learned to cull and the VRAM budget is enforced rather than hoped for; the droplet scene now ships at the optically correct supersample 4 with a Rayleigh-matched drop mesh, so zoom reaches 4x; the pin's specular glint is projected from the scene rather than inferred from the silhouette, so it can no longer land on the droplet
-last_verified: 2026-08-12        # `pytest tests/` = 222 passed in 346 s on this tree (branch performance-correctness-optimizations, RTX 4080 SUPER; branch depth is CHEAP TO MEASURE -- `git rev-list --count master..HEAD` -- so measure it rather than quoting a number here)
-verify: python -m pytest tests/ -q        # 222 tests; "python" = the torch-enabled project interpreter (see docs/RUNBOOK.md "Environment")
+status: active — camera served from pre-computed templates (no GPU at runtime) and usable interactively; renders go out through a measured camera model on the real 704x480 raster; all three frame libraries current; the camera calibration is fully settled (pixels 2026-08-10, NA 2026-08-11); library builds are 43x faster since the mesh path learned to cull and the VRAM budget is enforced rather than hoped for; the droplet scene now ships at the optically correct supersample 4 with a Rayleigh-matched drop mesh, so zoom reaches 4x; the pin's specular glint is projected from the scene rather than inferred from the silhouette, so it can no longer land on the droplet; BOTH HALVES OF THE VOLTRON DEPLOYMENT ARE NOW MEASURED (2026-08-13) — it renders 4% faster than the dev box and serves at 14.87 fps, but only with `--template-cache auto`
+last_verified: 2026-08-13        # `pytest tests/` = 228 passed in 328 s on this tree (branch performance-correctness-optimizations, RTX 4080 SUPER; branch depth is CHEAP TO MEASURE -- `git rev-list --count master..HEAD` -- so measure it rather than quoting a number here)
+verify: python -m pytest tests/ -q        # 228 tests; "python" = the torch-enabled project interpreter (see docs/RUNBOOK.md "Environment")
 ---
 
 # HANDOFF — loop-sim (xtal-loop-sim)
@@ -246,10 +246,11 @@ The highest-value open engineering items, in rough priority:
   is a separate and small piece of work. The original entry follows.
 - **Build the prefetch decode pool — it stopped being optional on 2026-08-13.**
   75% of a rotating frame is PNG decode. On the dev box that is a nice-to-have:
-  10-12 fps at the socket already clears the 10 fps goal. **On voltron it is a
-  blocker.** `bench_serve.py` measures a spindle slew there at **288.3 ms /
-  3.47 fps** against the dev box's 91.1 ms / 10.98 — the target missed by 3x,
-  on the machine most likely to host the viewer.
+  10-12 fps at the socket already clears the 10 fps goal. **On voltron it was a
+  blocker, and the RAM cache cleared it.** `bench_serve.py` measures a cold
+  spindle slew there at **265.5 ms / 3.77 fps** and a warm one at **67.3 ms /
+  14.87 fps** with `--template-cache auto`, against the dev box's 91.1 / 27.1.
+  Warm slew and pan agree to 0.05 ms.
   The arithmetic says a pool fixes it and nothing else has to change. Strip the
   decode and voltron's remaining stages total **71.4 ms (14.0 fps)**; the dev
   box's total 30.3 ms (33 fps), which independently reproduces the "~30 fps"
@@ -741,6 +742,40 @@ those numbers don't have to be re-derived.
 
 ## Work log (append-only)
 
+- **2026-08-13 (latest) — voltron measured end to end: it renders slightly
+  faster and serves usably, but only with the cache.** The question this whole
+  deploy asked is answered on both halves.
+  **GPU render: the TITAN V is 4% faster.** `hampton_300um_realistic` at
+  supersample 4, four poses through the real build loop: **74.55 s/frame mean**
+  (86.9 / 62.2 / 86.1 / 63.0 at phi 0/90/180/270) against the dev box's 77.9
+  (91.7 / 64.3 / 92.7 / 62.7). Same tile (1,000,000) on both, so it is hardware
+  against hardware. A full 360-frame build projects to **~7.45 h** against 7.48
+  — effectively identical, and voltron is not the shortcut a build might have
+  hoped for.
+  **The FP64 hypothesis is REFUTED, and that is the useful part.** A TITAN V
+  runs double precision at 1:2 of single against consumer Ada's 1:64 — an ~8x
+  advantage on paper, and the tracer is deliberately float64. It bought 4%.
+  The card sat at 100% utilisation throughout, so this is not the
+  dispatch-bound regime the 640x480 tube scene showed (GPU ~29% busy): the
+  render is genuinely GPU-bound and still barely moved, which points at
+  bandwidth or occupancy rather than FP64 ALU. Do not expect a double-precision
+  card to rescue this workload.
+  **CPU serve: 3.77 fps cold, 14.87 fps warm.** With `--template-cache auto`
+  holding all 360 templates (14.4 GiB), a warm slew is **67.25 ms against a pan
+  at 67.30 ms — they agree to 0.05 ms**, which is the cleanest available proof
+  that the decode is eliminated rather than reduced. Predicted 71.4 ms from the
+  stage split beforehand; measured 67.25.
+  **Two deployment conditions fall out of that.** The viewer needs the cache
+  flag on voltron or it runs at a third of the goal, and the VRAM margin for a
+  build is thin: the preflight measured a 7.55 GB budget against a known ~7.3 GB
+  build peak, ~250 MB of headroom, holding across both heavy poses but sampled
+  only four of 360.
+  **Also this session:** the GPU path did not import on the beamline at all
+  (see the entry below), `bench_serve.py` was added and then corrected twice —
+  once for warming on the poses it was about to time, once for benching
+  `mono=off` where the server defaults on — and voltron's occupancy turned out
+  to be James's 8-GPU training run rather than an idle farm.
+
 - **2026-08-13 (later) — the GPU path did not import on the beamline at all.**
   First real attempt to render on voltron died before rendering a frame:
   `AttributeError: module 'torch' has no attribute '_dynamo'`, from
@@ -790,8 +825,8 @@ those numbers don't have to be re-derived.
   a slew. It needs no GPU and binds no socket, so it runs on a fully loaded
   node — and since voltron is never quiet, a number taken under load *is* the
   deployment number rather than a degraded one.
-  **And voltron fails the 10 fps goal on the CPU path: slew 288.3 ms / 3.47 fps
-  against the dev box's 91.1 / 10.98.** That is an inversion worth sitting with
+  **And voltron failed the 10 fps goal on the CPU path until the cache landed:
+  cold slew 265.5 ms / 3.77 fps, warm 67.3 / 14.87.** That is an inversion worth sitting with
   — the same machine PASSES the GPU acceptance test at 11.9 fps compiled. The
   template path was adopted precisely to take the GPU out of serving, and on
   voltron that trade moves the bottleneck onto the half of the machine that is
