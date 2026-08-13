@@ -741,6 +741,28 @@ those numbers don't have to be re-derived.
 
 ## Work log (append-only)
 
+- **2026-08-13 (later) — the GPU path did not import on the beamline at all.**
+  First real attempt to render on voltron died before rendering a frame:
+  `AttributeError: module 'torch' has no attribute '_dynamo'`, from
+  `engine_torch`'s `@torch._dynamo.disable` executing at class-body time.
+  **torch 2.0.1 does not bind `torch._dynamo` until something imports it**;
+  torch 2.6 on the dev box does, so the whole GPU path was unimportable on the
+  deployment machine while being perfectly healthy in development. Exactly the
+  class of bug a first deploy exists to find, and it had been latent since the
+  cull landed.
+  Fixed by `renderer/torch_compat.py`'s `ensure_dynamo()`, called by the four
+  entry points that import `engine_torch` plus `tests/conftest.py`. **It is a
+  separate file on purpose:** `engine_torch.py` is hashed into `render_sha`, so
+  a one-line import fix there would mark all three libraries stale and re-arm
+  the launch-rebuild trap (7.5 h for the droplet scene) for a change that
+  cannot alter a pixel. `renderer/` is enumerated rather than globbed, so a new
+  module there is outside the hash — the same reason `pin_projection.py` lives
+  there, and the render_sha test now asserts both stay out.
+  **And not in `loop_sim/__init__.py`**, which would be unmissable but would
+  drag torch into the torch-free CPU path: `import torch` is 1.63 s and
+  `from loop_sim.scene.scene import load` currently leaves torch unimported
+  entirely.
+
 - **2026-08-13 — the 12 GB question is answered, and voltron turns out not to be
   free.** First attempt at deploying a real render to the beamline GPU node.
   **The droplet scene fits a 12 GB card.** Rehearsed locally with

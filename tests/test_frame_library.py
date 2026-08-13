@@ -439,7 +439,7 @@ def test_render_sha_covers_the_tracers_and_not_the_delivery_stage():
                  "scene/primitives.py", "scene/csg.py", "scene/materials.py"):
         assert want in covered, f"{want} decides template pixels but is not hashed"
     for keep_out in ("renderer/field.py", "renderer/pin_projection.py",
-                     "renderer/beam.py",
+                     "renderer/torch_compat.py", "renderer/beam.py",
                      "library/frame_library.py", "server/camera_server.py"):
         assert keep_out not in covered, f"{keep_out} must not invalidate a library"
 
@@ -740,3 +740,82 @@ def test_template_cache_is_honoured_and_actually_stops_the_decode():
     for a in (0.0, 1.0, 2.0):
         small.render({man["axis"]: a})
     assert len(small._cache) == 2, "LRU must still evict when told to"
+
+
+def test_ensure_dynamo_binds_or_stubs_a_torch_that_lacks_it(monkeypatch):
+    """Reproduces the voltron 2026-08-13 import failure and both recoveries.
+
+    torch 2.0.1 leaves `torch._dynamo` unbound until something imports it, and
+    `engine_torch` spells `@torch._dynamo.disable` in a class body -- so the
+    whole GPU path was unimportable on the deployment machine while healthy in
+    development.
+
+    Driven against a FAKE torch rather than the real one: torch >= 2.1 serves
+    `_dynamo` from a module-level `__getattr__`, so deleting the attribute does
+    not reproduce 2.0.1, and mutating the real module risks leaving it broken
+    for every test that runs after this one.
+    """
+    import builtins
+    import types
+    from loop_sim.renderer import torch_compat
+
+    real_import = builtins.__import__
+
+    def run(dynamo_import):
+        fake = types.ModuleType("torch")          # a torch with no _dynamo
+        monkeypatch.setitem(sys.modules, "torch", fake)
+        monkeypatch.delitem(sys.modules, "torch._dynamo", raising=False)
+        monkeypatch.setattr(builtins, "__import__", dynamo_import(fake))
+        assert not hasattr(fake, "_dynamo"), "the 2.0.1 starting condition"
+        return fake, torch_compat.ensure_dynamo()
+
+    # 1. the submodule imports cleanly -> bound for real (plain torch 2.0.1)
+    def importable(fake):
+        def _imp(name, *a, **k):
+            if name == "torch._dynamo":
+                mod = types.ModuleType("torch._dynamo")
+                mod.disable = lambda fn=None, **kw: fn
+                fake._dynamo = mod
+                sys.modules[name] = mod
+                return fake
+            return real_import(name, *a, **k)
+        return _imp
+
+    fake, ok = run(importable)
+    assert ok is True and hasattr(fake, "_dynamo")
+
+    # 2. the submodule raises -> stubbed (the pt env's Inductor pkg_resources
+    #    bug, recorded in DECISIONS "TITAN V measured")
+    def explodes(_fake):
+        def _imp(name, *a, **k):
+            if name == "torch._dynamo":
+                raise ImportError("simulated Inductor pkg_resources failure")
+            return real_import(name, *a, **k)
+        return _imp
+
+    fake, ok = run(explodes)
+    assert ok is False, "the stub path must report that it stubbed"
+
+    @fake._dynamo.disable                 # the bare spelling engine_torch uses
+    def f(x):
+        return x + 1
+    assert f(1) == 2, "a stubbed disable must return a working function"
+    assert fake._dynamo.disable()(lambda x: x * 2)(3) == 6, "called spelling too"
+    assert fake._dynamo.maybe_mark_dynamic(None, 0) is None
+
+
+def test_ensure_dynamo_is_a_noop_without_torch(monkeypatch):
+    """The CPU reference path has no torch at all and must not be disturbed."""
+    import builtins
+    from loop_sim.renderer import torch_compat
+
+    real_import = builtins.__import__
+
+    def _imp(name, *a, **k):
+        if name == "torch":
+            raise ImportError("no torch here")
+        return real_import(name, *a, **k)
+
+    monkeypatch.delitem(sys.modules, "torch", raising=False)
+    monkeypatch.setattr(builtins, "__import__", _imp)
+    assert torch_compat.ensure_dynamo() is False

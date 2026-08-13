@@ -380,6 +380,8 @@ def content_window(scene, tscene, axis="rotx", n_probe=8, fov_mult=4.0,
     Returns (x0, x1, y0, y1) in mm about the goniometer origin.
     """
     from ..motors.goniometer import Goniometer
+    from ..renderer.torch_compat import ensure_dynamo
+    ensure_dynamo()
     from ..renderer.engine_torch import render_torch
 
     cam = scene.camera_cfg
@@ -474,6 +476,8 @@ def build_library(scene_path, root=DEFAULT_ROOT, axis="rotx",
     from PIL import Image
     from ..scene.scene import load
     from ..motors.goniometer import Goniometer
+    from ..renderer.torch_compat import ensure_dynamo
+    ensure_dynamo()   # torch 2.0.1 does not bind torch._dynamo itself
     from ..renderer.engine_torch import (TorchScene, render_torch,
                                          check_render_fits, RenderTooLargeError)
     from ..renderer.optics import psf_sigma_px

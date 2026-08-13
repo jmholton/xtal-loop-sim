@@ -150,6 +150,8 @@ def main():
         dynamo, _has_compile = None, False
     from loop_sim.scene.scene import load
     from loop_sim.motors.goniometer import Goniometer
+    from loop_sim.renderer.torch_compat import ensure_dynamo
+    ensure_dynamo()   # torch 2.0.1 does not bind torch._dynamo itself
     from loop_sim.renderer.engine_torch import TorchScene, render_torch
 
     dev = torch.device("cuda")

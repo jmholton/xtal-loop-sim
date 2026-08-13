@@ -69,6 +69,12 @@ from ..motors.goniometer import Goniometer
 from ..renderer.microscope import render as microscope_render
 from ..renderer.beam        import beam_volumes_json
 from ..renderer            import field as _field
+from ..renderer.torch_compat import ensure_dynamo
+
+# Before anything can import engine_torch: torch 2.0.1 (the beamline pt
+# env) does not bind torch._dynamo, and engine_torch's class bodies use
+# @torch._dynamo.disable, so the import fails outright without this.
+ensure_dynamo()
 from ..library.frame_library import (CPU_BUILD_REFUSAL,
                                      DEFAULT_PREVIEW_ROOT as _LIB_PREVIEW_ROOT,
                                      DEFAULT_ROOT as _LIB_DEFAULT_ROOT,
