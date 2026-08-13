@@ -269,6 +269,34 @@ Notes:
   for someone else on a shared card, and rehearsing a smaller card's behaviour
   before deploying to it (`LOOPSIM_VRAM_BUDGET_GB=12` on a 16 GB box mimics the
   TITAN V's sizing decisions).
+
+  **REHEARSED 2026-08-13, and the answer is yes: the droplet scene fits a 12 GB
+  card.** The docs had never said whether it would -- 7.3 GB was a 16 GB
+  measurement. Four frames of `hampton_300um_realistic` at `--supersample 4`
+  under a simulated TITAN V:
+
+  ```bash
+  LOOPSIM_VRAM_BUDGET_GB=12 $PY -u -m loop_sim.library \
+      --scene scene_files/hampton_300um_realistic.yaml \
+      --step 90 --root /tmp/lib_rehearsal --force
+  ```
+  ```
+  [preflight] 5578x2570 n_cond=7: 3.30 GB peak against a 8.80 GB budget, tile 1000000 -- fits
+  ```
+
+  It completed under the hard ceiling, so the true peak is under 8.8 GiB. The
+  tile stayed at the full 1,000,000, which means a 12 GB card runs the same
+  tiling regime as a 16 GB one and a cross-machine comparison is hardware
+  against hardware. **`--step 90` is the cheap probe**: 4 frames through the
+  real loop, real scout, real preflight. Use a disposable `--root` -- a build
+  deletes the manifest and overwrites frames in place.
+
+  **Per-frame cost is strongly pose-dependent, so never time one frame.**
+  Measured (differencing the elapsed column -- the progress line prints a
+  CUMULATIVE average, not a per-frame time): phi=0 91.7 s, phi=90 64.3 s,
+  phi=180 92.7 s, phi=270 62.7 s. A 1.48x spread, because the drop is edge-on
+  at 90/270 and face-on at 0/180. Mean 77.9 s/frame against the shipped
+  build's 74.8, so capping to 12 GB costs essentially nothing.
 - **Tile size is not worth hand-tuning.** Measured at 14.4 Mpx: tiles of
   1M / 2M / 4M / 6M rays run 18.6 / 17.5 / 17.3 / 17.1 s, all byte-identical.
   Six times the tile buys 8% and costs 1.8 GB of peak, so the default stays at

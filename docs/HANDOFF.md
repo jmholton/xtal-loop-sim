@@ -713,6 +713,38 @@ those numbers don't have to be re-derived.
 
 ## Work log (append-only)
 
+- **2026-08-13 — the 12 GB question is answered, and voltron turns out not to be
+  free.** First attempt at deploying a real render to the beamline GPU node.
+  **The droplet scene fits a 12 GB card.** Rehearsed locally with
+  `LOOPSIM_VRAM_BUDGET_GB=12` (RUNBOOK "Frame libraries" has the recipe and the
+  numbers): preflight 3.30 GB against an 8.80 GB budget, tile stays at the full
+  1,000,000, four frames complete under the hard ceiling. The docs had never
+  said whether it would — 7.3 GB was a 16 GB measurement. Also measured: a
+  **1.48x per-frame spread with pose** (63–93 s), so a one-frame timing is
+  meaningless, and the progress line prints a *cumulative average* rather than a
+  per-frame time, which is easy to misread.
+  **voltron is not idle and is unlikely ever to be.** All eight TITAN Vs are
+  held by James's `torchrun --nproc_per_node=8` training run (~8 GB per card,
+  4–5.4 GB free), so `memory_budget()` lands near 3.2 GiB and the preflight
+  refuses — correctly. Two reading traps cost time: `utilization.gpu` samples
+  0% on a genuinely busy card between optimizer steps, and
+  `nvidia-smi --query-gpu=... -l 1 -c 5` is rejected outright on driver 525
+  (use a shell loop). **Do not share a card with a training run** — taking VRAM
+  from it can OOM a job hours in.
+  **The operational conclusion is bigger than the benchmark:** a 7.5 h library
+  build on voltron competes with real work on a shared node, which argues
+  against moving builds there even if the TITAN V proves faster per frame.
+  **`bench_serve.py` added** (`d4c9f3d`) — the serve path had never been
+  benchmarked, and it is the half of the deployment question the GPU harnesses
+  miss. Dev box: slew 91.1 ms / 11.0 fps, pan 32.4 ms / 30.9 fps, decode 73% of
+  a slew. It needs no GPU and binds no socket, so it runs on a fully loaded
+  node — and since voltron is never quiet, a number taken under load *is* the
+  deployment number rather than a degraded one.
+  **Confirmed:** voltron and the gateway share one ZFS `/home`
+  (`petabyte://zpoo1/test/home`), so `push-all.sh` lands where voltron reads —
+  previously inferred, now measured. The torch-2.6 venv is absent there.
+  **Still open:** the TITAN V per-frame number, blocked on card availability.
+
 - **2026-08-12 (later) — the glint stopped guessing where the pin is, and the
   droplet stopped shining.** Operator-reported: zoom in on
   `hampton_300um_realistic`, or pan the pin's body off screen, and the grainy
