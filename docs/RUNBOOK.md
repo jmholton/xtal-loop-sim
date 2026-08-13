@@ -485,7 +485,22 @@ For a render-level check after touching the renderer or a scene, use the SLURM c
 job (`sbatch run_gpu.slurm` renders CPU+GPU at n_cond 1 and 7 and reports diff stats);
 `../CLAUDE.md` "Comparison workflow" carries the acceptable thresholds.
 
-Benchmarking: `bench_frame.py` (flags `--compiled`, `--fp32`); soak the live server with
+Benchmarking the **serve** path (no GPU, no socket, safe on a busy shared node):
+
+```bash
+$PY bench_serve.py --scene scene_files/hampton_300um_realistic.yaml --frames 40
+```
+
+It reports three regimes separately because they differ ~3x and one number would hide it:
+**slew** (spindle turning — every frame is a fresh PNG decode), **pan** (fixed angle — the
+decoded template is reused from the 8-entry cache), and **hold**. Dev box, 2026-08-13:
+slew 91.1 ms / 11.0 fps, pan 32.4 ms / 30.9 fps, stage split decode 66.6, crop+scale 15.3,
+camera model 12.3, jpeg 2.7 ms. Decode is 73% of a slew, which is why a prefetch pool is
+the identified lever. Warmup deliberately uses angles the timed run never revisits —
+warming on the timed poses reads 78 ms with a p10 of 25.8, and that p10 is the pan number
+leaking in.
+
+Benchmarking the **render** path: `bench_frame.py` (flags `--compiled`, `--fp32`); soak the live server with
 `soak_server.py`, which lives **outside this repo** in the analysis tree at
 `/home/jadoughty/projects/loop_sim_MINE/investigation/2026-07_scene_and_perf_harnesses/`.
 That tree is mirrored to the gateway alongside the repo but is **not versioned**, so it

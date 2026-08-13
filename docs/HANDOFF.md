@@ -695,10 +695,15 @@ those numbers don't have to be re-derived.
   three limits that make it a FALSIFICATION set rather than a fitting set (no single
   real background, two mutually exclusive calibrations inside the directory, and the
   A/C sets' scale is inferred and not self-consistent).
-- `bench_frame.py` — warm-frame benchmark (`--compiled`, `--fp32`). `acceptance_voltron.py`
-  — self-contained TITAN V acceptance test (fps + VRAM + compile check → GO/NO-GO +
-  `acceptance_report.json`; auto-picks a free GPU). `run_gpu.slurm` — voltron GPU job (no
-  `--time`!). `tests/` — 213 tests (the verify command).
+- `bench_frame.py` — warm-frame benchmark (`--compiled`, `--fp32`). **`bench_serve.py`** —
+  the same question for the CPU: how fast does THIS host replay templates, with no GPU and
+  no socket. Reports slew / pan / hold separately (a slew decodes every frame, a pan reuses
+  the cache — 91 vs 32 ms on the dev box) plus a decode/crop/camera/jpeg split.
+  `acceptance_voltron.py` — self-contained TITAN V acceptance test (fps + VRAM + compile
+  check → GO/NO-GO + `acceptance_report.json`; auto-picks a free GPU); its scenes are
+  hard-coded, so it cannot be pointed at the droplet scene. `run_gpu.slurm` — voltron GPU
+  job (no `--time`!), **stale**: it targets `/home/jamesh/...` and the gitignored
+  `scene.yaml`. `tests/` — 222 tests (the verify command).
 - `README.md` — user guide (repo root). `CLAUDE.md` — deep engineering notes (repo root:
   architecture, precision, concurrency, the recentre bug). `docs/` — the handoff docs
   (this file + `RUNBOOK.md`, `DECISIONS.md`, `DATA.md`). `scratch/` — git-ignored,
