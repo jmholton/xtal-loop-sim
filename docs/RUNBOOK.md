@@ -539,8 +539,31 @@ spread is 1.34 there against 1.31 on the dev box, i.e. the same distribution sha
 this is systematic CPU speed and not contention noise; re-measuring on a quiet node would
 not move it much.
 
-Decode is 73% of a slew on both machines, which is why the prefetch pool is the lever —
-see HANDOFF "Open questions". Warmup deliberately uses angles the timed run never
+**Fixed 2026-08-13 by holding the library in RAM, not by threading.** A decoded template
+is `width*height*3` = 41 MiB, so the whole 360-frame sweep is 14.4 GiB — nothing against
+voltron's 251 GB. `--template-cache` (default `auto`) sizes the decode cache from *half of
+available* RAM, capped at the library. Warm, a slew becomes a pan: measured on the dev box
+**27.1 ms / 37.0 fps against a cold 106.1 ms**. No threads, no prefetch, no direction
+prediction — which also makes it the right answer for the AXIS consumer, whose `/motor` is
+instant and absolute and therefore has no predictable slew to prefetch along.
+
+**The caveat, and it is a real one: LRU thrashes on a cyclic sweep.** If the cache is
+smaller than a revolution, each frame is evicted just before it comes round again and the
+benefit is *zero*, not proportional. Measured:
+
+```
+  cache=64 cycle=32   lap1 89.2 ms  lap2 12.9 ms   warm
+  cache=16 cycle=32   lap1 76.1 ms  lap2 69.8 ms   thrash
+  cache=64 cycle=128  lap1 81.4 ms  lap2 71.0 ms   thrash
+```
+
+So the flag is all-or-nothing per sweep length. voltron holds all 360 and is fine. A 16 GB
+WSL2 dev box gets 182 frames (7.3 GiB) and so stays cold on a *full* revolution while
+benefiting on any sweep under 182 frames — which is what centring actually does.
+`bench_serve.py` prints a warning naming both numbers when the cache cannot hold the
+library.
+
+Decode is 73% of a cold slew on both machines. Warmup deliberately uses angles the timed run never
 revisits: warming on the timed poses reads 78 ms with a p10 of 25.8, and that p10 is the
 pan number leaking in.
 

@@ -656,3 +656,79 @@ def test_rebuilding_in_another_format_removes_the_old_frames(tmp_path):
     assert all(f["file"].endswith(".png") for f in man["frames"])
     assert all(os.path.exists(os.path.join(lib_dir, f["file"]))
                for f in man["frames"])
+
+
+# ---------------------------------------------------------------------------
+# Template cache sizing: the fix for a slew missing on every frame
+# ---------------------------------------------------------------------------
+def _fake_manifest(w, h, n):
+    return {"rendered": {"width": w, "height": h},
+            "frames": [{"file": f"rot_{i:04d}.png"} for i in range(n)]}
+
+
+def test_template_cache_holds_the_whole_library_when_ram_allows():
+    """A slew visits every angle once per revolution, so anything smaller than
+    the library misses on every rotating frame.  Given room, hold all of it."""
+    from loop_sim.server.camera_server import plan_template_cache
+
+    man = _fake_manifest(5578, 2570, 360)          # 41 MiB/frame, 14.4 GiB total
+    assert plan_template_cache(man, avail=256 * 2**30) == 360, \
+        "with 256 GiB available the whole sweep must fit"
+
+
+def test_template_cache_shrinks_rather_than_promising_memory_it_lacks():
+    """The failure this guards is a laptop trying to hold 14.4 GiB because the
+    default said so.  Sized from AVAILABLE ram, never from total."""
+    from loop_sim.server.camera_server import (plan_template_cache,
+                                               _CACHE_RAM_FRACTION)
+
+    man = _fake_manifest(5578, 2570, 360)
+    per = 5578 * 2570 * 3
+    for avail_gib in (2, 8, 32):
+        got = plan_template_cache(man, avail=avail_gib * 2**30)
+        want = int((avail_gib * 2**30 * _CACHE_RAM_FRACTION) // per)
+        assert got == max(1, min(360, want)), f"{avail_gib} GiB -> {got}"
+        assert got >= 1, "never zero -- one frame must always be cacheable"
+    # A tiny box still gets a working server, just a cold one.
+    assert plan_template_cache(man, avail=64 * 2**20) == 1
+
+
+def test_template_cache_never_raises_on_a_malformed_manifest():
+    """It runs in TemplateSource.__init__, so a throw here takes the server
+    down at startup.  None means 'caller keeps its own default'."""
+    from loop_sim.server.camera_server import plan_template_cache
+
+    assert plan_template_cache({}) is None
+    assert plan_template_cache({"rendered": {"width": 0, "height": 0},
+                                "frames": []}) is None
+    assert plan_template_cache(_fake_manifest(5578, 2570, 360), avail=0) is None
+
+
+def test_template_cache_is_honoured_and_actually_stops_the_decode():
+    """End to end on the real library: a big cache must turn a second pass over
+    the same angles into cache hits, which is the entire 288 -> 69 ms effect."""
+    from loop_sim.server.camera_server import TemplateSource
+
+    lib_dir = os.path.join(REPO_ROOT, "frame_library", "hampton_300um")
+    if not os.path.exists(os.path.join(lib_dir, "manifest.json")):
+        pytest.skip("hampton_300um library not present")
+    from loop_sim.library.frame_library import load_manifest
+    man = load_manifest(lib_dir)
+
+    src = TemplateSource(man, lib_dir, jpeg_quality=85, cache_size=16)
+    assert src._cache_size == 16, "an explicit int must be honoured verbatim"
+    angles = [0.0, 1.0, 2.0, 3.0, 4.0]
+    for a in angles:
+        src.render({man["axis"]: a})
+    assert len(src._cache) == len(angles), "each distinct angle caches once"
+    names = set(src._cache)
+    for a in angles:                      # second pass: no new decodes
+        src.render({man["axis"]: a})
+    assert set(src._cache) == names, "a warm angle must not be re-decoded"
+
+    # ...and the old 8-entry behaviour is still reachable, which is what
+    # bench_serve --template-cache 8 uses to reproduce the pre-fix numbers.
+    small = TemplateSource(man, lib_dir, jpeg_quality=85, cache_size=2)
+    for a in (0.0, 1.0, 2.0):
+        small.render({man["axis"]: a})
+    assert len(small._cache) == 2, "LRU must still evict when told to"

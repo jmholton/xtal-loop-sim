@@ -36,12 +36,14 @@ below HTTP and returns the JPEG bytes, so this runs headless on a login shell
 with no port to bind and no browser -- which is the only way to benchmark a
 shared beamline node.
 
-THE CACHE IS LOAD-BEARING.  `TemplateSource` keeps 8 decoded templates
-(`cache_size=8`).  A real spindle slew crosses hundreds of angles and therefore
-misses every time; a benchmark that swept only 8 would accidentally measure the
-pan case and report a number 5x too good.  `--slew-step` defaults to 1 degree
-over `--frames` frames for exactly that reason, and the cache is dropped
-between regimes rather than being allowed to leak a warm state forward.
+THE CACHE IS LOAD-BEARING, AND IT IS NOW THE THING UNDER TEST.  `TemplateSource`
+sizes its decode cache from available RAM (`plan_template_cache`), so on a box
+that can hold the library the slew SHOULD collapse onto the pan number once
+warm -- that is the whole point of the 2026-08-13 change.  This benchmark
+deliberately drops the cache between regimes and warms the slew on angles the
+timed run never revisits, so what it reports is the COLD cost of each regime.
+Use `--template-cache 8` to see the old behaviour and `--frames` larger than the
+cache to keep measuring cold decodes on a big-cache host.
 
 USAGE
     python bench_serve.py --scene scene_files/hampton_300um_realistic.yaml
@@ -67,7 +69,8 @@ from loop_sim.library.frame_library import (frame_for_angle, library_dir,
                                             load_manifest, pose_crop)
 from loop_sim.renderer import field as _field
 from loop_sim.scene.scene import load as load_scene
-from loop_sim.server.camera_server import TemplateSource, encode_frame, pose_phase
+from loop_sim.server.camera_server import (TemplateSource, encode_frame,
+                                           plan_template_cache, pose_phase)
 
 
 def _stats(samples_s):
@@ -181,6 +184,11 @@ def main():
                          "which is the library's own step and guarantees a "
                          "fresh template every frame)")
     ap.add_argument("--jpeg-quality", type=int, default=85)
+    ap.add_argument("--template-cache", default="auto",
+                    help="decoded templates held in RAM: 'auto' (default, "
+                         "sized from available memory), or an integer. Pass 8 "
+                         "to reproduce the pre-2026-08-13 cache and see the "
+                         "slew cost the full decode")
     ap.add_argument("--no-camera", action="store_true",
                     help="serve raw transmittance -- isolates how much of the "
                          "frame is the camera model")
@@ -197,8 +205,11 @@ def main():
 
     camera = None if args.no_camera else {"mono": False, "streak": True}
     sensor = tuple(_field.SENSOR_WH)
+    cache = (None if args.template_cache == "auto"
+             else int(args.template_cache))
     src = TemplateSource(man, lib_dir, jpeg_quality=args.jpeg_quality,
-                         camera=camera, sensor=sensor, scene=scene)
+                         camera=camera, sensor=sensor, scene=scene,
+                         cache_size=cache)
 
     axis = man["axis"]
     n, step = args.frames, args.slew_step
@@ -221,6 +232,8 @@ def main():
                     "supersample": man["supersample"],
                     "format": man["format"]},
         "camera_emulation": camera is not None,
+        "template_cache": src._cache_size,
+        "template_cache_auto": plan_template_cache(man),
         "sensor": list(sensor),
     }
 
@@ -230,6 +243,11 @@ def main():
     slew_warm = [{axis: (180.0 + i * step) % 360.0} for i in range(args.warmup)]
     _drop_cache(src)
     report["slew"] = _stats(_time_regime(src, slew, slew_warm))
+    # Second pass over the SAME angles, cache left warm: what production looks
+    # like once a revolution has been walked once.  Reported separately because
+    # it is only reachable when the cache can hold the sweep -- see the
+    # thrash warning below, which is the honest caveat on this number.
+    report["slew_warm"] = _stats(_time_regime(src, slew, []))
     _drop_cache(src)
     report["pan"] = _stats(_time_regime(src, pan, pan[:args.warmup]))
     _drop_cache(src)
@@ -244,9 +262,12 @@ def main():
     print(f"  scene   {report['scene']}  library {report['library']['frames']} frames "
           f"at {w['width']}x{w['height']} {report['library']['format']}, "
           f"supersample {report['library']['supersample']}x")
+    resident = src._cache_size * w["width"] * w["height"] * 3 / 2**30
     print(f"  camera emulation {'on' if camera else 'OFF'}, "
-          f"delivered {sensor[0]}x{sensor[1]}\n")
-    for k in ("slew", "pan", "hold"):
+          f"delivered {sensor[0]}x{sensor[1]}")
+    print(f"  template cache {src._cache_size} frames "
+          f"({resident:.1f} GiB resident if fully warmed)\n")
+    for k in ("slew", "slew_warm", "pan", "hold"):
         r = report[k]
         print(f"  {k:5s}  {r['median_ms']:7.2f} ms  ({r['fps']:6.2f} fps)   "
               f"p10 {r['p10_ms']:.2f}  p90 {r['p90_ms']:.2f}")
@@ -254,7 +275,19 @@ def main():
     print(f"\n  stage split (median, ms):  decode {s['decode_ms']}  "
           f"crop+scale {s['crop_scale_ms']}  camera {s['camera_model_ms']}  "
           f"jpeg {s['jpeg_encode_ms']}")
-    print(f"  -> a slew pays all four; a pan skips the decode.\n")
+    print(f"  -> a slew pays all four; a pan skips the decode.")
+    n_lib = report["library"]["frames"]
+    if src._cache_size < n_lib:
+        print(f"\n  WARNING cache holds {src._cache_size} of {n_lib} frames. "
+              f"slew_warm above is honest only for sweeps under "
+              f"{src._cache_size} frames;\n          a FULL revolution evicts "
+              f"each frame just before it is needed again (LRU vs a cyclic "
+              f"access pattern),\n          so it will read like the cold "
+              f"slew. Raise the host's RAM or --template-cache to fix.")
+    else:
+        print(f"\n  cache holds the whole {n_lib}-frame library: no eviction, "
+              f"so a full revolution stays warm.")
+    print()
 
     if args.json:
         with open(args.json, "w") as fh:

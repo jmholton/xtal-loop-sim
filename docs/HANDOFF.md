@@ -226,6 +226,22 @@ The highest-value open engineering items, in rough priority:
   three frame libraries**, including the 8.06 h `hampton_300um_realistic` build. Both
   halves of the old "three cameras" puzzle are now closed: pixels on 2026-08-10, NA on
   2026-08-11.
+- ~~Build the prefetch decode pool~~ — **SOLVED 2026-08-13 without threads, by
+  holding the library in RAM.** `--template-cache` (default `auto`) sizes the
+  decode cache from half of available memory, capped at the sweep; 41 MiB a
+  frame, 14.4 GiB for all 360, which voltron does not notice. A warm slew
+  becomes a pan — 27.1 ms / 37.0 fps on the dev box against a cold 106.1.
+  Preferred over a pool on three counts: no concurrency added to a server whose
+  every threading bug so far has been mutable shared control state; no
+  direction prediction, which matters because the AXIS consumer drives `/motor`
+  (instant, absolute) and has no predictable slew to prefetch along; and the
+  fallback when RAM is short is simply today's behaviour.
+  **Residual limitation, measured:** LRU thrashes on a cyclic sweep — a cache
+  smaller than a revolution evicts each frame just before it is needed again,
+  so the benefit is zero rather than proportional. voltron holds all 360; a
+  16 GB WSL2 box holds 182 and stays cold on a full revolution. Fixing that
+  means a smarter eviction policy (evict furthest-in-angle, or random), which
+  is a separate and small piece of work. The original entry follows.
 - **Build the prefetch decode pool — it stopped being optional on 2026-08-13.**
   75% of a rotating frame is PNG decode. On the dev box that is a nice-to-have:
   10-12 fps at the socket already clears the 10 fps goal. **On voltron it is a

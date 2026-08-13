@@ -176,6 +176,79 @@ def encode_frame(img, jpeg_quality, camera=None, sensor=None, phase=0,
 # ---------------------------------------------------------------------------
 # Template replay
 # ---------------------------------------------------------------------------
+# Fraction of the host's AVAILABLE memory the template cache may claim when it
+# sizes itself.  Half, because the server is not the only thing on the box and
+# the serving path allocates its own per-frame arrays on top of the cache: a
+# 704x480x3 float64 frame plus the camera stage's intermediates is tens of MB
+# per in-flight request, and `ThreadingHTTPServer` gives one thread per client.
+# Deliberately NOT a fraction of TOTAL memory -- voltron runs an 8-rank training
+# job with 106 GB in /dev/shm, and total would happily promise memory that is
+# already spoken for.  Same reasoning as `memory_budget()` sizing from free VRAM
+# rather than the card's total.
+_CACHE_RAM_FRACTION = 0.5
+
+
+def _available_ram_bytes():
+    """Bytes the OS says are actually available, or None if it will not say.
+
+    `MemAvailable` rather than `MemFree`: free memory excludes reclaimable page
+    cache, and on a box that has been serving templates for a while most of the
+    library IS page cache -- sizing off `MemFree` there would refuse to cache
+    precisely when caching is cheapest.  Falls back to the POSIX page counts,
+    which give free rather than available and so under-promise, which is the
+    right direction to be wrong in.
+    """
+    try:
+        with open("/proc/meminfo") as fh:
+            for line in fh:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        return os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+    except (ValueError, OSError, AttributeError):
+        return None
+
+
+def plan_template_cache(manifest, fraction=_CACHE_RAM_FRACTION, avail=None):
+    """How many decoded templates to hold resident.  Never raises.
+
+    THE POINT OF CACHING THE WHOLE LIBRARY.  A decoded template is
+    width*height*3 bytes -- 41 MiB for the droplet scene's 5578x2570 sweep --
+    and a spindle slew visits every angle exactly once per revolution, so the
+    old 8-entry cache missed on every frame of a rotation by construction.
+    Measured 2026-08-13: a slew costs 288.3 ms on voltron against 69.1 ms for a
+    pan, and the whole 205 ms difference is one PNG decode.  Hold the library
+    resident and a slew becomes a pan -- 14.5 fps there, past the 10 fps goal,
+    with no threads, no prefetch and no prediction.
+
+    Direction-agnostic, which is why this beats a prefetch pool for the AXIS
+    consumer: `/motor` is instant and absolute, so a pool would have to infer a
+    slew's direction from observed deltas and would be wrong across every
+    commanded jump.  A resident library does not care how the pose moves.
+
+    Sized against AVAILABLE RAM because the whole library is not always
+    affordable: 360 x 41 MiB is 14.4 GiB, nothing on voltron's 251 GB and a
+    great deal on a laptop.  The result is clamped to the library's own frame
+    count -- there is never a reason to hold more.
+    """
+    try:
+        rnd = manifest["rendered"]
+        per = int(rnd["width"]) * int(rnd["height"]) * 3
+        n_frames = len(manifest["frames"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if per <= 0 or n_frames <= 0:
+        return None
+    if avail is None:
+        avail = _available_ram_bytes()
+    if not avail or avail <= 0:
+        return None                      # caller keeps its own default
+    affordable = int((avail * float(fraction)) // per)
+    return max(1, min(n_frames, affordable))
+
+
 class TemplateSource:
     """Serves frames from a pre-rendered spindle sweep.
 
@@ -183,12 +256,18 @@ class TemplateSource:
     window the pose asks for, scaling it to the camera resolution, and blurring
     by the defocus the depth component implies.  No raytracing, no GPU.
 
-    Decoded templates are cached (they are large -- tens of MB each at 4x
-    supersample -- so the cache is deliberately small; decoding is ~20 ms and
-    is not the bottleneck).
+    Decoded templates are cached, and since 2026-08-13 the cache is sized to
+    hold the WHOLE library when the host can afford it (`plan_template_cache`).
+    It used to hold 8, on the reasoning that templates are large and decoding is
+    cheap -- the second half of which was wrong at supersample 4: a 5578x2570
+    PNG costs 66 ms to decode on the dev box and 205 ms on voltron, and a
+    spindle slew visits every angle once per revolution, so an 8-entry cache
+    missed on every rotating frame by construction. Holding the library
+    resident turns a slew into a pan (288 -> 69 ms on voltron) for the price of
+    41 MiB per frame.
     """
 
-    def __init__(self, manifest, lib_dir, jpeg_quality=85, cache_size=8,
+    def __init__(self, manifest, lib_dir, jpeg_quality=85, cache_size=None,
                  camera=None, sensor=None, scene=None):
         self.manifest = manifest
         self.lib_dir = lib_dir
@@ -199,6 +278,13 @@ class TemplateSource:
         # replayed without touching the scene otherwise, and that stays true --
         # nothing here loads geometry, traces a ray or reads a material.
         self.scene = scene
+        # None means "size yourself from available RAM" -- the default, so a
+        # caller that says nothing gets the whole library when the box can hold
+        # it and a safe fraction when it cannot.  An explicit int is honoured
+        # verbatim, which is what the CLI's `--template-cache N` and the tests
+        # use; 8 reproduces pre-2026-08-13 behaviour.
+        if cache_size is None:
+            cache_size = plan_template_cache(manifest) or 8
         self._cache_size = max(1, int(cache_size))
         self._cache = {}
         self._order = []
@@ -821,12 +907,18 @@ class CameraServer(ThreadingHTTPServer):
                  preview_mode=True, compile_preview=True, settle_delay=0.5,
                  scene_path=None, templates=True, library_kwargs=None,
                  scene_dir=None, preview_root=None, camera_emulation=True,
-                 mono=True, sensor_pitch=True, pin_streak=True):
+                 mono=True, sensor_pitch=True, pin_streak=True,
+                 template_cache=None):
         # Camera emulation: the illumination field, black floor and tone
         # response the tracer does not model (loop_sim/renderer/field.py).
         # Default ON -- the raw transmittance a tracer produces is 85% pure
         # white and 14% pure black, which is correct physics and not a
         # photograph.  Pass camera_emulation=False for the raw quantity.
+        # None = size from available RAM (plan_template_cache); an int is
+        # honoured verbatim.  Kept on self because _build_bundle rebuilds the
+        # TemplateSource on every runtime scene switch and must use the same
+        # policy the server was launched with.
+        self._template_cache = template_cache
         self._camera = ({"mono": bool(mono), "streak": bool(pin_streak)}
                         if camera_emulation else None)
         # The sensor raster, applied in the same camera-space stage.  Kept
@@ -979,7 +1071,8 @@ class CameraServer(ThreadingHTTPServer):
             self._templates = TemplateSource(
                 manifest, library_dir(scene_path, self._library_root),
                 jpeg_quality=jpeg_quality, camera=self._camera,
-                sensor=self._sensor, scene=scene)
+                sensor=self._sensor, scene=scene,
+                cache_size=self._template_cache)
 
     # ------------------------------------------------------------------
     # Cache management
@@ -1603,7 +1696,8 @@ class CameraServer(ThreadingHTTPServer):
                                        jpeg_quality=self._jpeg_quality,
                                        camera=self._camera,
                                        sensor=self._sensor,
-                                       scene=scene)
+                                       scene=scene,
+                                       cache_size=self._template_cache)
             if serving_from == "preview":
                 warning = ("serving the coarse PREVIEW library "
                            f"({PREVIEW_BUILD['step_deg']:g}deg steps, "
@@ -2064,6 +2158,18 @@ def main(argv=None):
                          "library, building it first if absent or stale. This "
                          "is the low-latency path and needs no GPU at runtime. "
                          "off: raytrace every frame live")
+    ap.add_argument("--template-cache", default="auto",
+                    help="how many decoded templates to hold in RAM. "
+                         "auto (default): as much of the library as half the "
+                         "host's AVAILABLE memory allows, capped at the whole "
+                         "sweep. A decoded template is width*height*3 bytes -- "
+                         "41 MiB for a 5578x2570 supersample-4 sweep, 14.4 GiB "
+                         "for all 360 -- and a spindle slew visits every angle "
+                         "once per revolution, so a small cache misses on every "
+                         "rotating frame. Holding the library resident turns a "
+                         "slew into a pan (288 -> 69 ms measured on voltron). "
+                         "Pass an integer to pin it; 8 reproduces the old "
+                         "behaviour. Ignored with --templates off")
     ap.add_argument("--camera-emulation", choices=["on", "off"], default="on",
                     help="on (default): map the tracer's transmittance through "
                          "the camera's illumination field, black floor and tone "
@@ -2142,7 +2248,9 @@ def main(argv=None):
                           camera_emulation=args.camera_emulation == "on",
                           mono=args.mono == "on",
                           sensor_pitch=args.sensor_pitch == "on",
-                          pin_streak=args.pin_streak == "on")
+                          pin_streak=args.pin_streak == "on",
+                          template_cache=(None if args.template_cache == "auto"
+                                          else int(args.template_cache)))
     server.start()
 
 
