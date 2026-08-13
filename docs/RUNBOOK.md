@@ -539,10 +539,12 @@ spread is 1.34 there against 1.31 on the dev box, i.e. the same distribution sha
 this is systematic CPU speed and not contention noise; re-measuring on a quiet node would
 not move it much.
 
-**Fixed 2026-08-13 by holding the library in RAM, not by threading.** A decoded template
+**Addressable 2026-08-13 by holding the library in RAM, not by threading — but OPT-IN.** A decoded template
 is `width*height*3` = 41 MiB, so the whole 360-frame sweep is 14.4 GiB — nothing against
-voltron's 251 GB. `--template-cache` (default `auto`) sizes the decode cache from *half of
-available* RAM, capped at the library. Warm, a slew becomes a pan: measured on the dev box
+voltron's 251 GB. `--template-cache` defaults to **`off`** (= 8 templates, the long-standing
+behaviour) because 14.4 GiB is not something a server should claim unasked; pass
+`auto` to size it from *half of available* RAM capped at the library, or an integer to pin
+it. Warm, a slew becomes a pan: measured on the dev box
 **27.1 ms / 37.0 fps against a cold 106.1 ms**. No threads, no prefetch, no direction
 prediction — which also makes it the right answer for the AXIS consumer, whose `/motor` is
 instant and absolute and therefore has no predictable slew to prefetch along.

@@ -267,7 +267,7 @@ class TemplateSource:
     41 MiB per frame.
     """
 
-    def __init__(self, manifest, lib_dir, jpeg_quality=85, cache_size=None,
+    def __init__(self, manifest, lib_dir, jpeg_quality=85, cache_size=8,
                  camera=None, sensor=None, scene=None):
         self.manifest = manifest
         self.lib_dir = lib_dir
@@ -278,12 +278,18 @@ class TemplateSource:
         # replayed without touching the scene otherwise, and that stays true --
         # nothing here loads geometry, traces a ray or reads a material.
         self.scene = scene
-        # None means "size yourself from available RAM" -- the default, so a
-        # caller that says nothing gets the whole library when the box can hold
-        # it and a safe fraction when it cannot.  An explicit int is honoured
-        # verbatim, which is what the CLI's `--template-cache N` and the tests
-        # use; 8 reproduces pre-2026-08-13 behaviour.
+        # DEFAULT 8: the conservative pre-2026-08-13 behaviour, because holding
+        # the library resident is opt-in.  A 360-frame supersample-4 sweep is
+        # 14.4 GiB, which voltron does not notice and a workstation very much
+        # does, so the server must not claim it because nobody said otherwise.
+        # `cache_size="auto"` asks `plan_template_cache` to size it from
+        # available RAM; an int is honoured verbatim.
         if cache_size is None:
+            cache_size = 8
+        elif isinstance(cache_size, str):
+            if cache_size != "auto":
+                raise ValueError(f"cache_size must be an int or 'auto', "
+                                 f"got {cache_size!r}")
             cache_size = plan_template_cache(manifest) or 8
         self._cache_size = max(1, int(cache_size))
         self._cache = {}
@@ -914,10 +920,10 @@ class CameraServer(ThreadingHTTPServer):
         # Default ON -- the raw transmittance a tracer produces is 85% pure
         # white and 14% pure black, which is correct physics and not a
         # photograph.  Pass camera_emulation=False for the raw quantity.
-        # None = size from available RAM (plan_template_cache); an int is
-        # honoured verbatim.  Kept on self because _build_bundle rebuilds the
-        # TemplateSource on every runtime scene switch and must use the same
-        # policy the server was launched with.
+        # None = TemplateSource's conservative default (8); "auto" sizes from
+        # available RAM; an int is honoured verbatim.  Kept on self because
+        # _build_bundle rebuilds the TemplateSource on every runtime scene
+        # switch and must use the same policy the server was launched with.
         self._template_cache = template_cache
         self._camera = ({"mono": bool(mono), "streak": bool(pin_streak)}
                         if camera_emulation else None)
@@ -2158,18 +2164,21 @@ def main(argv=None):
                          "library, building it first if absent or stale. This "
                          "is the low-latency path and needs no GPU at runtime. "
                          "off: raytrace every frame live")
-    ap.add_argument("--template-cache", default="auto",
+    ap.add_argument("--template-cache", default="off",
                     help="how many decoded templates to hold in RAM. "
-                         "auto (default): as much of the library as half the "
-                         "host's AVAILABLE memory allows, capped at the whole "
-                         "sweep. A decoded template is width*height*3 bytes -- "
-                         "41 MiB for a 5578x2570 supersample-4 sweep, 14.4 GiB "
-                         "for all 360 -- and a spindle slew visits every angle "
-                         "once per revolution, so a small cache misses on every "
-                         "rotating frame. Holding the library resident turns a "
-                         "slew into a pan (288 -> 69 ms measured on voltron). "
-                         "Pass an integer to pin it; 8 reproduces the old "
-                         "behaviour. Ignored with --templates off")
+                         "off (default): 8, enough for a pan and no more. "
+                         "auto: as much of the library as half the host's "
+                         "AVAILABLE memory allows, capped at the sweep. Or an "
+                         "integer to pin it. OPT-IN because it is expensive: a "
+                         "decoded template is width*height*3 bytes -- 41 MiB "
+                         "for a 5578x2570 supersample-4 sweep, 14.4 GiB for "
+                         "all 360. What it buys is that a spindle slew visits "
+                         "every angle once per revolution, so the default "
+                         "cache misses on every rotating frame; hold the "
+                         "library and a warm slew becomes a pan (106 -> 27 ms "
+                         "measured). Note LRU thrashes if the cache cannot "
+                         "hold a whole revolution -- the gain is then zero, "
+                         "not partial. Ignored with --templates off")
     ap.add_argument("--camera-emulation", choices=["on", "off"], default="on",
                     help="on (default): map the tracer's transmittance through "
                          "the camera's illumination field, black floor and tone "
@@ -2249,7 +2258,9 @@ def main(argv=None):
                           mono=args.mono == "on",
                           sensor_pitch=args.sensor_pitch == "on",
                           pin_streak=args.pin_streak == "on",
-                          template_cache=(None if args.template_cache == "auto"
+                          template_cache=(None if args.template_cache == "off"
+                                          else args.template_cache
+                                          if args.template_cache == "auto"
                                           else int(args.template_cache)))
     server.start()
 

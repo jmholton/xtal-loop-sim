@@ -715,6 +715,14 @@ def test_template_cache_is_honoured_and_actually_stops_the_decode():
     from loop_sim.library.frame_library import load_manifest
     man = load_manifest(lib_dir)
 
+    # Opt-in: saying nothing must NOT claim the library.
+    assert TemplateSource(man, lib_dir)._cache_size == 8, \
+        "holding the library resident is opt-in; the default must stay small"
+    assert TemplateSource(man, lib_dir, cache_size="auto")._cache_size > 8, \
+        "'auto' must size from RAM, not fall back to the default"
+    with pytest.raises(ValueError):
+        TemplateSource(man, lib_dir, cache_size="lots")
+
     src = TemplateSource(man, lib_dir, jpeg_quality=85, cache_size=16)
     assert src._cache_size == 16, "an explicit int must be honoured verbatim"
     angles = [0.0, 1.0, 2.0, 3.0, 4.0]

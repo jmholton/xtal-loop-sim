@@ -226,10 +226,12 @@ The highest-value open engineering items, in rough priority:
   three frame libraries**, including the 8.06 h `hampton_300um_realistic` build. Both
   halves of the old "three cameras" puzzle are now closed: pixels on 2026-08-10, NA on
   2026-08-11.
-- ~~Build the prefetch decode pool~~ — **SOLVED 2026-08-13 without threads, by
-  holding the library in RAM.** `--template-cache` (default `auto`) sizes the
-  decode cache from half of available memory, capped at the sweep; 41 MiB a
-  frame, 14.4 GiB for all 360, which voltron does not notice. A warm slew
+- ~~Build the prefetch decode pool~~ — **ADDRESSED 2026-08-13 without threads,
+  by holding the library in RAM — and it is OPT-IN.** `--template-cache`
+  defaults to `off` (8 templates, the long-standing behaviour); `auto` sizes
+  from half of available memory, capped at the sweep. Opt-in because it is
+  41 MiB a frame and 14.4 GiB for all 360 — which voltron does not notice and a
+  workstation very much does, so the server must not claim it unasked. A warm slew
   becomes a pan — 27.1 ms / 37.0 fps on the dev box against a cold 106.1.
   Preferred over a pool on three counts: no concurrency added to a server whose
   every threading bug so far has been mutable shared control state; no

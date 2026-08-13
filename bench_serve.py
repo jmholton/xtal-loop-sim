@@ -184,11 +184,12 @@ def main():
                          "which is the library's own step and guarantees a "
                          "fresh template every frame)")
     ap.add_argument("--jpeg-quality", type=int, default=85)
-    ap.add_argument("--template-cache", default="auto",
-                    help="decoded templates held in RAM: 'auto' (default, "
-                         "sized from available memory), or an integer. Pass 8 "
-                         "to reproduce the pre-2026-08-13 cache and see the "
-                         "slew cost the full decode")
+    ap.add_argument("--template-cache", default="off",
+                    help="decoded templates held in RAM. off (default, = 8) "
+                         "matches the server's shipped default, so the numbers "
+                         "describe what an operator actually gets. 'auto' "
+                         "sizes from available memory, or pass an integer -- "
+                         "use those to see what opting in would buy")
     ap.add_argument("--no-camera", action="store_true",
                     help="serve raw transmittance -- isolates how much of the "
                          "frame is the camera model")
@@ -205,7 +206,8 @@ def main():
 
     camera = None if args.no_camera else {"mono": False, "streak": True}
     sensor = tuple(_field.SENSOR_WH)
-    cache = (None if args.template_cache == "auto"
+    cache = (8 if args.template_cache == "off"
+             else "auto" if args.template_cache == "auto"
              else int(args.template_cache))
     src = TemplateSource(man, lib_dir, jpeg_quality=args.jpeg_quality,
                          camera=camera, sensor=sensor, scene=scene,
