@@ -69,12 +69,6 @@ from ..motors.goniometer import Goniometer
 from ..renderer.microscope import render as microscope_render
 from ..renderer.beam        import beam_volumes_json
 from ..renderer            import field as _field
-from ..renderer.torch_compat import ensure_dynamo
-
-# Before anything can import engine_torch: torch 2.0.1 (the beamline pt
-# env) does not bind torch._dynamo, and engine_torch's class bodies use
-# @torch._dynamo.disable, so the import fails outright without this.
-ensure_dynamo()
 from ..library.frame_library import (CPU_BUILD_REFUSAL,
                                      DEFAULT_PREVIEW_ROOT as _LIB_PREVIEW_ROOT,
                                      DEFAULT_ROOT as _LIB_DEFAULT_ROOT,
@@ -1072,6 +1066,8 @@ class CameraServer(ThreadingHTTPServer):
         self._tscene = None
         if _want_torch_engine(engine, self._want_templates):
             import torch
+            from ..renderer.torch_compat import ensure_dynamo
+            ensure_dynamo()   # torch 2.0.1 does not bind torch._dynamo itself
             from ..renderer.engine_torch import TorchScene
             dev = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
             self._tscene = TorchScene(scene, dev, torch.float64)
@@ -1132,6 +1128,8 @@ class CameraServer(ThreadingHTTPServer):
         if self._tscene is not None:
             import torch
             from PIL import Image
+            from ..renderer.torch_compat import ensure_dynamo
+            ensure_dynamo()   # torch 2.0.1 does not bind torch._dynamo itself
             from ..renderer.engine_torch import render_torch
             # Compiled ONLY for previews and ONLY once warmup succeeded. Settle
             # frames (and /xray, elsewhere) always take the exact eager path.
@@ -1251,6 +1249,8 @@ class CameraServer(ThreadingHTTPServer):
         with self._scene_lock:
             gono = self._snapshot_gonio()
             if self._tscene is not None:
+                from ..renderer.torch_compat import ensure_dynamo
+                ensure_dynamo()   # torch 2.0.1 does not bind torch._dynamo itself
                 from ..renderer.engine_torch import render_xray_torch
                 T = render_xray_torch(self._tscene, gono).clamp(0, 1).cpu().numpy()
             else:
@@ -1723,6 +1723,8 @@ class CameraServer(ThreadingHTTPServer):
         tscene = None
         if _want_torch_engine(self._engine, want_templates):
             import torch
+            from ..renderer.torch_compat import ensure_dynamo
+            ensure_dynamo()   # torch 2.0.1 does not bind torch._dynamo itself
             from ..renderer.engine_torch import TorchScene
             dev = (torch.device("cuda") if torch.cuda.is_available()
                    else torch.device("cpu"))
@@ -2033,6 +2035,8 @@ class CameraServer(ThreadingHTTPServer):
                 return
             try:
                 import torch
+                from ..renderer.torch_compat import ensure_dynamo
+                ensure_dynamo()   # torch 2.0.1 does not bind torch._dynamo itself
                 from ..renderer.engine_torch import render_torch
                 gono = self._snapshot_gonio()
                 for _ in range(2):     # preview-shaped: n_cond=1, compiled
