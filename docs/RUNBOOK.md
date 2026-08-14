@@ -435,9 +435,10 @@ server, whose `/motor` endpoint takes all seven axes.
 | `--compile-preview` | `on` | `torch.compile` the preview path (CUDA + preview only) |
 | `--settle-delay` | 0.5 s | quiet time after a `/motor` set before the exact frame renders |
 | `--camera-emulation` | `on` | map transmittance through the illumination field, black floor and tone response (`loop_sim/renderer/field.py`), so an empty field reads ~0.60 and an opaque body ~0.18 instead of the rails. **Serve-time only — costs no library rebuild** |
-| `--mono` | `on` | collapse to grey before the camera stage. Colour is an ABSORPTION spectrum here, so a scene declaring a crystal `[0.7,0.9,1.0]` renders it blue. `hampton_300um_realistic` no longer needs this (2026-08-10); the other scenes still do. Ignored when `--camera-emulation off` |
+| `--mono` | **`off`** (was `on` until 2026-08-14) | `on` collapses to grey before the camera stage, masking the fact that colour is an ABSORPTION spectrum here — a scene declaring a crystal `[0.7,0.9,1.0]` renders it blue. Now off by default: the simulator is a colour instrument and scenes are allowed to be coloured, so flattening by default meant no coloured scene could ever be seen. Measured on the shipped libraries, on-vs-off differs by at most 20/21/46 levels on 0.003–0.42% of pixels (realistic/hampton/mitegen) — a tint on loop and droplet edges, not a wash. The scene-side repair is `colour: [1,1,1]` with the absorption in `mu_optical`, which *rebuilds every library*. Ignored when `--camera-emulation off` |
 | `--pin-streak` | `on` | draw the specular glint a real machined pin carries along its shank. Its position is PROJECTED FROM THE SCENE (`renderer/pin_projection.py`) through the current pose, so it is exact at any zoom, crop or angle, and there is simply no glint when the pin is out of view. Only an object the code declares shiny gets one (`SHINY`, currently `pin`+`metal`), so `mitegen_200um` never does. Ignored when `--camera-emulation off` |
-| `--sensor-pitch` | `on` | deliver on the real camera's **704×480** raster. The BL831 pixels are 1.11 non-square and the tracer's are square, so a 640-wide render covers the same field (to under 1%) on a different grid — and a consumer applying dcss's µm-per-pixel constant to 640 columns reads 10% wide. `off` serves the render's own square pixels |
+| `--sensor-pitch` | `on` | deliver on the real camera's **704×480** raster. The BL831 pixels are 1.11 non-square and the tracer's are square, so a 640-wide render covers the same field (to under 1%) on a different grid — and a consumer applying dcss's µm-per-pixel constant to 640 columns reads 10% wide. `off` serves the render's own square pixels. On the template path the resample runs in PIL rather than `field.to_sensor` (6.7 → 1.3 ms, agrees to 1 level); the live path still uses `to_sensor` |
+| `--template-cache` | **`auto`** (was `off` until 2026-08-14) | decoded templates held in RAM. `auto` takes as much of the library as half of AVAILABLE memory allows; `off` is 8; an integer pins it. Default now that a template stores only its content — ~4.7 MiB a frame, ~1.8 GiB for a 360-frame sweep, against the 14.4 GiB the full window cost. If the host cannot afford a whole revolution `auto` **declines**: LRU against a cyclic sweep evicts each frame just before it comes round again, so a partial cache is worth zero rather than a share |
 | `--supersample` | builder default (4) | *rebuilds library* |
 | `--template-format` | builder default (`png`) | *rebuilds library* |
 | `--template-quality` | builder default (90) | JPEG quality of **stored** templates; ignored for png. *rebuilds library* |
@@ -545,15 +546,20 @@ spread is 1.34 there against 1.31 on the dev box, i.e. the same distribution sha
 this is systematic CPU speed and not contention noise; re-measuring on a quiet node would
 not move it much.
 
-**Addressable 2026-08-13 by holding the library in RAM, not by threading — but OPT-IN.** A decoded template
-is `width*height*3` = 41 MiB, so the whole 360-frame sweep is 14.4 GiB — nothing against
-voltron's 251 GB. `--template-cache` defaults to **`off`** (= 8 templates, the long-standing
-behaviour) because 14.4 GiB is not something a server should claim unasked; pass
-`auto` to size it from *half of available* RAM capped at the library, or an integer to pin
-it. Warm, a slew becomes a pan: measured on the dev box
-**27.1 ms / 37.0 fps against a cold 106.1 ms**. No threads, no prefetch, no direction
-prediction — which also makes it the right answer for the AXIS consumer, whose `/motor` is
-instant and absolute and therefore has no predictable slew to prefetch along.
+**Addressable 2026-08-13 by holding the library in RAM, not by threading.** Warm, a slew
+becomes a pan: measured on the dev box **27.1 ms / 37.0 fps against a cold 106.1 ms**. No
+threads, no prefetch, no direction prediction — which also makes it the right answer for
+the AXIS consumer, whose `/motor` is instant and absolute and therefore has no predictable
+slew to prefetch along.
+
+**Opt-in until 2026-08-14, when the tight crop made it cheap enough to default.** A decoded
+template used to be the whole `width*height*3` = 41 MiB window, so the sweep was 14.4 GiB —
+nothing against voltron's 251 GB and a great deal on a workstation, hence opt-in. Templates
+now store only their content (~4.7 MiB a frame, **1.76 GiB** for the sweep), so
+`--template-cache` defaults to **`auto`**. Two consequences worth knowing: the 16 GB dev box
+now holds a full revolution where it previously held 182 of 360 and thrashed to zero
+benefit; and `auto` **declines rather than half-filling** — see the LRU caveat immediately
+below, which is why a partial cache is not worth the memory it costs.
 
 **The caveat, and it is a real one: LRU thrashes on a cyclic sweep.** If the cache is
 smaller than a revolution, each frame is evicted just before it comes round again and the

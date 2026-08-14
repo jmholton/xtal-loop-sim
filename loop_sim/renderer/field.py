@@ -619,8 +619,17 @@ def to_luma(img):
     absorbs red at 9/mm.  Real frames are near-neutral.  This masks that in
     camera space; it does not fix it.  The repair is `colour: [1, 1, 1]` with
     the absorption moved into `mu_optical`, which is a scene change and costs a
-    library rebuild -- hence the option, and hence it should be switched off
-    the day the YAML is right.
+    library rebuild.
+
+    OFF BY DEFAULT since 2026-08-14, ahead of that repair: the simulator is a
+    colour instrument and scenes are allowed to be coloured, so defaulting to a
+    delivery-stage flatten meant no coloured scene could ever be seen, and hid
+    the scene bug rather than paying it down.  Measured on the shipped
+    libraries the difference is small -- at most 20/21/46 levels on
+    0.003-0.42% of pixels for realistic/hampton/mitegen -- so what it exposes is
+    a tint on loop and droplet edges, not a wash.  The option stays for anyone
+    who wants the old frames back, and for the day someone compares against a
+    monochrome camera.
     """
     return np.repeat((img @ _LUMA)[..., None], 3, axis=2)
 

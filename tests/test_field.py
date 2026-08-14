@@ -25,6 +25,20 @@ def _t(value):
     return np.full((H, W, 3), float(value))
 
 
+def _composed(man, lib_dir, rec, box, out_size):
+    """The pose's crop, composed the way the server composes it.
+
+    NOT `Image.open(f).resize(out, box=box)`.  Templates store a tight crop of
+    the rendered window, so a virtual `box` applied straight to the file samples
+    the wrong region -- and PIL pads rather than raising, so it would fail as a
+    plausible-looking picture rather than an error.  Going through
+    `TemplateSource` also means these tests cannot drift from the delivery path
+    they exist to check.
+    """
+    from loop_sim.server.camera_server import TemplateSource
+    return TemplateSource(man, lib_dir)._compose(rec, box, out_size)
+
+
 # --- the two measured anchors ---------------------------------------------
 
 def test_clear_path_reads_the_empty_field():
@@ -407,8 +421,7 @@ def test_streak_refuses_mitegen_at_every_angle():
     for ang in range(0, 360, 15):
         rec = frame_for_angle(man, float(ang))
         box, out, _, _ = pose_crop(man, angle_deg=float(ang), clamp=True)
-        with Image.open(os.path.join(lib, rec["file"])) as im:
-            crop = im.convert("RGB").resize(out, Image.BILINEAR, box=box)
+        crop = _composed(man, lib, rec, box, out)
         t = F.to_sensor(np.asarray(crop, np.float64) / 255.0)
         to_px, frame_wh = template_mapper(man, box, out, F.SENSOR_WH)
         gono = Goniometer(scene.geometry).set(**{man["axis"]: float(ang)})
@@ -456,8 +469,7 @@ def test_streak_never_lands_on_the_droplet():
             rec = frame_for_angle(man, float(ang))
             box, out, sigma, _ = pose_crop(man, angle_deg=float(ang),
                                            zoom=zoom, clamp=True)
-            with Image.open(os.path.join(lib, rec["file"])) as im:
-                crop = im.convert("RGB").resize(out, Image.BILINEAR, box=box)
+            crop = _composed(man, lib, rec, box, out)
             if sigma > 0.05:
                 crop = crop.filter(ImageFilter.GaussianBlur(radius=sigma))
             t = F.to_sensor(np.asarray(crop, np.float64) / 255.0)
@@ -508,8 +520,7 @@ def test_projected_pin_matches_the_rendered_silhouette():
     for zoom, col in ((1.0, 660), (1.5, 660), (2.0, 690)):
         rec = frame_for_angle(man, 0.0)
         box, out, _, _ = pose_crop(man, angle_deg=0.0, zoom=zoom, clamp=True)
-        with Image.open(os.path.join(lib, rec["file"])) as im:
-            crop = im.convert("RGB").resize(out, Image.BILINEAR, box=box)
+        crop = _composed(man, lib, rec, box, out)
         t = F.to_sensor(np.asarray(crop, np.float64) / 255.0)
         dark = np.nonzero(t[:, col, 0] <= F.STREAK["opaque"])[0]
         assert dark.size > 20, f"no pin band at zoom {zoom}, column {col}"

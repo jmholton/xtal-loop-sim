@@ -55,6 +55,7 @@ Or from Python:
 import glob
 import io
 import json
+import math
 import os
 import re
 import threading
@@ -235,8 +236,19 @@ def plan_template_cache(manifest, fraction=_CACHE_RAM_FRACTION, avail=None):
     """
     try:
         rnd = manifest["rendered"]
-        per = int(rnd["width"]) * int(rnd["height"]) * 3
-        n_frames = len(manifest["frames"])
+        frames = manifest["frames"]
+        # The size of what is CACHED, which since templates became tight crops
+        # is no longer the virtual window.  Using `rendered` here over-estimates
+        # by ~9x on a cropped library, and the error is silent: the cache comes
+        # out nine times smaller than the host could afford, so a spindle slew
+        # keeps missing and keeps paying the decode this function exists to
+        # avoid.  Max over the frames rather than frame 0 because the crop is
+        # per-frame; erring large is the safe direction.
+        per = max((int(f["content_size_px"][0]) * int(f["content_size_px"][1]) * 3)
+                  if f.get("content_size_px")
+                  else int(rnd["width"]) * int(rnd["height"]) * 3
+                  for f in frames)
+        n_frames = len(frames)
     except (KeyError, TypeError, ValueError):
         return None
     if per <= 0 or n_frames <= 0:
@@ -274,23 +286,48 @@ class TemplateSource:
         self.jpeg_quality = jpeg_quality
         self.camera = camera
         self.sensor = sensor
+        # What a template's stored crop does NOT cover.  Declared by the
+        # manifest rather than assumed here, because the reader filling the
+        # wrong value would be a uniform wash nobody could attribute.  Templates
+        # hold raw transmittance and rays are born at 1.0, so it is white.
+        self.background = tuple(manifest.get("background_rgb") or (255, 255, 255))
         # Held ONLY to project the pin for the specular glint. Templates are
         # replayed without touching the scene otherwise, and that stays true --
         # nothing here loads geometry, traces a ray or reads a material.
         self.scene = scene
-        # DEFAULT 8: the conservative pre-2026-08-13 behaviour, because holding
-        # the library resident is opt-in.  A 360-frame supersample-4 sweep is
-        # 14.4 GiB, which voltron does not notice and a workstation very much
-        # does, so the server must not claim it because nobody said otherwise.
-        # `cache_size="auto"` asks `plan_template_cache` to size it from
-        # available RAM; an int is honoured verbatim.
+        # `cache_size=None` is 8, the long-standing conservative behaviour and
+        # the constructor's own default; `"auto"` sizes from available RAM; an
+        # int is honoured verbatim.
+        #
+        # `auto` is now the SERVER's default, which it could not be while a
+        # template was the whole 5578x2570 window at 41 MiB (14.4 GiB for the
+        # sweep -- nothing to voltron, a great deal to a workstation).  Cropped
+        # templates store their content, ~4.7 MiB, so the sweep is ~1.8 GiB and
+        # claiming it needs no ceremony.
+        #
+        # ALL OR NOTHING.  A cache that cannot hold one revolution is worth
+        # exactly zero on the case it exists for: a spindle slew visits every
+        # angle once per turn, so LRU evicts each frame just before it comes
+        # round again and every rotating frame still decodes.  Taking gigabytes
+        # to achieve that is strictly worse than not taking them, so `auto`
+        # declines instead -- and says so, because silently serving at a third
+        # of the expected rate reads as sluggish hardware rather than a host
+        # that could not afford the flag.
         if cache_size is None:
             cache_size = 8
         elif isinstance(cache_size, str):
             if cache_size != "auto":
                 raise ValueError(f"cache_size must be an int or 'auto', "
                                  f"got {cache_size!r}")
-            cache_size = plan_template_cache(manifest) or 8
+            planned = plan_template_cache(manifest)
+            n_frames = len(manifest.get("frames") or ())
+            if planned and n_frames and planned < n_frames:
+                print(f"[templates] not caching: this host affords {planned} of "
+                      f"{n_frames} frames, and a cache short of one revolution "
+                      f"buys nothing against a slew (LRU evicts each frame just "
+                      f"before it is needed again)")
+                planned = None
+            cache_size = planned or 8
         self._cache_size = max(1, int(cache_size))
         self._cache = {}
         self._order = []
@@ -320,9 +357,105 @@ class TemplateSource:
                 self._cache.pop(self._order.pop(0), None)
         return img
 
+    def _compose(self, rec, box, out_size):
+        """The pose's crop, drawn from a template that stores only its content.
+
+        `box` is in VIRTUAL template coordinates -- `manifest["rendered"]` is
+        still the full window, so `pose_crop` produced exactly the box it always
+        did.  The stored image is a sub-rectangle of that window at
+        `content_origin_px`, and everything outside it is background, exactly
+        (templates hold raw transmittance; rays are born at 1.0).
+
+        The construction, and why each step is what it is:
+
+          `scale = box_width / W` is template px per output px, so output pixel
+          i samples the virtual template at `box.left + (i + 0.5) * scale`.
+
+          The output sub-rect is the columns and rows whose sample lands inside
+          the stored crop, rounded INWARD.  Outward would need source pixels
+          that were never stored, and PIL refuses a negative box offset -- so
+          inward, and the build's margin (`crop_margin_px`) is sized to make the
+          discarded pixel land in background rather than on the sample.
+
+          The sub-box spans exactly `(i1 - i0) * scale`, which preserves
+          magnification and aspect EXACTLY.  Clamping the box while keeping the
+          output pixel count would rescale the image instead -- silently, and by
+          enough to be obvious only in motion.
+
+          The paste offset is integral in OUTPUT space, so the half-source-pixel
+          registration `pose_crop` sets up survives untouched.  Nothing here
+          rounds the box itself.
+
+        A library built before the crop existed carries no `content_origin_px`,
+        which resolves to the full window and this reduces to the single
+        `resize` it replaced.
+        """
+        from PIL import Image
+
+        src = self._frame(rec["file"])
+        rnd = self.manifest["rendered"]
+        ox, oy = rec.get("content_origin_px", (0, 0))
+        cw, ch = rec.get("content_size_px",
+                         (int(rnd["width"]), int(rnd["height"])))
+        left, upper, right, lower = box
+        W, H = out_size
+        sx = (right - left) / float(W)
+        sy = (lower - upper) / float(H)
+
+        i0 = max(0, int(math.ceil((ox - left) / sx)))
+        i1 = min(W, int(math.floor((ox + cw - left) / sx)))
+        j0 = max(0, int(math.ceil((oy - upper) / sy)))
+        j1 = min(H, int(math.floor((oy + ch - upper) / sy)))
+        if i0 == 0 and j0 == 0 and i1 == W and j1 == H and (ox, oy) == (0, 0) \
+                and (cw, ch) == (int(rnd["width"]), int(rnd["height"])):
+            return src.resize(out_size, Image.BILINEAR, box=box)
+
+        canvas = Image.new("RGB", out_size, self.background)
+        if i1 > i0 and j1 > j0:
+            sub = (max(0.0, left + i0 * sx - ox),
+                   max(0.0, upper + j0 * sy - oy),
+                   min(float(cw), left + i1 * sx - ox),
+                   min(float(ch), upper + j1 * sy - oy))
+            canvas.paste(src.resize((i1 - i0, j1 - j0), Image.BILINEAR, box=sub),
+                         (i0, j0))
+        return canvas
+
+    def _sensor_stretch(self, img):
+        """Resample onto the camera's non-square raster, in PIL rather than numpy.
+
+        `field.to_sensor` does this as a float64 fancy-indexed gather and costs
+        6.7 ms of a frame; PIL's C bilinear does the identical resample on the
+        uint8 the template path already holds, for 1.3 ms.  Identical because
+        both put output centre i at source `(i + 0.5) * n_src / n_dst - 0.5` --
+        `_axis_weights`' own docstring names it "PIL's and OpenCV's convention",
+        which is also the one `pose_crop` assumes.
+
+        This runs AFTER the defocus blur, exactly as `to_sensor` did, so the
+        blur still happens in square-pixel space with one scalar sigma and comes
+        out 1.1x wider vertically in the delivered frame -- which is what the
+        real camera does, and the reason the resample was not simply folded into
+        the crop above.
+
+        THE ONE DIFFERENCE, measured: PIL rounds the interpolated result back to
+        8 bits where `to_sensor` carries it in float, so this path quantises
+        once more than the old one.  That is bounded at one level in the
+        delivered frame -- verified across the whole servable zoom range with
+        the camera model and the glint on -- and the frame is 8-bit anyway, so
+        it is a rounding difference rather than a loss.  The delivered JPEG can
+        differ by more than one level at a hard edge, because a lossy codec
+        reacts non-linearly to a one-LSB change spread over a block; that is a
+        property of comparing two encodings, not of this resample.
+        """
+        from PIL import Image
+
+        if img.size == tuple(self.sensor):
+            return np.asarray(img, dtype=np.float64) / 255.0
+        return (np.asarray(img.resize(tuple(self.sensor), Image.BILINEAR),
+                           dtype=np.float64) / 255.0)
+
     def render(self, pose):
         """JPEG bytes for a motor pose dict."""
-        from PIL import Image, ImageFilter
+        from PIL import ImageFilter
 
         man = self.manifest
         angle = float(pose.get(man["axis"], 0.0))
@@ -338,7 +471,7 @@ class TemplateSource:
 
         # Resample straight from the float source box -- cropping to integers
         # first would quantise the registration and the magnification.
-        img = self._frame(rec["file"]).resize(out_size, Image.BILINEAR, box=box)
+        img = self._compose(rec, box, out_size)
         if sigma > 0.05:
             img = img.filter(ImageFilter.GaussianBlur(radius=sigma))
         if not self.camera and not self.sensor:
@@ -347,17 +480,22 @@ class TemplateSource:
             return buf.getvalue()
         # Camera emulation runs AFTER the crop and the defocus blur, so the
         # illumination field is pinned to output pixels: the sample moves under
-        # it, never with it.  The sensor resample runs here too rather than as
-        # a wider `out_size` above, so the blur stays isotropic in square-pixel
-        # space (see `field.to_sensor`).  Templates on disk stay raw
-        # transmittance either way.
-        import numpy as np
-        return encode_frame(np.asarray(img, dtype=np.float64) / 255.0,
-                            self.jpeg_quality, self.camera, self.sensor,
-                            pose_phase(pose), sigma,
-                            self._pin(angle, box, out_size))
+        # it, never with it.  Templates on disk stay raw transmittance.
+        #
+        # The sensor resample is done HERE, in PIL, so `encode_frame` is handed
+        # a frame already on the delivered raster and passed `sensor=None`.
+        # `field.to_sensor` is untouched and still serves the live render path,
+        # which has a numpy array rather than a PIL image and nothing to gain.
+        if self.sensor:
+            arr = self._sensor_stretch(img)
+            pin = self._pin(angle, box, tuple(self.sensor), sensor=None)
+        else:
+            arr = np.asarray(img, dtype=np.float64) / 255.0
+            pin = self._pin(angle, box, out_size, sensor=None)
+        return encode_frame(arr, self.jpeg_quality, self.camera, None,
+                            pose_phase(pose), sigma, pin)
 
-    def _pin(self, angle, box, out_size):
+    def _pin(self, angle, box, out_size, sensor=None):
         """Where the pin lands on this crop, for the specular glint, or None.
 
         The goniometer here carries the SPINDLE ROTATION ONLY.  The template
@@ -371,8 +509,12 @@ class TemplateSource:
             return None
         from ..motors.goniometer import Goniometer
         from ..renderer.pin_projection import project_pin, template_mapper
-        to_px, frame_wh = template_mapper(self.manifest, box, out_size,
-                                          self.sensor)
+        # `out_size` is already the delivered raster when the sensor stretch has
+        # run, so `sensor` is None and the mapper's own 704/640 factor must not
+        # be applied a second time.  The composition is the same number either
+        # way -- kx*sx = W/box_w * sensor_w/W = sensor_w/box_w -- which is what
+        # lets the stretch move without the glint moving with it.
+        to_px, frame_wh = template_mapper(self.manifest, box, out_size, sensor)
         gono = Goniometer(self.scene.geometry).set(
             **{self.manifest["axis"]: float(angle)})
         return project_pin(self.scene, gono, to_px, frame_wh)
@@ -913,8 +1055,8 @@ class CameraServer(ThreadingHTTPServer):
                  preview_mode=True, compile_preview=True, settle_delay=0.5,
                  scene_path=None, templates=True, library_kwargs=None,
                  scene_dir=None, preview_root=None, camera_emulation=True,
-                 mono=True, sensor_pitch=True, pin_streak=True,
-                 template_cache=None):
+                 mono=False, sensor_pitch=True, pin_streak=True,
+                 template_cache="auto"):
         # Camera emulation: the illumination field, black floor and tone
         # response the tracer does not model (loop_sim/renderer/field.py).
         # Default ON -- the raw transmittance a tracer produces is 85% pure
@@ -2064,11 +2206,25 @@ class CameraServer(ThreadingHTTPServer):
             man = templates.manifest
             rnd = man["rendered"]
             zmin, zmax = zoom_limits(man)
+            # Report BOTH sizes: they are no longer the same number, and the
+            # difference is the point -- poses are computed against the window,
+            # only the stored crop is ever decoded.
+            window = int(rnd["width"]), int(rnd["height"])
+            big = max((tuple(f.get("content_size_px") or window)
+                       for f in man["frames"]), key=lambda wh: wh[0] * wh[1])
+            geom = f"{window[0]}x{window[1]}"
+            if big != window:
+                geom += (f" window, {big[0]}x{big[1]} stored "
+                         f"({big[0] * big[1] / (window[0] * window[1]):.1%})")
             print(f"[templates] serving from {len(man['frames'])} pre-rendered "
-                  f"frames at {rnd['width']}x{rnd['height']} "
+                  f"frames at {geom} "
                   f"({man['supersample']}x), {man['step_deg']}deg steps about "
                   f"{man['axis']}; zoom {zmin:.2f}-{zmax:.0f}x, "
                   f"X/Y/Z pan within the rendered window, no GPU needed")
+            print(f"[templates] cache holds {templates._cache_size} of "
+                  f"{len(man['frames'])} frames "
+                  f"({templates._cache_size * big[0] * big[1] * 3 / 2**30:.2f} "
+                  f"GiB when fully warmed)")
             print(f"[templates] roty/rotz are NOT served from templates "
                   f"(one sweep covers one axis) -- use --templates off for those")
 
@@ -2174,21 +2330,24 @@ def main(argv=None):
                          "library, building it first if absent or stale. This "
                          "is the low-latency path and needs no GPU at runtime. "
                          "off: raytrace every frame live")
-    ap.add_argument("--template-cache", default="off",
+    ap.add_argument("--template-cache", default="auto",
                     help="how many decoded templates to hold in RAM. "
-                         "off (default): 8, enough for a pan and no more. "
-                         "auto: as much of the library as half the host's "
-                         "AVAILABLE memory allows, capped at the sweep. Or an "
-                         "integer to pin it. OPT-IN because it is expensive: a "
-                         "decoded template is width*height*3 bytes -- 41 MiB "
-                         "for a 5578x2570 supersample-4 sweep, 14.4 GiB for "
-                         "all 360. What it buys is that a spindle slew visits "
-                         "every angle once per revolution, so the default "
-                         "cache misses on every rotating frame; hold the "
-                         "library and a warm slew becomes a pan (106 -> 27 ms "
-                         "measured). Note LRU thrashes if the cache cannot "
-                         "hold a whole revolution -- the gain is then zero, "
-                         "not partial. Ignored with --templates off")
+                         "auto (default): as much of the library as half the "
+                         "host's AVAILABLE memory allows, capped at the sweep. "
+                         "off: 8, enough for a pan and no more. Or an integer "
+                         "to pin it. Default because a cropped library is cheap "
+                         "to hold -- a decoded template is its CONTENT, ~4.7 MiB "
+                         "for the hampton sweep, so all 360 cost ~1.8 GiB "
+                         "instead of the 14.4 the full window used to. What it "
+                         "buys is that a spindle slew visits every angle once "
+                         "per revolution, so a small cache misses on every "
+                         "rotating frame; hold the library and a warm slew "
+                         "becomes a pan. If the host cannot afford a whole "
+                         "revolution, `auto` declines rather than claiming "
+                         "memory for nothing -- LRU against a cyclic sweep "
+                         "evicts each frame just before it is needed again, so "
+                         "a partial cache is worth zero, not a share. Ignored "
+                         "with --templates off")
     ap.add_argument("--camera-emulation", choices=["on", "off"], default="on",
                     help="on (default): map the tracer's transmittance through "
                          "the camera's illumination field, black floor and tone "
@@ -2197,12 +2356,19 @@ def main(argv=None):
                          "off: serve raw transmittance. This is a delivery-stage "
                          "effect only -- it never enters a template, so it costs "
                          "no library rebuild")
-    ap.add_argument("--mono", choices=["on", "off"], default="on",
-                    help="on (default): collapse to grey before the camera "
-                         "stage. Material colour in this renderer is an "
-                         "ABSORPTION spectrum, so a crystal declared "
-                         "[0.7,0.9,1.0] renders strongly blue; this masks that "
-                         "until the scene YAML is fixed. Ignored when "
+    ap.add_argument("--mono", choices=["on", "off"], default="off",
+                    help="off (default): deliver colour. The simulator is a "
+                         "colour instrument and scenes are allowed to be "
+                         "coloured, so flattening by default was hiding a scene "
+                         "bug behind a delivery-stage workaround. on: collapse "
+                         "to grey before the camera stage, which masks the fact "
+                         "that material colour here is an ABSORPTION spectrum "
+                         "-- a crystal declared [0.7,0.9,1.0] renders blue. The "
+                         "real repair is colour [1,1,1] with the absorption in "
+                         "mu_optical, which is a scene change and costs a "
+                         "library rebuild. Measured on the shipped libraries, "
+                         "on-vs-off differs by at most 20/21/46 levels on "
+                         "0.003-0.42%% of pixels. Ignored when "
                          "--camera-emulation off")
     ap.add_argument("--pin-streak", choices=["on", "off"], default="on",
                     help="on (default): draw the specular glint a real "

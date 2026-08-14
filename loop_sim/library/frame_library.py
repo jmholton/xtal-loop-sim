@@ -98,6 +98,84 @@ DEFAULT_VRAM_FRACTION = 0.80
 # the content measurement went wrong.
 MAX_TEMPLATE_MPX = 200.0
 
+# A rendered template is overwhelmingly empty: the sample occupies ~10% of the
+# frame, and the window is large only because `plan_window` unions the measured
+# content with the CENTRED field of view plus `pan_mm`.  Only the content is
+# stored; the reader fills the rest.
+#
+# That is EXACT, not an approximation.  Templates hold raw transmittance and
+# every ray is born at radiance 1.0, so anything the sample does not touch is
+# exactly white -- `renderer/field.py` applies the photographic look at serve
+# time, downstream of the crop, and deliberately never bakes it in.  Recorded in
+# the manifest rather than assumed, so the format says what to fill with.
+BACKGROUND_RGB = (255, 255, 255)
+
+
+def crop_margin_px(supersample, zoom_min):
+    """Template pixels to keep around the content, so the reader never clips it.
+
+    Two things eat into the margin at the edge of the stored crop, and both
+    scale with `scale = supersample / zoom` -- the template pixels per output
+    pixel, maximised at the lowest servable zoom:
+
+      * the reader rounds its output sub-rect INWARD (rounding outward would
+        need source pixels that were never stored, and PIL refuses a negative
+        box offset), discarding up to one output pixel = `scale` template px;
+      * PIL's bilinear support at that downscale reaches about `scale` px past
+        the sample point.
+
+    So `2 * scale`, plus a few pixels for the objective PSF's spread, and a
+    floor because the arithmetic is only worth trusting when it is generous.
+    For the shipped hampton sweep (supersample 4, zoom floor 0.798) it comes to
+    the floor of 16, which is the value the crop was validated at.
+    """
+    want = 2.0 * float(supersample) / max(float(zoom_min), 1e-6) + 4.0
+    return max(16, int(math.ceil(want)))
+
+
+def content_bbox(arr, background=BACKGROUND_RGB):
+    """`(x0, y0, x1, y1)` inclusive bbox of everything that is not background.
+
+    `None` when the frame is entirely background -- a real possibility for a
+    scene whose sample leaves the field at some angles, and the caller must not
+    crash on it.
+
+    Exact rather than thresholded: the whole argument for cropping is that it
+    is lossless, and a tolerance would quietly make it not.  Measured on the
+    shipped libraries, exact costs 2 px per side against a 2/255 threshold.
+    """
+    bg = np.asarray(background, dtype=arr.dtype)
+    if np.all(bg == bg[0]):
+        mask = arr.min(axis=2) < int(bg[0])       # fast path: uniform background
+    else:
+        mask = (arr != bg).any(axis=2)
+    rows = np.flatnonzero(mask.any(axis=1))
+    cols = np.flatnonzero(mask.any(axis=0))
+    if rows.size == 0 or cols.size == 0:
+        return None
+    return int(cols[0]), int(rows[0]), int(cols[-1]), int(rows[-1])
+
+
+def crop_to_content(arr, margin, background=BACKGROUND_RGB):
+    """`(cropped, (origin_x, origin_y))` -- the content plus `margin`, clamped.
+
+    A blank frame yields a 1x1 crop at the frame centre rather than an empty
+    array: PIL cannot store a zero-size image, and the reader treats "the box
+    misses the stored crop entirely" as all-background anyway, so the degenerate
+    case costs one pixel and needs no special case downstream.
+    """
+    h, w = arr.shape[:2]
+    box = content_bbox(arr, background)
+    if box is None:
+        cx, cy = w // 2, h // 2
+        return arr[cy:cy + 1, cx:cx + 1].copy(), (cx, cy)
+    x0, y0, x1, y1 = box
+    ox = max(x0 - margin, 0)
+    oy = max(y0 - margin, 0)
+    ex = min(x1 + 1 + margin, w)
+    ey = min(y1 + 1 + margin, h)
+    return arr[oy:ey, ox:ex].copy(), (ox, oy)
+
 # Build parameters that change the pixels. A library whose manifest disagrees
 # with the requested value of any of these is stale, not merely different.
 _BUILD_KEYS = ("axis", "step_deg", "n_cond", "supersample", "pan_mm",
@@ -244,11 +322,22 @@ def _frames_complete(lib_dir, man):
     # the size the manifest claims. pose_crop computes boxes from the manifest,
     # and PIL pads an over-large box with black rather than raising, so a size
     # mismatch would serve silently corrupt frames.
+    #
+    # This is ALSO the interlock between cropped and uncropped libraries, and it
+    # is the only one that bites: a stale library still serves (the server warns
+    # and carries on), but "missing" genuinely refuses.  Comparing against the
+    # DECLARED stored size makes it symmetric and free -- cropped frames read by
+    # code that ignores `content_size_px` fail the check, and a manifest
+    # claiming a crop over full-window frames fails it too.  Absence of the
+    # field means "the stored image IS the virtual window", which is what keeps
+    # every pre-crop library working untouched.
     try:
         from PIL import Image
-        rnd = man["rendered"]
-        with Image.open(os.path.join(lib_dir, man["frames"][0]["file"])) as im:
-            if im.size != (int(rnd["width"]), int(rnd["height"])):
+        rec = man["frames"][0]
+        want = rec.get("content_size_px") or (man["rendered"]["width"],
+                                              man["rendered"]["height"])
+        with Image.open(os.path.join(lib_dir, rec["file"])) as im:
+            if im.size != (int(want[0]), int(want[1])):
                 return False
     except Exception:
         return False
@@ -574,6 +663,15 @@ def build_library(scene_path, root=DEFAULT_ROOT, axis="rotx",
                                       vram_fraction=vram_fraction,
                                       supersample=supersample, progress=progress)
 
+    # Everything `zoom_limits` and `pose_crop` need, assembled before the sweep
+    # so the crop margin is derived from the SAME geometry the reader will use
+    # rather than from a second copy of the arithmetic.
+    geom = {"camera": {"width": W, "height": H, "pixel_size": px0},
+            "rendered": {"width": RW, "height": RH, "pixel_size": tpl_px},
+            "window_mm": {"centre_x": x_win, "centre_y": y_win},
+            "supersample": supersample}
+    margin = crop_margin_px(supersample, zoom_limits(geom)[0])
+
     angles = [round(i * step_deg, 6) for i in range(int(round(360.0 / step_deg)))]
     # Report ~20 times whatever the frame count, rather than every 20th frame:
     # a coarse 72-frame preview built for the live scene switcher would
@@ -626,6 +724,19 @@ def build_library(scene_path, root=DEFAULT_ROOT, axis="rotx",
                 slow_run = 0
 
         arr = (img * 255).clamp(0, 255).to(torch.uint8).cpu().numpy()
+        # Crop to what is actually drawn.  Measured from the frame's own pixels
+        # rather than from `content_window`, which scouts 8 angles at 320x240
+        # with n_cond=1 and an effectively-disabled PSF -- 32x coarser than a
+        # template pixel.  It under-measures, which is harmless where it is used
+        # (`plan_window` unions it with a far larger field) and would clip real
+        # sample here.  The array is already in hand and the bbox costs
+        # milliseconds against a frame that took a minute to trace.
+        #
+        # PER FRAME, not one box for the sweep: it is free at read time (the
+        # record carries the offset either way) and `mitegen_200um` needs it --
+        # 231 distinct bboxes across its 360 angles, against 1 for hampton,
+        # whose spindle axis happens to be the pin axis.
+        arr, (ox, oy) = crop_to_content(arr, margin)
         name = f"rot_{i:04d}.{ext}"
         if fmt == "png":
             Image.fromarray(arr, mode="RGB").save(
@@ -634,7 +745,9 @@ def build_library(scene_path, root=DEFAULT_ROOT, axis="rotx",
         else:
             Image.fromarray(arr, mode="RGB").save(
                 os.path.join(lib_dir, name), format="JPEG", quality=quality)
-        frames.append({"index": i, "angle_deg": ang, "file": name})
+        frames.append({"index": i, "angle_deg": ang, "file": name,
+                       "content_origin_px": [ox, oy],
+                       "content_size_px": [arr.shape[1], arr.shape[0]]})
         if progress and (i % prog_every == 0 or i == len(angles) - 1):
             el = time.time() - t_start
             progress(f"    {i+1}/{len(angles)} frames  {el:6.1f}s elapsed "
@@ -658,13 +771,95 @@ def build_library(scene_path, root=DEFAULT_ROOT, axis="rotx",
         "psf_sigma_px": psf_sigma,
         "camera": {"width": W, "height": H, "pixel_size": px0,
                    "na_objective": na_obj, "na_condenser": na_cond},
+        # THE VIRTUAL WINDOW, not the stored image size.  `pose_crop`,
+        # `zoom_limits`, `servable_pose` and `pin_projection.template_mapper`
+        # all key off this, so keeping it virtual means the served geometry is
+        # bit-for-bit what it was before the crop existed and none of them had
+        # to change.  Where each frame's pixels actually sit inside it is on the
+        # frame record.
         "rendered": {"width": RW, "height": RH, "pixel_size": tpl_px},
         "window_mm": {"x0": wx0, "x1": wx1, "y0": wy0, "y1": wy1,
                       "centre_x": x_win, "centre_y": y_win},
+        "background_rgb": list(BACKGROUND_RGB),
+        "crop_margin_px": margin,
         "frames": frames,
     }
     _write_manifest(lib_dir, manifest)
     return manifest
+
+
+def recrop_library(lib_dir, progress=print):
+    """Crop an already-built library's frames to their content, in place.
+
+    A migration, not a build: the pixels that survive are bit-identical to the
+    ones already on disk, so this needs no GPU, no scene and no re-render, and
+    it leaves `scene_sha256`, `render_sha` and every build key alone -- the
+    library does not become stale by being cropped.  Minutes against the hours
+    a rebuild costs, and the shipped libraries get SMALLER (28.9 -> 12.9 MB for
+    the realistic hampton sweep, and 15.5 -> 1.8 GB decoded).
+
+    Cropping the window would barely help the BUILD -- measured at 1.08x for
+    8.8x fewer pixels, because the AABB cull already makes background rays
+    nearly free -- so there is deliberately no path here that re-renders.
+
+    Idempotent: a library that already carries `content_origin_px` is returned
+    untouched.  The manifest is rewritten LAST, so an interrupted run leaves
+    frames that disagree with a manifest still claiming the full window, which
+    `_frames_complete` correctly reports as missing rather than serving.
+    """
+    from PIL import Image
+
+    man = load_manifest(lib_dir)
+    if man is None:
+        raise FileNotFoundError(f"no manifest in {lib_dir}")
+    if any("content_origin_px" in f for f in man["frames"]):
+        if progress:
+            progress(f"[frame-library] {lib_dir} is already cropped")
+        return man
+
+    rnd = man["rendered"]
+    margin = crop_margin_px(man["supersample"], zoom_limits(man)[0])
+    background = tuple(man.get("background_rgb") or BACKGROUND_RGB)
+    fmt = _stored_format(man)
+    t0 = time.time()
+    frames, before, after = [], 0, 0
+
+    for i, rec in enumerate(man["frames"]):
+        path = os.path.join(lib_dir, rec["file"])
+        before += os.path.getsize(path)
+        with Image.open(path) as im:
+            arr = np.asarray(im.convert("RGB"))
+        if arr.shape[1::-1] != (int(rnd["width"]), int(rnd["height"])):
+            raise ValueError(
+                f"{rec['file']} is {arr.shape[1]}x{arr.shape[0]} but the manifest "
+                f"says {rnd['width']}x{rnd['height']} -- refusing to crop a "
+                f"library that is already inconsistent")
+        arr, (ox, oy) = crop_to_content(arr, margin, background)
+        if fmt == "png":
+            Image.fromarray(arr, mode="RGB").save(
+                path, format="PNG", compress_level=PNG_COMPRESS_LEVEL)
+        else:
+            Image.fromarray(arr, mode="RGB").save(
+                path, format="JPEG", quality=man.get("jpeg_quality", DEFAULT_QUALITY))
+        after += os.path.getsize(path)
+        frames.append(dict(rec, content_origin_px=[ox, oy],
+                           content_size_px=[arr.shape[1], arr.shape[0]]))
+        if progress and (i + 1) % max(1, len(man["frames"]) // 10) == 0:
+            progress(f"    {i+1}/{len(man['frames'])} frames")
+
+    man = dict(man)
+    man["frames"] = frames
+    man["background_rgb"] = list(background)
+    man["crop_margin_px"] = margin
+    _write_manifest(lib_dir, man)
+    if progress:
+        px = sum(f["content_size_px"][0] * f["content_size_px"][1] for f in frames)
+        full = int(rnd["width"]) * int(rnd["height"]) * len(frames)
+        progress(f"[frame-library] cropped {len(frames)} frames in "
+                 f"{time.time() - t0:.1f}s -- {before/1e6:.1f} -> {after/1e6:.1f} MB "
+                 f"on disk, {full*3/1e9:.2f} -> {px*3/1e9:.2f} GB decoded "
+                 f"({px/full:.1%} of the window, margin {margin} px)")
+    return man
 
 
 def ensure_library(scene_path, root=DEFAULT_ROOT, progress=print, **kwargs):

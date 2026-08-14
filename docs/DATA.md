@@ -38,10 +38,15 @@ external dependency is the runtime itself: a torch+CUDA interpreter, unpinned �
   `--supersample 2` (4× cheaper, still resolves the fiber), track only the reference
   `hampton_300um` library and let the rest build on first use, or stop tracking them and
   accept a slow first launch per scene. **The repo ships three, all PNG and all current**
-  (re-measured 2026-08-11): `hampton_300um` 29.3 MB at `--supersample 4`,
-  `mitegen_200um` 14.7 MB at `--supersample 1`, and `hampton_300um_realistic`
-  **27.6 MB at `--supersample 4`** (rebuilt 2026-08-12 with a Rayleigh-matched
-  droplet mesh) — **~72 MB together**, 361 files each. Note PNG came out smaller than the JPEG it replaced in every case, so the
+  (re-measured 2026-08-14, after the tight crop): `hampton_300um` **14.4 MB** at
+  `--supersample 4`, `mitegen_200um` **8.3 MB** at `--supersample 1`, and
+  `hampton_300um_realistic` **12.9 MB at `--supersample 4`** — **~37 MB
+  together**, down from ~72 MB. Since 2026-08-14 each frame stores a tight crop
+  of its content rather than the whole rendered window, which also took the
+  DECODED size — the one that decides the RAM cache — from 15.5 GB to 1.7 GB per
+  hampton sweep. The crop is lossless (templates hold raw transmittance, so what
+  is omitted is background exactly) and needed no re-render; see DECISIONS
+  2026-08-14 — **~72 MB together**, 361 files each. Note PNG came out smaller than the JPEG it replaced in every case, so the
   rebuilds roughly halved this figure rather than growing it.
   **Being tracked is also the recovery path:** an accidental rebuild is undone by
   `git checkout -- frame_library/<scene>/`, which is how the 2026-08-10 incident was

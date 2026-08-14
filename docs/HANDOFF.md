@@ -1,6 +1,6 @@
 ---
 project: loop-sim (xtal-loop-sim) — bright-field microscope + X-ray simulator for protein crystals in cryo-loops
-status: active — camera served from pre-computed templates (no GPU at runtime) and usable interactively; renders go out through a measured camera model on the real 704x480 raster; all three frame libraries current; the camera calibration is fully settled (pixels 2026-08-10, NA 2026-08-11); library builds are 43x faster since the mesh path learned to cull and the VRAM budget is enforced rather than hoped for; the droplet scene now ships at the optically correct supersample 4 with a Rayleigh-matched drop mesh, so zoom reaches 4x; the pin's specular glint is projected from the scene rather than inferred from the silhouette, so it can no longer land on the droplet; BOTH HALVES OF THE VOLTRON DEPLOYMENT ARE NOW MEASURED (2026-08-13) — it renders 4% faster than the dev box and serves at 14.87 fps, but only with `--template-cache auto`
+status: active — camera served from pre-computed templates (no GPU at runtime) and usable interactively; renders go out through a measured camera model on the real 704x480 raster; all three frame libraries current; the camera calibration is fully settled (pixels 2026-08-10, NA 2026-08-11); library builds are 43x faster since the mesh path learned to cull and the VRAM budget is enforced rather than hoped for; the droplet scene now ships at the optically correct supersample 4 with a Rayleigh-matched drop mesh, so zoom reaches 4x; the pin's specular glint is projected from the scene rather than inferred from the silhouette, so it can no longer land on the droplet; BOTH HALVES OF THE VOLTRON DEPLOYMENT ARE NOW MEASURED (2026-08-13) — it renders 4% faster than the dev box, and since 2026-08-14 TEMPLATES STORE ONLY THEIR CONTENT (10.4% of the frame), which takes the decoded sweep from 15.5 GB to 1.8 GB, the dev-box slew from 87 to 23 ms, and voltron to a projected 17 fps with NO cache at all — so `--template-cache` now defaults to `auto` and frames are delivered in COLOUR (`--mono off`)
 last_verified: 2026-08-13        # `pytest tests/` = 228 passed in 328 s on this tree (branch performance-correctness-optimizations, RTX 4080 SUPER; branch depth is CHEAP TO MEASURE -- `git rev-list --count master..HEAD` -- so measure it rather than quoting a number here)
 verify: python -m pytest tests/ -q        # 228 tests; "python" = the torch-enabled project interpreter (see docs/RUNBOOK.md "Environment")
 ---
@@ -226,56 +226,28 @@ The highest-value open engineering items, in rough priority:
   three frame libraries**, including the 8.06 h `hampton_300um_realistic` build. Both
   halves of the old "three cameras" puzzle are now closed: pixels on 2026-08-10, NA on
   2026-08-11.
-- ~~Build the prefetch decode pool~~ — **ADDRESSED 2026-08-13 without threads,
-  by holding the library in RAM — and it is OPT-IN.** `--template-cache`
-  defaults to `off` (8 templates, the long-standing behaviour); `auto` sizes
-  from half of available memory, capped at the sweep. Opt-in because it is
-  41 MiB a frame and 14.4 GiB for all 360 — which voltron does not notice and a
-  workstation very much does, so the server must not claim it unasked. A warm slew
-  becomes a pan — 27.1 ms / 37.0 fps on the dev box against a cold 106.1.
-  Preferred over a pool on three counts: no concurrency added to a server whose
-  every threading bug so far has been mutable shared control state; no
-  direction prediction, which matters because the AXIS consumer drives `/motor`
-  (instant, absolute) and has no predictable slew to prefetch along; and the
-  fallback when RAM is short is simply today's behaviour.
-  **Residual limitation, measured:** LRU thrashes on a cyclic sweep — a cache
-  smaller than a revolution evicts each frame just before it is needed again,
-  so the benefit is zero rather than proportional. voltron holds all 360; a
-  16 GB WSL2 box holds 182 and stays cold on a full revolution. Fixing that
-  means a smarter eviction policy (evict furthest-in-angle, or random), which
-  is a separate and small piece of work. The original entry follows.
-- **Consider storing the templates UNCOMPRESSED, and let the OS page cache do
-  the work.** The obvious objection to the RAM cache is that the files are
-  already hot in the page cache after one revolution, so why hold them twice.
-  The answer is that the two caches hold different things, and the measurement
-  is unambiguous: a template is **82 KiB on disk and 41 MiB decoded — 511x** —
-  so the page cache faithfully returns the compressed bytes in **2.3 ms** and
-  then zlib inflate plus PNG unfiltering spends **87.5 ms** rebuilding the
-  pixels, every single time, with no cache anywhere in that path. (Confirmed in
-  the 360-frame voltron sweep: the warm lap ran with the page cache fully
-  warmed by the lap before it and was still 4x faster — 265.5 -> 67.3 ms.)
-  Store the sweep as raw arrays instead and the objection becomes correct: an
-  mmap'd uncompressed template is served by the page cache with no decode at
-  all, it survives a process restart, and no per-process RAM is claimed. The
-  price is disk and git — **27.6 MiB becomes ~14.4 GiB per library** — plus a
-  rebuild, which is why it is not obviously better than the cache flag. It is
-  the honest third option alongside the resident cache and the prefetch pool,
-  and the one that scales to hosts too small for either.
-- **Build the prefetch decode pool — it stopped being optional on 2026-08-13.**
-  75% of a rotating frame is PNG decode. On the dev box that is a nice-to-have:
-  10-12 fps at the socket already clears the 10 fps goal. **On voltron it was a
-  blocker, and the RAM cache cleared it.** `bench_serve.py` measures a cold
-  spindle slew there at **265.5 ms / 3.77 fps** and a warm one at **67.3 ms /
-  14.87 fps** with `--template-cache auto`, against the dev box's 91.1 / 27.1.
-  Warm slew and pan agree to 0.05 ms.
-  The arithmetic says a pool fixes it and nothing else has to change. Strip the
-  decode and voltron's remaining stages total **71.4 ms (14.0 fps)**; the dev
-  box's total 30.3 ms (33 fps), which independently reproduces the "~30 fps"
-  estimate this entry used to carry. A pool decodes AHEAD along a slew's
-  predictable direction rather than parallelising one decode, so ~3 workers is
-  enough to hide 205 ms behind 71 ms — and voltron has 48 threads to spend.
-  `--supersample 2` is the alternative and is worse on both counts: it lands
-  voltron near 8 fps, still short, and costs the zoom ceiling.
+- ~~Build the prefetch decode pool~~, ~~store the templates uncompressed~~, ~~the
+  14.4 GiB cache and its LRU thrash~~ — **ALL CLOSED 2026-08-14 by cropping the
+  templates.** A template's content is 10.4% of its frame; storing only that
+  takes the decoded sweep from 15.48 GB to 1.76 GB and the dev-box slew from
+  87.3 ms to 23.0 ms, so the cache is now cheap enough to be the default
+  (`--template-cache auto`) and the 16 GB box holds a whole revolution instead
+  of 182 of 360. Full reasoning and numbers in DECISIONS 2026-08-14. What the
+  experiments said about each retired item, so nobody re-derives them:
+  * **Uncompressed on disk works but is dominated.** Raw beats decoding even
+    cold (17.5 ms vs 76.7 for a full frame, ext4 NVMe), but a 12.9 MB *cropped
+    PNG* library serves faster than a 15.48 GB *raw* one — 12.1 ms against 17.5.
+    The form that survives is cropped-and-raw (0.61 ms/frame, 1.76 GB), worth it
+    only if the crop alone is not enough. voltron's `/home` is ZFS on a shared
+    pool and was never measured, so that remains unbounded there.
+  * **Prefetch is dominated, not impossible.** Driven through the server's own
+    velocity profile: neighbour prefetch hits 6-38%, but *extrapolated* prefetch
+    hits ~50%, so "dead by arithmetic" was too strong. A perfect prefetch takes
+    voltron to 34 fps — which the now-1.76 GiB cache reaches with no threads and
+    nothing to predict.
+  * **Level-of-detail costs no render time** (mip tiers are `Image.reduce`
+    decimations, 20 s and +7 MB for two levels) and buys a further ~1.6x, but
+    moves 2800-4300 px by 5-16 levels — a real tier-switch pop. On the shelf.
 - **Give `TSurfaceMesh` the AABB cull that `TTube` has** — a speed optimisation for mesh
   scenes (they render, but slowly; the fidelity scene is ~5.5k faces now).
 - **Package the TITAN V deployment** (the recipe is measured; see RUNBOOK "Deploy on the

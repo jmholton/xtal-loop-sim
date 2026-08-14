@@ -21,7 +21,7 @@ from .frame_library import (CPU_BUILD_REFUSAL, DEFAULT_FORMAT, DEFAULT_N_COND,
                             DEFAULT_SUPERSAMPLE, DEFAULT_VRAM_FRACTION,
                             PREVIEW_BUILD, build_library, build_params,
                             cuda_available, is_current, library_dir,
-                            zoom_limits)
+                            recrop_library, zoom_limits)
 
 
 def main(argv=None):
@@ -71,6 +71,12 @@ def main(argv=None):
                         f"n_cond {PREVIEW_BUILD['n_cond']}), into "
                         "frame_library_preview/. Minutes instead of the best "
                         "part of an hour; zoom is capped at 1x")
+    p.add_argument("--recrop", action="store_true",
+                   help="crop an EXISTING library's frames down to their "
+                        "content, in place. A migration, not a build: no GPU, "
+                        "no re-render, minutes rather than hours, and the "
+                        "surviving pixels are bit-identical. Skips libraries "
+                        "already cropped")
     p.add_argument("--allow-cpu", action="store_true",
                    help="build even with no CUDA device. A CPU build runs at "
                         "roughly 179 s/frame -- ~3.6 h for a 72-frame preview "
@@ -107,6 +113,19 @@ def main(argv=None):
             root = DEFAULT_PREVIEW_ROOT
 
     rc = 0
+    if args.recrop:
+        # Deliberately independent of --force and the staleness check: cropping
+        # does not change a build key, so a cropped library stays current and a
+        # stale one stays stale.
+        for s in scenes:
+            lib = library_dir(s, root)
+            try:
+                recrop_library(lib)
+            except (FileNotFoundError, ValueError) as exc:
+                print(f"[frame-library] FAILED {s}: {exc}", file=sys.stderr)
+                rc = 1
+        return rc
+
     for s in scenes:
         lib = library_dir(s, root)
         if not args.force and is_current(s, lib, **build_params(**opts)):

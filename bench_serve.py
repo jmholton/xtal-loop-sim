@@ -67,12 +67,9 @@ from PIL import Image
 
 from loop_sim.library.frame_library import (frame_for_angle, library_dir,
                                             load_manifest, pose_crop)
-from loop_sim.motors.goniometer import Goniometer
 from loop_sim.renderer import field as _field
-from loop_sim.renderer.pin_projection import project_pin, template_mapper
 from loop_sim.scene.scene import load as load_scene
-from loop_sim.server.camera_server import (TemplateSource, encode_frame,
-                                           plan_template_cache, pose_phase)
+from loop_sim.server.camera_server import TemplateSource, plan_template_cache
 
 
 def _stats(samples_s):
@@ -127,53 +124,58 @@ def _drop_cache(src):
         src._order.clear()
 
 
-def _stage_split(man, lib_dir, scene, camera, sensor, angles):  # noqa: C901
+def _stage_split(src, angles):  # noqa: C901
     """Cost of each stage of one frame, in ms, measured separately.
 
     Not a profiler: each stage is run on its own, on a cold cache, so the
     numbers add up to roughly the slew median rather than exactly.  That is
     enough to say WHERE the time goes, which is what decides whether a prefetch
     pool or a cheaper camera stage is the lever worth pulling.
+
+    Every stage is driven through `TemplateSource`'s OWN methods rather than
+    reproduced here.  The inline version drifted from the server twice: once by
+    passing `pin=None`, which silently dropped the glint and under-counted the
+    camera stage, and again when templates became tight crops, which made a bare
+    `im.resize(box=...)` sample the wrong region of the file entirely.  A split
+    that measures a pipeline nobody runs is worse than no split at all.
     """
+    man = src.manifest
     decode, crop, cam_stage, encode = [], [], [], []
     for ang in angles:
         rec = frame_for_angle(man, float(ang))
         box, out_size, sigma, _ = pose_crop(man, angle_deg=float(ang), zoom=1.0,
                                             clamp=True)
-        path = os.path.join(lib_dir, rec["file"])
+        _drop_cache(src)
 
         t0 = time.perf_counter()
-        im = Image.open(path).convert("RGB")
-        im.load()                       # PIL is lazy; load() is the real decode
+        src._frame(rec["file"])         # PIL is lazy; _frame forces the decode
         decode.append(time.perf_counter() - t0)
 
         t0 = time.perf_counter()
-        crop_im = im.resize(out_size, Image.BILINEAR, box=box)
+        crop_im = src._compose(rec, box, out_size)
         if sigma > 0.05:
             from PIL import ImageFilter
             crop_im = crop_im.filter(ImageFilter.GaussianBlur(radius=sigma))
-        arr = np.asarray(crop_im, dtype=np.float64) / 255.0
         crop.append(time.perf_counter() - t0)
 
-        # The pin is projected exactly as TemplateSource._pin does it.  An
-        # earlier version passed pin=None here, which quietly dropped the
-        # specular glint from the camera stage and under-counted it -- the
-        # timed regimes above always drew it, so the split did not add up.
-        to_px, frame_wh = template_mapper(man, box, out_size, sensor)
-        gono = Goniometer(scene.geometry).set(**{man["axis"]: float(ang)})
-        pin = project_pin(scene, gono, to_px, frame_wh)
+        delivered = tuple(src.sensor) if src.sensor else out_size
+        pin = src._pin(float(ang), box, delivered, sensor=None)
 
+        # The sensor stretch is charged to the CAMERA stage, because that is
+        # where `field.to_sensor` used to do the same work inside encode_frame.
         t0 = time.perf_counter()
-        img = _field.to_sensor(arr, sensor) if sensor else arr
-        if camera:
+        img = (src._sensor_stretch(crop_im) if src.sensor
+               else np.asarray(crop_im, dtype=np.float64) / 255.0)
+        if src.camera:
             img = _field.apply_camera(img, defocus=float(sigma), pin=pin,
-                                      **camera)
+                                      **src.camera)
         cam_stage.append(time.perf_counter() - t0)
 
         t0 = time.perf_counter()
         u8 = (np.clip(np.asarray(img, dtype=np.float64), 0.0, 1.0) * 255).astype(np.uint8)
         buf = io.BytesIO()
-        Image.fromarray(u8, mode="RGB").save(buf, format="JPEG", quality=85)
+        Image.fromarray(u8, mode="RGB").save(buf, format="JPEG",
+                                             quality=src.jpeg_quality)
         encode.append(time.perf_counter() - t0)
 
     ms = lambda xs: round(1000.0 * statistics.median(xs), 2)
@@ -215,10 +217,11 @@ def main():
     scene = load_scene(args.scene, device="cpu")
 
     # MUST match the server's own defaults or the number describes a
-    # configuration nobody runs: camera_server defaults --mono on and
-    # --pin-streak on.  mono is not free -- to_luma is a whole-frame matmul
-    # plus a 3x repeat -- so benching with it off silently under-reports.
-    camera = None if args.no_camera else {"mono": True, "streak": True}
+    # configuration nobody runs: camera_server defaults --mono OFF (frames are
+    # delivered in colour) and --pin-streak on.  mono is not free in either
+    # direction -- to_luma is a whole-frame matmul plus a 3x repeat, so having
+    # it ON here while the server has it off would over-report by ~1.3 ms.
+    camera = None if args.no_camera else {"mono": False, "streak": True}
     sensor = tuple(_field.SENSOR_WH)
     cache = (8 if args.template_cache == "off"
              else "auto" if args.template_cache == "auto"
@@ -270,19 +273,27 @@ def main():
     report["hold"] = _stats(_time_regime(src, hold, hold[:args.warmup]))
 
     _drop_cache(src)
-    report["stages"] = _stage_split(man, lib_dir, scene, camera, sensor,
-                                    [(i * step) % 360.0 for i in range(min(8, n))])
+    report["stages"] = _stage_split(
+        src, [(i * step) % 360.0 for i in range(min(8, n))])
 
     w = report["library"]["rendered"]
+    # The stored crop, not the virtual window: since templates carry only their
+    # content, `rendered` over-states a decoded frame by ~9x and the resident
+    # figure below would be pure fiction.
+    window = int(w["width"]), int(w["height"])
+    big = max((tuple(f.get("content_size_px") or window) for f in man["frames"]),
+              key=lambda wh: wh[0] * wh[1])
+    geom = (f"{window[0]}x{window[1]}" if big == window else
+            f"{window[0]}x{window[1]} window / {big[0]}x{big[1]} stored")
     print(f"\nbench_serve -- {report['host']}  ({report['cpu_count']} cpus)")
     print(f"  scene   {report['scene']}  library {report['library']['frames']} frames "
-          f"at {w['width']}x{w['height']} {report['library']['format']}, "
+          f"at {geom} {report['library']['format']}, "
           f"supersample {report['library']['supersample']}x")
-    resident = src._cache_size * w["width"] * w["height"] * 3 / 2**30
+    resident = src._cache_size * big[0] * big[1] * 3 / 2**30
     print(f"  camera emulation {'on' if camera else 'OFF'}, "
           f"delivered {sensor[0]}x{sensor[1]}")
     print(f"  template cache {src._cache_size} frames "
-          f"({resident:.1f} GiB resident if fully warmed)\n")
+          f"({resident:.2f} GiB resident if fully warmed)\n")
     for k in ("slew", "slew_warm", "pan", "hold"):
         r = report[k]
         print(f"  {k:5s}  {r['median_ms']:7.2f} ms  ({r['fps']:6.2f} fps)   "

@@ -8,6 +8,97 @@
 
 ## Decisions
 
+### 2026-08-14 — templates store their content, not the window; and the viewer delivers colour
+
+**The problem was footprint, not framerate.** voltron cleared the 10 fps goal
+only via `--template-cache auto`, which held the whole decoded sweep in
+**14.4 GiB**. That is a great deal of memory for a program that replays PNGs,
+and it fails ungracefully: LRU against a cyclic sweep evicts each frame just
+before it comes round again, so a cache short of one revolution is worth
+**zero** rather than a proportional share — the 16 GB dev box got nothing at all.
+
+**The measurement that decided it.** A template's content occupies **10.4%** of
+its frame, and for both hampton libraries it is the *same rectangle at all 360
+angles* (the spindle axis is the pin axis; `mitegen_200um` varies, 231 distinct
+boxes). Templates are that big only because `plan_window()` unions the measured
+content with the **centred field of view** plus `pan_mm` — the FOV term, not the
+scene. Storing only the content and filling the rest at read time is **exact,
+not approximate**: templates hold raw transmittance, every ray is born at 1.0,
+and the photographic look is applied downstream at serve time.
+
+| | before | after |
+|---|---|---|
+| `hampton_300um_realistic` on disk | 28.9 MB | **12.9 MB** |
+| decoded, whole library | 15.48 GB | **1.76 GB** |
+| dev-box slew | 87.3 ms / 11.5 fps | **23.0 ms / 43.6 fps** |
+| voltron, projected, **no cache** | 279 ms / 3.6 fps | **58.7 ms / 17.0 fps** |
+| voltron, projected, cached | 67.3 / 14.9 fps @ 14.4 GiB | **27.7 / 36.1 fps @ 1.76 GiB** |
+
+So the crop alone beats what 14.4 GiB used to buy, with no cache at all — and
+the cache is now cheap enough to be the default, including on the 16 GB box
+where it previously thrashed to nothing.
+
+**Four things this deliberately does NOT do, each because it was measured.**
+
+1. **The render window is unchanged, and no library was rebuilt.** Rendering the
+   tight window instead of the full one buys **1.08x on 8.79x fewer pixels**
+   (79.58 → 73.54 s/frame, four poses each, RTX 4080S, n_cond 7). The AABB cull
+   already made background rays nearly free, so the empty field was costing ~6 s
+   of 79.6. `recrop_library` migrates an existing sweep in ~2.5 min with no GPU,
+   and the surviving pixels are bit-identical. **Do not change `plan_window` for
+   this; there is nothing there.**
+2. **`manifest["rendered"]` stays the VIRTUAL window.** `pose_crop`,
+   `zoom_limits`, `servable_pose` and `pin_projection.template_mapper` all key
+   off it, so keeping it virtual meant none of them changed and the served
+   geometry is bit-for-bit what it was. Where a frame's pixels sit inside that
+   window rides on the frame record as `content_origin_px` / `content_size_px`.
+   Absence of those fields means "the stored image IS the window", which is what
+   keeps every pre-crop library working.
+3. **No `_BUILD_KEYS` entry was added.** A build key is only an operator banner —
+   a stale library still serves — and adding one would have marked all three
+   tracked libraries stale and started ~2 h rebuilds. The real interlock is
+   `_frames_complete`, the one gate that returns `"missing"` and genuinely
+   refuses: it now compares the file against the DECLARED stored size, which
+   catches cropped-frames-read-as-window and window-frames-declared-as-cropped
+   symmetrically, for free.
+4. **The crop is derived from the rendered pixels, not from `content_window()`.**
+   That function scouts 8 angles at 320x240 with `n_cond=1` and a PSF below its
+   own minimum sigma — 32x coarser than a template pixel. It under-measures,
+   which is invisible where it is used (`plan_window` unions it with a much
+   larger field) and would clip real sample here.
+
+**The camera stage came along for the ride.** `field.to_sensor`'s 640→704
+resample was 6.7 ms of a frame as a float64 fancy-indexed gather; PIL does the
+identical resample on the uint8 the template path already holds in 1.3 ms. Both
+place output centre i at `(i+0.5)*n_src/n_dst - 0.5`, so this is the same maths
+in a faster loop. It is applied **only on the template path**, after the defocus
+blur exactly as before — so the blur still happens in square-pixel space, and
+`field.to_sensor` is untouched and still serves the live render path.
+
+An earlier version of this also special-cased the outermost columns, on the
+theory that `_axis_weights` clips its sample coordinate where PIL clamps filter
+support. **Measured: unnecessary** — with the fix removed the two agree to 1
+level at every column. It was deleted rather than kept as insurance.
+
+**`--mono` now defaults to `off`.** The simulator is a colour instrument and
+scenes are allowed to be coloured; defaulting to a delivery-stage flatten meant
+no coloured scene could ever be seen, and hid a scene bug rather than paying it
+down. It costs nothing — `apply_camera` is *faster* without the luma matmul and
+channel repeat (3.04 vs 4.35 ms) — and on the shipped libraries it changes at
+most **20/21/46 levels on 0.003–0.42% of pixels**. What it exposes is real: a
+material's `colour` is an ABSORPTION spectrum, so `crystal: [0.7,0.9,1.0]`
+renders blue. **The repair is a scene change** (`colour: [1,1,1]` with the
+absorption in `mu_optical`) and scene files are inside `render_sha`, so it
+rebuilds all three libraries — deliberately left for a later pass.
+
+**Acceptance.** The old path (full window + `to_sensor`) and the new one (crop +
+PIL stretch) were compared pre-JPEG across every servable zoom, nine angles and
+three pan offsets: **max 1 level, zero pixels differing by more than 1, out of
+64 million compared.** The delivered JPEG can differ by more at a hard edge,
+because a lossy codec reacts non-linearly to a one-LSB change spread across a
+block — that is a property of comparing two encodings, not of the resample, and
+it is why the gate is applied before the encoder rather than after.
+
 ### 2026-08-13 — voltron measured on both halves: build there is a wash, serve there needs the cache
 
 **Why this is a decision and not just a benchmark.** "Deploy loop-sim to voltron"

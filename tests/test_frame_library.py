@@ -38,6 +38,29 @@ from loop_sim.library.frame_library import (            # noqa: E402
 SCENE = os.path.join(REPO_ROOT, "scene_files", "hampton_300um.yaml")
 
 
+def _virtual_frame(man, lib_dir, rec):
+    """The full rendered window, reconstituted from the tight crop on disk.
+
+    Templates store only their content, so a test that wants to index the file
+    in the VIRTUAL coordinates `pose_crop` speaks -- as the registration check
+    below does -- has to paste it back onto the window first.  Cropping the file
+    directly with a virtual box would silently read the wrong region, and PIL
+    pads out-of-range boxes with black rather than raising, so it would fail as
+    a plausible picture instead of an error.
+    """
+    from PIL import Image
+    rnd = man["rendered"]
+    window = (int(rnd["width"]), int(rnd["height"]))
+    im = Image.open(os.path.join(lib_dir, rec["file"])).convert("RGB")
+    origin = tuple(rec.get("content_origin_px", (0, 0)))
+    if origin == (0, 0) and im.size == window:
+        return im
+    canvas = Image.new("RGB", window,
+                       tuple(man.get("background_rgb") or (255, 255, 255)))
+    canvas.paste(im, origin)
+    return canvas
+
+
 def _has_cuda():
     try:
         import torch
@@ -250,8 +273,8 @@ def test_template_matches_live_render(tiny_library):
                                  tz=pose.get("tz", 0.0), angle_deg=angle, zoom=1.0)
         box = tuple(int(round(b)) for b in box)
         wide = (box[0] - pad, box[1] - pad, box[2] + pad, box[3] + pad)
-        tpl = np.asarray(Image.open(os.path.join(lib_dir, rec["file"]))
-                         .convert("RGB").crop(wide)).astype(float)
+        tpl = np.asarray(_virtual_frame(man, lib_dir, rec)
+                         .crop(wide)).astype(float)
 
         H, W = live.shape[:2]
         best = min((np.abs(tpl[pad + dy:pad + dy + H, pad + dx:pad + dx + W] - live).mean(),
@@ -661,9 +684,42 @@ def test_rebuilding_in_another_format_removes_the_old_frames(tmp_path):
 # ---------------------------------------------------------------------------
 # Template cache sizing: the fix for a slew missing on every frame
 # ---------------------------------------------------------------------------
-def _fake_manifest(w, h, n):
-    return {"rendered": {"width": w, "height": h},
-            "frames": [{"file": f"rot_{i:04d}.png"} for i in range(n)]}
+def _fake_manifest(w, h, n, crop=None):
+    """A manifest just complete enough to size a cache from.
+
+    `crop` gives each frame a `content_size_px`, which is what a real library
+    carries now: the cache holds the decoded CROP, so sizing from the virtual
+    window over-states a frame and under-fills the cache.
+    """
+    frames = [{"file": f"rot_{i:04d}.png"} for i in range(n)]
+    if crop is not None:
+        for f in frames:
+            f["content_origin_px"] = [0, 0]
+            f["content_size_px"] = list(crop)
+    return {"rendered": {"width": w, "height": h}, "frames": frames}
+
+
+def test_template_cache_sizes_from_the_stored_crop_not_the_window():
+    """The cache holds what is DECODED, and that is the crop.
+
+    Sizing from `rendered` was right while a template was the whole window and
+    is a ~9x over-estimate now.  The error is silent and in the expensive
+    direction: the cache comes out nine times smaller than the host can afford,
+    so a slew keeps paying the decode this cache exists to remove.
+    """
+    from loop_sim.server.camera_server import plan_template_cache
+
+    from loop_sim.server.camera_server import _CACHE_RAM_FRACTION
+
+    window = _fake_manifest(5578, 2570, 360)                     # 41.0 MiB/frame
+    cropped = _fake_manifest(5578, 2570, 360, crop=(3940, 414))  # 4.67 MiB/frame
+    # Small enough that neither result is clamped by the 360-frame library.
+    avail = 2 * 2**30
+    got = plan_template_cache(cropped, avail=avail)
+    assert got == int(avail * _CACHE_RAM_FRACTION) // (3940 * 414 * 3), \
+        "the crop, not the window, is what a cached frame costs"
+    assert got > 8 * plan_template_cache(window, avail=avail), \
+        "8.8x smaller per frame must buy ~8.8x more of them"
 
 
 def test_template_cache_holds_the_whole_library_when_ram_allows():
@@ -715,9 +771,11 @@ def test_template_cache_is_honoured_and_actually_stops_the_decode():
     from loop_sim.library.frame_library import load_manifest
     man = load_manifest(lib_dir)
 
-    # Opt-in: saying nothing must NOT claim the library.
+    # `cache_size=None` is still the conservative 8.  The SERVER now defaults to
+    # "auto" -- affordable since templates became tight crops -- but a bare
+    # TemplateSource must not claim memory nobody asked it for.
     assert TemplateSource(man, lib_dir)._cache_size == 8, \
-        "holding the library resident is opt-in; the default must stay small"
+        "cache_size=None must stay small; 'auto' is the server's default, not this"
     assert TemplateSource(man, lib_dir, cache_size="auto")._cache_size > 8, \
         "'auto' must size from RAM, not fall back to the default"
     with pytest.raises(ValueError):
@@ -740,6 +798,188 @@ def test_template_cache_is_honoured_and_actually_stops_the_decode():
     for a in (0.0, 1.0, 2.0):
         small.render({man["axis"]: a})
     assert len(small._cache) == 2, "LRU must still evict when told to"
+
+
+# ---------------------------------------------------------------------------
+# Tight crops: templates store their content, the reader fills the rest
+# ---------------------------------------------------------------------------
+def test_content_bbox_is_exact_and_survives_a_blank_frame():
+    """The crop is only lossless if the bbox is exact rather than thresholded."""
+    from loop_sim.library.frame_library import content_bbox, crop_to_content
+
+    a = np.full((100, 200, 3), 255, np.uint8)
+    assert content_bbox(a) is None, "an all-background frame has no content"
+    # A blank frame must still store SOMETHING: PIL cannot hold a 0x0 image.
+    blank, origin = crop_to_content(a, margin=16)
+    assert blank.shape[:2] == (1, 1)
+
+    a[40:60, 80:120] = 0
+    assert content_bbox(a) == (80, 40, 119, 59)
+    # One pixel one level off white is content, not noise.
+    b = np.full((20, 20, 3), 255, np.uint8)
+    b[5, 7] = (255, 254, 255)
+    assert content_bbox(b) == (7, 5, 7, 5)
+
+    cropped, (ox, oy) = crop_to_content(a, margin=16)
+    assert (ox, oy) == (64, 24)
+    assert cropped.shape[:2] == (52, 72)          # 20+32 rows, 40+32 cols
+    # Clamped at the frame edge rather than running off it.
+    _, origin = crop_to_content(a, margin=1000)
+    assert origin == (0, 0)
+
+
+def test_crop_margin_covers_the_readers_inward_rounding():
+    """The reader rounds its output sub-rect inward, discarding up to one output
+    pixel = `supersample / zoom_min` template px, and PIL's bilinear support
+    reaches about as far again.  The margin has to cover both or the lowest
+    servable zoom clips the sample."""
+    from loop_sim.library.frame_library import crop_margin_px
+
+    for supersample, zoom_min in ((4, 0.798), (1, 0.35), (8, 0.5)):
+        assert crop_margin_px(supersample, zoom_min) >= 2.0 * supersample / zoom_min
+    assert crop_margin_px(4, 4.0) == 16, "a floor, so the arithmetic is never tight"
+
+
+def test_frames_complete_refuses_a_mismatched_library_both_ways():
+    """The size check is the interlock between cropped and uncropped libraries.
+
+    It is the only gate that returns "missing", which genuinely refuses to
+    serve -- a merely stale library is served with a warning.  So it has to
+    catch a manifest claiming a crop over full-window frames AND full-window
+    frames under a manifest that declares none.
+    """
+    from PIL import Image
+    from loop_sim.library.frame_library import _frames_complete
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        Image.new("RGB", (40, 30), (255, 255, 255)).save(
+            os.path.join(d, "rot_0000.png"))
+        window = {"width": 100, "height": 80}
+
+        # Declares the window, stores 40x30 -> a half-written or mis-declared
+        # library, and must not serve.
+        assert not _frames_complete(d, {"rendered": window,
+                                        "frames": [{"file": "rot_0000.png"}]})
+        # Declares the crop it actually stores -> fine.
+        assert _frames_complete(d, {"rendered": window, "frames": [
+            {"file": "rot_0000.png", "content_origin_px": [10, 10],
+             "content_size_px": [40, 30]}]})
+        # Declares a DIFFERENT crop -> must not serve.
+        assert not _frames_complete(d, {"rendered": window, "frames": [
+            {"file": "rot_0000.png", "content_origin_px": [10, 10],
+             "content_size_px": [41, 30]}]})
+
+
+def test_cropped_compose_reproduces_the_full_window_it_replaces():
+    """THE claim the tight crop rests on, checked against the thing it replaced.
+
+    Composing from a stored crop plus a background fill must give the same
+    picture as resizing the whole rendered window -- because a template holds
+    raw transmittance and every ray is born at 1.0, so what the crop omits is
+    background exactly rather than approximately.
+
+    One level of tolerance, not zero: PIL's resize coefficients are fixed-point,
+    and the two constructions reach the same sample through different integer
+    offsets.  Anything structurally wrong -- a dropped crop origin, an inward
+    rounding that eats the sample, a sub-box clamp that rescales -- lands in the
+    tens or hundreds of levels, not one.
+    """
+    from PIL import Image
+    from loop_sim.library.frame_library import load_manifest
+    from loop_sim.server.camera_server import TemplateSource
+
+    lib_dir = os.path.join(REPO_ROOT, "frame_library", "hampton_300um_realistic")
+    if not os.path.exists(os.path.join(lib_dir, "manifest.json")):
+        pytest.skip("hampton_300um_realistic library not present")
+    man = load_manifest(lib_dir)
+    if not man["frames"][0].get("content_origin_px"):
+        pytest.skip("library is not cropped")
+    src = TemplateSource(man, lib_dir)
+    zmin, zmax = zoom_limits(man)
+
+    worst = 0
+    for zoom in (round(zmin + 1e-6, 4), 1.0, 2.0, zmax):
+        for ang in (0.0, 37.0, 90.0, 212.0):
+            for tx, ty in ((0.0, 0.0), (0.3, 0.0), (0.0, -0.2)):
+                rec = frame_for_angle(man, ang)
+                box, out, _, _ = pose_crop(man, tx=tx, ty=ty, angle_deg=ang,
+                                           zoom=zoom, clamp=True)
+                new = np.asarray(src._compose(rec, box, out), np.int16)
+                old = np.asarray(_virtual_frame(man, lib_dir, rec)
+                                 .resize(out, Image.BILINEAR, box=box), np.int16)
+                worst = max(worst, int(np.abs(new - old).max()))
+    assert worst <= 1, f"cropped compose differs from the full window by {worst} levels"
+
+
+def test_pil_sensor_stretch_matches_to_sensor():
+    """The template path resamples 640->704 in PIL; the live path still uses
+    `field.to_sensor`.  They must agree, or the same pose looks different
+    depending on which engine served it.
+
+    One level, because PIL rounds the interpolated result back to 8 bits where
+    `to_sensor` keeps it in float.  The frame is 8-bit either way, so that is a
+    rounding difference and not a loss -- but it has to stay one level.
+    """
+    from loop_sim.library.frame_library import load_manifest
+    from loop_sim.renderer import field as F
+    from loop_sim.server.camera_server import TemplateSource
+
+    lib_dir = os.path.join(REPO_ROOT, "frame_library", "hampton_300um_realistic")
+    if not os.path.exists(os.path.join(lib_dir, "manifest.json")):
+        pytest.skip("hampton_300um_realistic library not present")
+    man = load_manifest(lib_dir)
+    src = TemplateSource(man, lib_dir, sensor=tuple(F.SENSOR_WH))
+    zmin, zmax = zoom_limits(man)
+
+    worst = 0
+    for zoom in (round(zmin + 1e-6, 4), 1.0, zmax):
+        for ang in (0.0, 90.0, 212.0):
+            rec = frame_for_angle(man, ang)
+            box, out, _, _ = pose_crop(man, angle_deg=ang, zoom=zoom, clamp=True)
+            img = src._compose(rec, box, out)
+            a = F.to_sensor(np.asarray(img, np.float64) / 255.0, F.SENSOR_WH)
+            b = src._sensor_stretch(img)
+            worst = max(worst, int(np.abs(a * 255 - b * 255).max()))
+    assert worst <= 1, f"PIL stretch differs from to_sensor by {worst} levels"
+
+
+def test_recrop_is_idempotent_and_leaves_the_library_current():
+    """Cropping is a migration, not a build: it must not change a build key, so
+    a cropped library stays `current` and nothing triggers an hours-long
+    rebuild.  Running it twice must be a no-op."""
+    import shutil
+    import tempfile
+    from loop_sim.library.frame_library import (build_params, is_current,
+                                                load_manifest, recrop_library)
+
+    lib_dir = os.path.join(REPO_ROOT, "frame_library", "mitegen_200um")
+    if not os.path.exists(os.path.join(lib_dir, "manifest.json")):
+        pytest.skip("mitegen_200um library not present")
+    scene = os.path.join(REPO_ROOT, "scene_files", "mitegen_200um.yaml")
+    before = is_current(scene, lib_dir, **build_params())
+
+    with tempfile.TemporaryDirectory() as d:
+        copy = os.path.join(d, "mitegen_200um")
+        # Two frames is enough to prove the contract without copying 15 MB.
+        os.makedirs(copy)
+        man = load_manifest(lib_dir)
+        man = dict(man, frames=man["frames"][:2])
+        for f in man["frames"]:
+            shutil.copy(os.path.join(lib_dir, f["file"]), copy)
+        import json
+        with open(os.path.join(copy, "manifest.json"), "w") as fh:
+            json.dump(man, fh)
+
+        out = recrop_library(copy, progress=None)
+        assert all("content_origin_px" in f for f in out["frames"])
+        sizes = [tuple(f["content_size_px"]) for f in out["frames"]]
+        again = recrop_library(copy, progress=None)
+        assert [tuple(f["content_size_px"]) for f in again["frames"]] == sizes, \
+            "a second pass must not crop the crop"
+
+    # The real library's staleness verdict is unchanged by any of this.
+    assert is_current(scene, lib_dir, **build_params()) == before
 
 
 def test_ensure_dynamo_binds_or_stubs_a_torch_that_lacks_it(monkeypatch):
