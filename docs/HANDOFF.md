@@ -244,6 +244,23 @@ The highest-value open engineering items, in rough priority:
   16 GB WSL2 box holds 182 and stays cold on a full revolution. Fixing that
   means a smarter eviction policy (evict furthest-in-angle, or random), which
   is a separate and small piece of work. The original entry follows.
+- **Consider storing the templates UNCOMPRESSED, and let the OS page cache do
+  the work.** The obvious objection to the RAM cache is that the files are
+  already hot in the page cache after one revolution, so why hold them twice.
+  The answer is that the two caches hold different things, and the measurement
+  is unambiguous: a template is **82 KiB on disk and 41 MiB decoded — 511x** —
+  so the page cache faithfully returns the compressed bytes in **2.3 ms** and
+  then zlib inflate plus PNG unfiltering spends **87.5 ms** rebuilding the
+  pixels, every single time, with no cache anywhere in that path. (Confirmed in
+  the 360-frame voltron sweep: the warm lap ran with the page cache fully
+  warmed by the lap before it and was still 4x faster — 265.5 -> 67.3 ms.)
+  Store the sweep as raw arrays instead and the objection becomes correct: an
+  mmap'd uncompressed template is served by the page cache with no decode at
+  all, it survives a process restart, and no per-process RAM is claimed. The
+  price is disk and git — **27.6 MiB becomes ~14.4 GiB per library** — plus a
+  rebuild, which is why it is not obviously better than the cache flag. It is
+  the honest third option alongside the resident cache and the prefetch pool,
+  and the one that scales to hosts too small for either.
 - **Build the prefetch decode pool — it stopped being optional on 2026-08-13.**
   75% of a rotating frame is PNG decode. On the dev box that is a nice-to-have:
   10-12 fps at the socket already clears the 10 fps goal. **On voltron it was a
