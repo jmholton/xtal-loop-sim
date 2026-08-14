@@ -709,14 +709,16 @@ def test_template_cache_sizes_from_the_stored_crop_not_the_window():
     """
     from loop_sim.server.camera_server import plan_template_cache
 
-    from loop_sim.server.camera_server import _CACHE_RAM_FRACTION
+    from loop_sim.server.camera_server import (_CACHE_RAM_FRACTION,
+                                               _DECODED_BYTES_PER_PX)
 
-    window = _fake_manifest(5578, 2570, 360)                     # 41.0 MiB/frame
-    cropped = _fake_manifest(5578, 2570, 360, crop=(3940, 414))  # 4.67 MiB/frame
+    window = _fake_manifest(5578, 2570, 360)                     # 58 MiB/frame
+    cropped = _fake_manifest(5578, 2570, 360, crop=(3940, 414))  # 6.6 MiB/frame
     # Small enough that neither result is clamped by the 360-frame library.
     avail = 2 * 2**30
     got = plan_template_cache(cropped, avail=avail)
-    assert got == int(avail * _CACHE_RAM_FRACTION) // (3940 * 414 * 3), \
+    per = int(3940 * 414 * _DECODED_BYTES_PER_PX)
+    assert got == int(avail * _CACHE_RAM_FRACTION) // per, \
         "the crop, not the window, is what a cached frame costs"
     assert got > 8 * plan_template_cache(window, avail=avail), \
         "8.8x smaller per frame must buy ~8.8x more of them"
@@ -733,13 +735,19 @@ def test_template_cache_holds_the_whole_library_when_ram_allows():
 
 
 def test_template_cache_shrinks_rather_than_promising_memory_it_lacks():
-    """The failure this guards is a laptop trying to hold 14.4 GiB because the
-    default said so.  Sized from AVAILABLE ram, never from total."""
+    """The failure this guards is a laptop trying to hold the sweep because the
+    default said so.  Sized from AVAILABLE ram, never from total.
+
+    `per` must be what a decoded frame REALLY costs -- PIL packs RGB into
+    4-byte pixels, so `w*h*3` under-counts by a third and this function would
+    over-promise, which is precisely backwards.
+    """
     from loop_sim.server.camera_server import (plan_template_cache,
-                                               _CACHE_RAM_FRACTION)
+                                               _CACHE_RAM_FRACTION,
+                                               _DECODED_BYTES_PER_PX)
 
     man = _fake_manifest(5578, 2570, 360)
-    per = 5578 * 2570 * 3
+    per = int(5578 * 2570 * _DECODED_BYTES_PER_PX)
     for avail_gib in (2, 8, 32):
         got = plan_template_cache(man, avail=avail_gib * 2**30)
         want = int((avail_gib * 2**30 * _CACHE_RAM_FRACTION) // per)
@@ -747,6 +755,45 @@ def test_template_cache_shrinks_rather_than_promising_memory_it_lacks():
         assert got >= 1, "never zero -- one frame must always be cacheable"
     # A tiny box still gets a working server, just a cold one.
     assert plan_template_cache(man, avail=64 * 2**20) == 1
+
+
+def test_the_cache_never_plans_more_than_the_ram_it_was_given():
+    """`plan_template_cache`'s one guarantee, tested against the guarantee.
+
+    It is documented to UNDER-promise -- to return fewer frames than the RAM
+    could hold rather than more.  With `w*h*3` it did the exact opposite: PIL
+    stores RGB as 4-byte-aligned RGBX, so a decoded frame costs at least
+    `w*h*4` (measured 4.22 B/px on real templates, 275.2 MB for 40 of them
+    against the 195.7 MB `w*h*3` predicts).  Every planned cache was therefore
+    a third larger than the budget it was computed from, and a 360-frame sweep
+    reported as 1.64 GiB actually occupied 2.31.
+
+    Checked arithmetically against a 4 B/px floor rather than by watching RSS:
+    an allocator-based check inside a shared test process is not a measurement,
+    because a previous test's freed arena can absorb the allocation and the
+    delta reads zero.  The empirical 4.22 figure is recorded in DECISIONS
+    2026-08-14; what has to hold FOREVER is the inequality below.
+    """
+    from loop_sim.server.camera_server import (_CACHE_RAM_FRACTION,
+                                               _DECODED_BYTES_PER_PX,
+                                               plan_template_cache)
+
+    assert _DECODED_BYTES_PER_PX >= 4.0, (
+        "PIL packs RGB into 4-byte pixels; a constant below 4 makes the cache "
+        "over-promise, which is the failure this whole function exists to avoid")
+
+    for w, h, n in ((5578, 2570, 360), (3940, 414, 360), (1840, 2296, 360)):
+        man = _fake_manifest(w, h, n, crop=(w, h))
+        for avail_gib in (1, 2, 8, 32, 256):
+            avail = avail_gib * 2**30
+            planned = plan_template_cache(man, avail=avail)
+            budget = avail * _CACHE_RAM_FRACTION
+            # 4 B/px is the floor PIL can possibly use, so a plan that exceeds
+            # the budget even at the floor is over-promising for certain.
+            assert planned * w * h * 4 <= budget or planned == 1, (
+                f"{w}x{h} at {avail_gib} GiB: planned {planned} frames = "
+                f"{planned * w * h * 4 / 2**30:.2f} GiB against a "
+                f"{budget / 2**30:.2f} GiB budget")
 
 
 def test_template_cache_never_raises_on_a_malformed_manifest():

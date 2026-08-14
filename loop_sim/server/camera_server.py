@@ -188,6 +188,19 @@ def encode_frame(img, jpeg_quality, camera=None, sensor=None, phase=0,
 # rather than the card's total.
 _CACHE_RAM_FRACTION = 0.5
 
+# Bytes a decoded pixel actually costs, which is NOT 3.  PIL stores an RGB
+# image as 4-byte-aligned RGBX internally, so the pixel buffer is w*h*4, and
+# Python object overhead adds a little on top: measured 4.22 B/px holding 40
+# real 3940x414 templates (275.2 MB against the 195.7 MB w*h*3 predicts).
+#
+# This matters twice.  It is the difference between reporting 1.64 GiB and 2.31
+# GiB for a 360-frame sweep -- and, worse, `plan_template_cache` sizes the cache
+# from it, so using 3 made it promise 41% more frames than the RAM it budgeted
+# could hold.  That inverts the one guarantee that function's docstring makes
+# (it is meant to UNDER-promise).  Rounded up so the error stays in the safe
+# direction.
+_DECODED_BYTES_PER_PX = 4.25
+
 
 def _available_ram_bytes():
     """Bytes the OS says are actually available, or None if it will not say.
@@ -244,9 +257,10 @@ def plan_template_cache(manifest, fraction=_CACHE_RAM_FRACTION, avail=None):
         # keeps missing and keeps paying the decode this function exists to
         # avoid.  Max over the frames rather than frame 0 because the crop is
         # per-frame; erring large is the safe direction.
-        per = max((int(f["content_size_px"][0]) * int(f["content_size_px"][1]) * 3)
-                  if f.get("content_size_px")
-                  else int(rnd["width"]) * int(rnd["height"]) * 3
+        per = max(int((f["content_size_px"][0] * f["content_size_px"][1]
+                       if f.get("content_size_px")
+                       else int(rnd["width"]) * int(rnd["height"]))
+                      * _DECODED_BYTES_PER_PX)
                   for f in frames)
         n_frames = len(frames)
     except (KeyError, TypeError, ValueError):
@@ -333,6 +347,42 @@ class TemplateSource:
         self._order = []
         self._lock = threading.Lock()
         self._warned_clamp = False
+
+    def prewarm(self, progress=None):
+        """Decode the whole library up front. Returns (frames, bytes) held.
+
+        The cache is sized to hold the sweep but fills LAZILY, so without this
+        the first revolution after a restart pays a decode on every frame and
+        only the second one runs at the rate the cache promises.  Doing it at
+        boot moves that cost somewhere nobody is watching a picture.
+
+        Refuses unless the cache can hold every frame.  Below that, LRU against
+        a cyclic sweep evicts each frame just before it comes round again, so
+        pre-warming would spend the decode AND throw the result away -- strictly
+        worse than not bothering.  `_cache_size` already declines rather than
+        half-filling (see __init__), so in practice this is "the host could
+        afford it or it could not".
+
+        NOT called from __init__ on purpose: `bench_serve` builds a
+        TemplateSource to measure COLD costs, and a constructor that quietly
+        decoded 360 frames would both destroy that measurement and add ~10-30 s
+        to every benchmark run.  The server asks for it explicitly.
+        """
+        frames = self.manifest.get("frames") or ()
+        if not frames or self._cache_size < len(frames):
+            return 0, 0
+        t0 = time.monotonic()
+        for i, rec in enumerate(frames):
+            self._frame(rec["file"])
+            if progress and (i + 1) % max(1, len(frames) // 4) == 0:
+                progress(f"[templates] pre-warming {i + 1}/{len(frames)}")
+        held = sum(int(im.size[0] * im.size[1] * _DECODED_BYTES_PER_PX)
+                   for im in self._cache.values())
+        if progress:
+            progress(f"[templates] pre-warmed {len(self._cache)} frames "
+                     f"({held / 2**30:.2f} GiB) in {time.monotonic() - t0:.1f}s "
+                     f"-- the first revolution is warm, not the second")
+        return len(self._cache), held
 
     def _frame(self, name):
         from PIL import Image
@@ -1056,7 +1106,7 @@ class CameraServer(ThreadingHTTPServer):
                  scene_path=None, templates=True, library_kwargs=None,
                  scene_dir=None, preview_root=None, camera_emulation=True,
                  mono=False, sensor_pitch=True, pin_streak=True,
-                 template_cache="auto"):
+                 template_cache="auto", prewarm=True):
         # Camera emulation: the illumination field, black floor and tone
         # response the tracer does not model (loop_sim/renderer/field.py).
         # Default ON -- the raw transmittance a tracer produces is 85% pure
@@ -1067,6 +1117,7 @@ class CameraServer(ThreadingHTTPServer):
         # _build_bundle rebuilds the TemplateSource on every runtime scene
         # switch and must use the same policy the server was launched with.
         self._template_cache = template_cache
+        self._prewarm = bool(prewarm)
         self._camera = ({"mono": bool(mono), "streak": bool(pin_streak)}
                         if camera_emulation else None)
         # The sensor raster, applied in the same camera-space stage.  Kept
@@ -1223,6 +1274,14 @@ class CameraServer(ThreadingHTTPServer):
                 jpeg_quality=jpeg_quality, camera=self._camera,
                 sensor=self._sensor, scene=scene,
                 cache_size=self._template_cache)
+            # Fill it now rather than over the operator's first revolution.
+            # Blocking, before the socket is bound, like the compiled-preview
+            # warmup below it -- the alternative is a background thread, and
+            # this server's threading rules are strict enough that a few
+            # seconds at boot is the better trade.  Costs ~4 s on the dev box,
+            # ~10-30 s on voltron (longer on a cold ZFS pool).
+            if self._prewarm:
+                self._templates.prewarm(progress=print)
 
     # ------------------------------------------------------------------
     # Cache management
@@ -1852,6 +1911,13 @@ class CameraServer(ThreadingHTTPServer):
                                        sensor=self._sensor,
                                        scene=scene,
                                        cache_size=self._template_cache)
+            # Warm the NEW source here, in _build_bundle, which runs off-lock
+            # and writes nothing to self -- so the old scene keeps serving at
+            # full rate throughout and a failed switch leaves it untouched.
+            # Switching to a cold library and discovering the first revolution
+            # is slow would look like the switch broke something.
+            if self._prewarm:
+                templates.prewarm(progress=progress)
             if serving_from == "preview":
                 warning = ("serving the coarse PREVIEW library "
                            f"({PREVIEW_BUILD['step_deg']:g}deg steps, "
@@ -2223,7 +2289,7 @@ class CameraServer(ThreadingHTTPServer):
                   f"X/Y/Z pan within the rendered window, no GPU needed")
             print(f"[templates] cache holds {templates._cache_size} of "
                   f"{len(man['frames'])} frames "
-                  f"({templates._cache_size * big[0] * big[1] * 3 / 2**30:.2f} "
+                  f"({templates._cache_size * big[0] * big[1] * _DECODED_BYTES_PER_PX / 2**30:.2f} "
                   f"GiB when fully warmed)")
             print(f"[templates] roty/rotz are NOT served from templates "
                   f"(one sweep covers one axis) -- use --templates off for those")
@@ -2330,6 +2396,16 @@ def main(argv=None):
                          "library, building it first if absent or stale. This "
                          "is the low-latency path and needs no GPU at runtime. "
                          "off: raytrace every frame live")
+    ap.add_argument("--prewarm", choices=["on", "off"], default="on",
+                    help="on (default): decode the whole library at startup, so "
+                         "the FIRST revolution runs at the cached rate instead "
+                         "of the second. The cache is already sized to hold it "
+                         "-- this only stops the fill happening under an "
+                         "operator. Costs a few seconds at boot (~4 s dev box, "
+                         "10-30 s on voltron, longer off a cold pool) and "
+                         "nothing after. Skipped automatically when the cache "
+                         "cannot hold a whole revolution, since a partial warm "
+                         "is evicted before it is used. off: fill lazily")
     ap.add_argument("--template-cache", default="auto",
                     help="how many decoded templates to hold in RAM. "
                          "auto (default): as much of the library as half the "
@@ -2434,6 +2510,7 @@ def main(argv=None):
                           mono=args.mono == "on",
                           sensor_pitch=args.sensor_pitch == "on",
                           pin_streak=args.pin_streak == "on",
+                          prewarm=args.prewarm == "on",
                           template_cache=(None if args.template_cache == "off"
                                           else args.template_cache
                                           if args.template_cache == "auto"

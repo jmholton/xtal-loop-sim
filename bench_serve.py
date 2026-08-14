@@ -82,7 +82,8 @@ from loop_sim.library.frame_library import (frame_for_angle, library_dir,
                                             load_manifest, pose_crop)
 from loop_sim.renderer import field as _field
 from loop_sim.scene.scene import load as load_scene
-from loop_sim.server.camera_server import TemplateSource, plan_template_cache
+from loop_sim.server.camera_server import (_DECODED_BYTES_PER_PX, TemplateSource,
+                                           plan_template_cache)
 
 
 # The socket goal everything is graded against, shared with acceptance_voltron.
@@ -334,7 +335,11 @@ def main():
     print(f"  scene   {report['scene']}  library {report['library']['frames']} frames "
           f"at {geom} {report['library']['format']}, "
           f"supersample {report['library']['supersample']}x")
-    resident = src._cache_size * big[0] * big[1] * 3 / 2**30
+    # 4.25 B/px, not 3: PIL stores RGB as 4-byte-aligned RGBX and the object
+    # costs a little on top (measured 4.22 on real templates).  See
+    # camera_server._DECODED_BYTES_PER_PX -- reporting 3 understated a
+    # 360-frame sweep as 1.64 GiB when it is 2.31.
+    resident = src._cache_size * big[0] * big[1] * _DECODED_BYTES_PER_PX / 2**30
     print(f"  camera emulation {'on' if camera else 'OFF'}, "
           f"delivered {sensor[0]}x{sensor[1]}")
     print(f"  template cache {src._cache_size} frames "

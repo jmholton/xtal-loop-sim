@@ -438,7 +438,7 @@ server, whose `/motor` endpoint takes all seven axes.
 | `--mono` | **`off`** (was `on` until 2026-08-14) | `on` collapses to grey before the camera stage, masking the fact that colour is an ABSORPTION spectrum here — a scene declaring a crystal `[0.7,0.9,1.0]` renders it blue. Now off by default: the simulator is a colour instrument and scenes are allowed to be coloured, so flattening by default meant no coloured scene could ever be seen. Measured on the shipped libraries, on-vs-off differs by at most 20/21/46 levels on 0.003–0.42% of pixels (realistic/hampton/mitegen) — a tint on loop and droplet edges, not a wash. The scene-side repair is `colour: [1,1,1]` with the absorption in `mu_optical`, which *rebuilds every library*. Ignored when `--camera-emulation off` |
 | `--pin-streak` | `on` | draw the specular glint a real machined pin carries along its shank. Its position is PROJECTED FROM THE SCENE (`renderer/pin_projection.py`) through the current pose, so it is exact at any zoom, crop or angle, and there is simply no glint when the pin is out of view. Only an object the code declares shiny gets one (`SHINY`, currently `pin`+`metal`), so `mitegen_200um` never does. Ignored when `--camera-emulation off` |
 | `--sensor-pitch` | `on` | deliver on the real camera's **704×480** raster. The BL831 pixels are 1.11 non-square and the tracer's are square, so a 640-wide render covers the same field (to under 1%) on a different grid — and a consumer applying dcss's µm-per-pixel constant to 640 columns reads 10% wide. `off` serves the render's own square pixels. On the template path the resample runs in PIL rather than `field.to_sensor` (6.7 → 1.3 ms, agrees to 1 level); the live path still uses `to_sensor` |
-| `--template-cache` | **`auto`** (was `off` until 2026-08-14) | decoded templates held in RAM. `auto` takes as much of the library as half of AVAILABLE memory allows; `off` is 8; an integer pins it. Default now that a template stores only its content — ~4.7 MiB a frame, ~1.8 GiB for a 360-frame sweep, against the 14.4 GiB the full window cost. If the host cannot afford a whole revolution `auto` **declines**: LRU against a cyclic sweep evicts each frame just before it comes round again, so a partial cache is worth zero rather than a share |
+| `--template-cache` | **`auto`** (was `off` until 2026-08-14) | decoded templates held in RAM. `auto` takes as much of the library as half of AVAILABLE memory allows; `off` is 8; an integer pins it. Default now that a template stores only its content — ~6.6 MiB a frame, ~2.3 GiB for a 360-frame sweep, against the ~20 GiB the full window cost. (PIL packs RGB into 4-byte pixels, so a decoded frame costs `w*h*4.25`, not `w*h*3` — every earlier figure in these docs was a third low.) If the host cannot afford a whole revolution `auto` **declines**: LRU against a cyclic sweep evicts each frame just before it comes round again, so a partial cache is worth zero rather than a share |
 | `--supersample` | builder default (4) | *rebuilds library* |
 | `--template-format` | builder default (`png`) | *rebuilds library* |
 | `--template-quality` | builder default (90) | JPEG quality of **stored** templates; ignored for png. *rebuilds library* |
@@ -552,7 +552,7 @@ Dev box, 40 frames, `hampton_300um_realistic`, before and after the 2026-08-14 c
 | crop+scale | 15.3 ms | **1.9 ms** | 8.0x |
 | camera model | 12.3 ms | **5.8 ms** | 2.1x |
 | jpeg encode | 2.7 ms | 2.4 ms | 1.1x |
-| RAM to hold the sweep | 14.4 GiB | **1.64 GiB** | 8.8x |
+| RAM to hold the sweep | 20.4 GiB | **2.32 GiB** | 8.8x |
 
 **voltron, MEASURED 2026-08-14** (second run; see the first-run caveat below):
 
@@ -586,7 +586,7 @@ on the newer dev box: this is a DDR4-2400-era memory subsystem, not a CPU differ
 **As of 2026-08-13, voltron missed the 10 fps goal on a COLD slew by 3x and cleared it
 warm at 14.87 fps** — the viewer was usable there only with `--template-cache auto` and
 its 14.4 GiB. **That condition is gone as of 2026-08-14: voltron now clears the goal COLD
-at 14.01 fps and runs 26.53 fps warm, on 1.64 GiB.** The measured warm slew (67.25 ms) and
+at 14.01 fps and runs 26.53 fps warm, on 2.32 GiB.** The measured warm slew (67.25 ms) and
 pan (67.30 ms) agreed to
 **0.05 ms** -- with the library resident a rotating frame costs exactly what a translating
 one costs, i.e. the decode is gone rather than reduced. All 360 frames fit voltron's RAM,

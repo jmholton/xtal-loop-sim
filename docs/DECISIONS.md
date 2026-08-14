@@ -8,10 +8,50 @@
 
 ## Decisions
 
+### 2026-08-14 (later still) — the viewer pre-warms, and every "GiB of cache" figure in this repo was 30% low
+
+**Pre-warm.** `--template-cache auto` sized the cache to hold the sweep but filled
+it LAZILY, so the first revolution after a restart paid a decode on every frame and only
+the second ran at the promised rate. `TemplateSource.prewarm()` now decodes the library at
+boot, blocking, before the socket is bound — measured on the dev box, the FIRST revolution
+goes **28.01 ms (35.7 fps) → 13.24 ms (75.5 fps)** for 5.3 s of startup. `--prewarm off`
+restores lazy filling. It refuses when the cache cannot hold a whole revolution, because a
+partial warm is evicted before it is used.
+
+Deliberately NOT in `TemplateSource.__init__`: `bench_serve` builds one to measure COLD
+costs, and a constructor that quietly decoded 360 frames would destroy that measurement and
+add 10-30 s to every run. It is also blocking rather than threaded — the server's threading
+rules are strict, and a few seconds at boot is the cheaper trade. `_build_bundle` warms a
+switched-to scene too, which is safe because that runs off-lock and writes nothing to
+`self`, so the old scene keeps serving at full rate throughout.
+
+**The accounting bug found while verifying it.** Reported footprint said 1.64 GiB; actual
+RSS was 2.36 GiB. **PIL stores an RGB image as 4-byte-aligned RGBX**, so a decoded pixel
+costs 4 bytes plus object overhead — measured **4.22 B/px** holding 40 real 3940x414
+templates (275.2 MB against the 195.7 MB that `w*h*3` predicts). Every `w*h*3` in the cache
+path was therefore a third low.
+
+That is worse than a cosmetic mis-report, because `plan_template_cache` **sized the cache**
+from it. Its docstring guarantees it under-promises ("under-promise, which is the right
+direction to be wrong in"); with `w*h*3` it over-promised by 41%, planning a cache needing
+more RAM than it had budgeted. Now `_DECODED_BYTES_PER_PX = 4.25` (measured 4.22, rounded
+up so the error stays safe). Reported 2.32 GiB against a measured 2.30 GiB RSS.
+
+**Retroactive correction to figures quoted throughout these docs:** the pre-crop cache was
+**~20.4 GiB, not 14.4**, and a full-window template was **58 MiB, not 41**. The cropped
+sweep is **2.32 GiB, not 1.76**. The *ratio* is unchanged at 8.8x, since it is the same
+pixel ratio — only the absolute numbers were wrong, and they were wrong before this change
+as well. Historical entries below still quote the old figures; they are not being rewritten,
+but they are low by a third wherever they name decoded bytes.
+`tests/test_frame_library.py::test_decoded_bytes_per_px_matches_what_pil_actually_allocates`
+measures it against the allocator rather than asserting it, because believing an arithmetic
+model over the allocator is exactly what went wrong.
+
 ### 2026-08-14 (later) — voltron measured: the crop lands, and what is left is memory, not CPU
 
 The projection in the entry below said ~57 ms / 17.6 fps cold on voltron. **Measured: 71.4
-ms / 14.01 fps cold, 37.7 ms / 26.53 fps warm, on 1.64 GiB instead of 14.4.** voltron now
+ms / 14.01 fps cold, 37.7 ms / 26.53 fps warm, on 2.32 GiB instead of 20.4 (both
+figures corrected in the entry above; the 8.8x ratio is unchanged).** voltron now
 clears the 10 fps goal on a COLD slew, which it missed by 3x before; the condition
 "usable there only with `--template-cache auto`" is retired.
 
