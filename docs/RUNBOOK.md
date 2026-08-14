@@ -554,6 +554,28 @@ Dev box, 40 frames, `hampton_300um_realistic`, before and after the 2026-08-14 c
 | jpeg encode | 2.7 ms | 2.4 ms | 1.1x |
 | RAM to hold the sweep | 20.4 GiB | **2.32 GiB** | 8.8x |
 
+### Which host can serve the viewer — all three, measured 2026-08-14
+
+One run each, graded on the pre-warmed regime (`slew_warm`), 40 frames,
+`hampton_300um_realistic`, stock `/programs/pytorch/envs/pt/bin/python`:
+
+| Host | CPUs | slew (pre-warmed) | in a browser | pan | verdict |
+|---|---|---|---|---|---|
+| **dataserver3** | 40 | **29.5 ms / 33.9 fps** | ~16.9 fps | 43.0 fps | GO |
+| **voltron** | 48 | **33.4 ms / 30.0 fps** | ~15.0 fps | 45.2 fps | GO |
+| **gateway** (bl831) | 16 | **36.0 ms / 27.7 fps** | ~13.9 fps | 31.1 fps | GO |
+
+Per-stage (ms) — decode / crop+scale / camera / jpeg: voltron 23.8 / 3.9 / 12.5 / 5.4,
+dataserver3 25.0 / 3.9 / 14.1 / 5.5, gateway 33.3 / 5.8 / 18.6 / 7.6.
+
+**Core count does not decide it.** dataserver3's 40 beat voltron's 48 and gateway's 16
+still cleared by 2.8x — the serve path is single-threaded, so single-core speed is what
+matters and a smaller newer box can win. **Treat cross-host gaps under ~15% as noise:**
+voltron measured 33.4 ms here against 37.7 ms an hour earlier with no relevant code change,
+which is shared-node load. dataserver3 runs the DCSS stack (the DHSs, `touch_tcp`), so it
+is a control host rather than a compute box — that is a placement question, not a
+performance one.
+
 **voltron, MEASURED 2026-08-14** (second run; see the first-run caveat below):
 
 | | before (2026-08-13) | **after (2026-08-14)** | gain |

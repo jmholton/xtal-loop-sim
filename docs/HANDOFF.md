@@ -1,8 +1,8 @@
 ---
 project: loop-sim (xtal-loop-sim) — bright-field microscope + X-ray simulator for protein crystals in cryo-loops
-status: active — camera served from pre-computed templates (no GPU at runtime) and usable interactively; renders go out through a measured camera model on the real 704x480 raster; all three frame libraries current; the camera calibration is fully settled (pixels 2026-08-10, NA 2026-08-11); library builds are 43x faster since the mesh path learned to cull and the VRAM budget is enforced rather than hoped for; the droplet scene now ships at the optically correct supersample 4 with a Rayleigh-matched drop mesh, so zoom reaches 4x; the pin's specular glint is projected from the scene rather than inferred from the silhouette, so it can no longer land on the droplet; BOTH HALVES OF THE VOLTRON DEPLOYMENT ARE NOW MEASURED (2026-08-13) — it renders 4% faster than the dev box, and since 2026-08-14 TEMPLATES STORE ONLY THEIR CONTENT (10.4% of the frame), which takes the decoded sweep from 21.9 GB to 2.5 GB, the dev-box slew from 87 to 23 ms, and voltron to a projected 17 fps with NO cache at all — so `--template-cache` now defaults to `auto` and frames are delivered in COLOUR (`--mono off`)
-last_verified: 2026-08-13        # `pytest tests/` = 228 passed in 328 s on this tree (branch performance-correctness-optimizations, RTX 4080 SUPER; branch depth is CHEAP TO MEASURE -- `git rev-list --count master..HEAD` -- so measure it rather than quoting a number here)
-verify: python -m pytest tests/ -q        # 228 tests; "python" = the torch-enabled project interpreter (see docs/RUNBOOK.md "Environment")
+status: active — camera served from pre-computed templates (no GPU at runtime) and usable interactively; renders go out through a measured camera model on the real 704x480 raster; all three frame libraries current; the camera calibration is fully settled (pixels 2026-08-10, NA 2026-08-11); library builds are 43x faster since the mesh path learned to cull and the VRAM budget is enforced rather than hoped for; the droplet scene now ships at the optically correct supersample 4 with a Rayleigh-matched drop mesh, so zoom reaches 4x; the pin's specular glint is projected from the scene rather than inferred from the silhouette, so it can no longer land on the droplet; BOTH HALVES OF THE VOLTRON DEPLOYMENT ARE NOW MEASURED (2026-08-13) — it renders 4% faster than the dev box, and since 2026-08-14 TEMPLATES STORE ONLY THEIR CONTENT (~10% of the frame), which takes the decoded sweep from 21.9 GB to 2.5 GB and the dev-box slew from 87 to 23 ms; THE VIEWER IS NOW MEASURED USABLE ON ALL THREE CANDIDATE HOSTS — dataserver3 33.9 fps, voltron 30.0, gateway 27.7, every one ~3x the 10 fps goal on 2.32 GiB — so `--template-cache` defaults to `auto`, the library is pre-warmed at boot (`--prewarm`), and frames are delivered in COLOUR (`--mono off`)
+last_verified: 2026-08-14        # `pytest tests/` = 236 passed in 357 s on this tree (branch performance-correctness-optimizations, RTX 4080 SUPER; branch depth is CHEAP TO MEASURE -- `git rev-list --count master..HEAD` -- so measure it rather than quoting a number here)
+verify: python -m pytest tests/ -q        # 236 tests; "python" = the torch-enabled project interpreter (see docs/RUNBOOK.md "Environment")
 ---
 
 # HANDOFF — loop-sim (xtal-loop-sim)
@@ -731,7 +731,46 @@ those numbers don't have to be re-derived.
 
 ## Work log (append-only)
 
-- **2026-08-13 (latest) — voltron measured end to end: it renders slightly
+- **2026-08-14 (latest) — templates store their content, not their window; the
+  viewer delivers colour; and three beamline hosts are measured.** Seven
+  commits, `fb23293`..`ce853f3`.
+  **The change.** A template's sample occupies ~10% of its frame — the rest is
+  there only because `plan_window()` unions the measured content with the
+  CENTRED field of view plus `pan_mm`. Storing just the content and filling the
+  rest at read time is EXACT, not approximate: templates hold raw
+  transmittance, every ray is born at 1.0, so what is omitted is background.
+  Stored resolution went **5578x2570 -> 3709x414** (`hampton_300um`), **->
+  3940x414** (`hampton_300um_realistic`) and **1840x2296 -> 556x554..544x792**
+  (`mitegen_200um`, per-frame, 110 distinct sizes because its spindle axis is
+  not the pin axis). The DELIVERED frame is unchanged at 704x480.
+  **What it bought.** Tracked libraries 74 -> 36 MB; the decoded sweep 21.9 ->
+  2.5 GB; the dev-box slew 87.3 -> 23.0 ms. Acceptance: old path against new,
+  pre-JPEG, every servable zoom x nine angles x three pan offsets — **max 1
+  level, zero pixels differing by more than 1, out of 64 million compared.**
+  **Measured on three hosts** (`bench_serve.py`, one run each, graded on the
+  pre-warmed regime): dataserver3 **33.9 fps**, voltron **30.0**, gateway
+  (bl831) **27.7** — all GO against the 10 fps goal, all ~3x it, on 2.32 GiB.
+  voltron cold went 265.5 -> 60.7 ms (4.4x). Core count did not decide it
+  (dataserver3's 40 beat voltron's 48; gateway's 16 still cleared): the serve
+  path is single-threaded, so single-core speed is what matters.
+  **Three things that changed course mid-work, all from measurement.** (a)
+  Rendering the tight window instead of the full one buys **1.08x on 8.79x
+  fewer pixels** — the AABB cull already made background rays nearly free — so
+  the render window is untouched and `recrop_library` migrates a built sweep in
+  ~2.5 min with no GPU. (b) An edge-clamp special case for the sensor
+  resample was written and then deleted: measured, the two agree to 1 level at
+  every column without it. (c) `--mono` now defaults OFF (the simulator is a
+  colour instrument), which costs nothing — `apply_camera` is *faster* without
+  the luma matmul and channel repeat.
+  **A bug found while verifying the pre-warm, worth its own line.** Every
+  `w*h*3` in the cache path was a third low: PIL stores RGB 4-byte-aligned, so
+  a decoded pixel costs ~4.22 B. `plan_template_cache` SIZED the cache from
+  that, so it over-promised by 41% — the inverse of the guarantee its docstring
+  makes. Retroactively the pre-crop cache was **~20.4 GiB, not 14.4**.
+  **Next:** decide the viewer's host (all three qualify); optionally add
+  gateway/dataserver3 baselines to `bench_serve`.
+
+- **2026-08-13 — voltron measured end to end: it renders slightly
   faster and serves usably, but only with the cache.** The question this whole
   deploy asked is answered on both halves.
   **GPU render: the TITAN V is 4% faster.** `hampton_300um_realistic` at
