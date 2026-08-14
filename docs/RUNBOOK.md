@@ -567,11 +567,18 @@ Dev box, 40 frames, `hampton_300um_realistic`, before and after the 2026-08-14 c
 | jpeg encode | 5.9 ms | 6.1 ms | 0.97x |
 | RAM to hold the sweep | 14.4 GiB | **1.64 GiB** | 8.8x |
 
-**Run it twice; the first run after a `push-all` is not representative.** The first run
-measured 94.3 ms with p10 71.7 / p90 130.0 — a 1.8x spread. The second measured 71.4 ms
-with p10 67.7 / p90 77.3, a 1.14x spread, with the p10 essentially unchanged. That is
-first-touch I/O off the shared ZFS pool on files rsynced minutes earlier, and it costs
-~23 ms a frame exactly once.
+**One run is enough — read `slew_warm`, not `slew`.** The server pre-warms the whole
+library at boot, so a spindle slew never touches disk once it is up; `slew_warm` is what an
+operator gets, and it is what the verdict grades. `slew` is the benchmark decoding from
+scratch, which the server pays once at startup instead.
+
+`slew` is also the noisy one, which is why it is the wrong thing to read: run one measured
+94.3 ms with p10 71.7 / p90 130.0 (a 1.8x spread), run two 71.4 ms with p10 67.7 / p90 77.3
+(1.14x), p10 essentially unchanged — first-touch I/O off the shared ZFS pool on files
+rsynced minutes earlier, ~23 ms a frame, paid once. Over the same two runs **`slew_warm`
+held to 0.1%: 37.73 then 37.69 ms.** Page cache is per host, so the first-touch cost recurs
+on each new machine even though `/home` is the same mount everywhere — which is exactly why
+the stable regime is the one to grade.
 
 **The stage split under-reports a slew here, and that is not measurement error.** The four
 stages sum to 52.8 ms against a 71.4 ms slew. The missing ~19 ms is memory traffic: the

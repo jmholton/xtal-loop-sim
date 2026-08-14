@@ -44,6 +44,16 @@ beside the measured ones, and a verdict against the 10 fps goal.  The baselines
 are labelled with the configuration they were taken in; they are history, not a
 target, and `--no-baseline` drops them.
 
+WHICH REGIME THE VERDICT GRADES, AND WHY IT IS NOT `slew`.  The server pre-warms
+the whole library at boot, so by the time anyone drives it a spindle slew never
+touches disk -- `slew_warm` is what an operator gets and what the verdict grades
+whenever the cache can hold a revolution.  `slew` is this benchmark decoding
+from scratch; the server pays that once at startup instead.  It is also the
+noisy one: first-touch I/O off a shared pool moved it 94.3 -> 71.4 ms between two
+voltron runs while `slew_warm` held to 0.1% (37.73 vs 37.69).  One run is enough.
+Where the cache CANNOT hold a revolution, pre-warm is skipped, every rotating
+frame really does decode, and the verdict grades `slew` instead.
+
 THE CACHE.  `TemplateSource` sizes its decode cache from available RAM
 (`plan_template_cache`), and since a template stores only its content that is
 ~1.8 GiB rather than 14.4, so the server defaults to `auto` and this mirrors it.
@@ -416,24 +426,44 @@ def main():
         print(f"    {'cache to do it':22s}{base['cache_gib']:9.1f} GiB"
               f"{resident:9.2f} GiB")
 
-    # The verdict, because a bare millisecond count on a login shell does not
-    # say whether the box is usable.  Graded on the COLD slew: it is the worst
-    # case an operator meets, and the one a first revolution actually pays.
+    # THE VERDICT IS GRADED ON THE REGIME THE VIEWER ACTUALLY SERVES.
+    #
+    # That is `slew_warm` whenever the cache holds a whole revolution, because
+    # the server pre-warms the library at boot (`--prewarm`, default on): by the
+    # time anyone drives it, every template is decoded and a spindle slew never
+    # touches disk.  Grading the COLD slew there measures a state the viewer
+    # only ever occupies during its own startup, and it is also the noisy one --
+    # first-touch I/O off a shared pool moved it 94.3 -> 71.4 ms between two
+    # voltron runs while `slew_warm` held to 0.1% (37.73 vs 37.69).
+    #
+    # When the cache CANNOT hold a revolution, pre-warm is skipped and every
+    # rotating frame really does decode, so cold is the honest grade.
+    warm_reachable = src._cache_size >= report["library"]["frames"]
+    graded_key = "slew_warm" if warm_reachable else "slew"
+    graded = report[graded_key]["fps"]
     cold = report["slew"]["fps"]
     report["target_fps"] = TARGET_FPS
-    report["verdict"] = "GO" if cold >= TARGET_FPS else "NO-GO"
-    print(f"\n  VERDICT  {report['verdict']}: a cold slew serves at "
-          f"{cold:.2f} fps against the {TARGET_FPS:g} fps goal"
-          + ("" if cold >= TARGET_FPS else " -- this host is not usable as a viewer"))
+    report["graded_regime"] = graded_key
+    report["verdict"] = "GO" if graded >= TARGET_FPS else "NO-GO"
+    what = ("a slew on the pre-warmed library serves at" if warm_reachable
+            else "this host cannot cache a revolution, so a slew serves at")
+    print(f"\n  VERDICT  {report['verdict']}: {what} {graded:.2f} fps "
+          f"against the {TARGET_FPS:g} fps goal"
+          + ("" if graded >= TARGET_FPS else " -- not usable as a viewer"))
     print(f"           (a browser shows roughly half the socket rate, so "
-          f"~{cold / 2:.1f} fps is what an operator sees)")
+          f"~{graded / 2:.1f} fps is what an operator sees)")
+    if warm_reachable:
+        print(f"           the {cold:.2f} fps cold figure above is the "
+              f"benchmark decoding from scratch; the server pays that once at\n"
+              f"           boot instead (--prewarm), so it is startup cost, not "
+              f"something an operator meets.")
     print()
 
     if args.json:
         with open(args.json, "w") as fh:
             json.dump(report, fh, indent=2)
         print(f"  wrote {args.json}")
-    return 0 if cold >= TARGET_FPS else 1
+    return 0 if graded >= TARGET_FPS else 1
 
 
 if __name__ == "__main__":
