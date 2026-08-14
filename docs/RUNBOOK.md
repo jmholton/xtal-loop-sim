@@ -554,17 +554,40 @@ Dev box, 40 frames, `hampton_300um_realistic`, before and after the 2026-08-14 c
 | jpeg encode | 2.7 ms | 2.4 ms | 1.1x |
 | RAM to hold the sweep | 14.4 GiB | **1.64 GiB** | 8.8x |
 
-**voltron before the crop, for reference** (2026-08-13, full-window templates): cold slew
-265.5 ms / 3.77 fps, warm 67.3 ms / 14.87 fps at 14.4 GiB; stages 180.7 / 32.6 / 33.0 /
-5.9. Applying the per-stage dev→voltron ratios to the "after" column projects a cold slew
-near **57 ms / 17.6 fps with no cache at all** — but that is a projection, and running the
-command above on voltron is what replaces it with a measurement.
+**voltron, MEASURED 2026-08-14** (second run; see the first-run caveat below):
+
+| | before (2026-08-13) | **after (2026-08-14)** | gain |
+|---|---|---|---|
+| slew (cold) | 265.5 ms / 3.77 fps | **71.4 ms / 14.01 fps** | 3.7x |
+| slew (warm) | 67.3 ms / 14.87 fps | **37.7 ms / 26.53 fps** | 1.8x |
+| pan | 67.3 ms / 14.86 fps | 25.6 ms / 39.1 fps | 2.6x |
+| decode | 180.7 ms | **28.2 ms** | 6.4x |
+| crop+scale | 32.6 ms | **4.5 ms** | 7.3x |
+| camera model | 33.0 ms | **14.0 ms** | 2.4x |
+| jpeg encode | 5.9 ms | 6.1 ms | 0.97x |
+| RAM to hold the sweep | 14.4 GiB | **1.64 GiB** | 8.8x |
+
+**Run it twice; the first run after a `push-all` is not representative.** The first run
+measured 94.3 ms with p10 71.7 / p90 130.0 — a 1.8x spread. The second measured 71.4 ms
+with p10 67.7 / p90 77.3, a 1.14x spread, with the p10 essentially unchanged. That is
+first-touch I/O off the shared ZFS pool on files rsynced minutes earlier, and it costs
+~23 ms a frame exactly once.
+
+**The stage split under-reports a slew here, and that is not measurement error.** The four
+stages sum to 52.8 ms against a 71.4 ms slew. The missing ~19 ms is memory traffic: the
+split re-renders a few angles back to back, so each stage reads what the last one left in
+cache, while a real slew streams a different ~4.9 MB template from DRAM every frame.
+Measured on the dev box, holding ONE template resident costs 10.3 ms/frame and holding
+four costs 14.1 — the step is the L3 boundary. It is also why `pan` (25.6) beats
+`slew_warm` (37.7) on voltron when neither decodes, and why that 12 ms gap is only 2.9 ms
+on the newer dev box: this is a DDR4-2400-era memory subsystem, not a CPU difference.
+`bench_serve` now prints the gap rather than leaving it to be noticed.
 
 **As of 2026-08-13, voltron missed the 10 fps goal on a COLD slew by 3x and cleared it
 warm at 14.87 fps** — the viewer was usable there only with `--template-cache auto` and
-its 14.4 GiB. The crop is expected to have removed that condition (the projection above is
-~17.6 fps cold with no cache), but **that is a projection until someone runs the command
-on voltron.** The measured warm slew (67.25 ms) and pan (67.30 ms) agreed to
+its 14.4 GiB. **That condition is gone as of 2026-08-14: voltron now clears the goal COLD
+at 14.01 fps and runs 26.53 fps warm, on 1.64 GiB.** The measured warm slew (67.25 ms) and
+pan (67.30 ms) agreed to
 **0.05 ms** -- with the library resident a rotating frame costs exactly what a translating
 one costs, i.e. the decode is gone rather than reduced. All 360 frames fit voltron's RAM,
 so a full revolution stays warm; see the LRU caveat below for hosts where they do not.

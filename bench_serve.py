@@ -355,10 +355,30 @@ def main():
         print(f"  {k:5s}  {r['median_ms']:7.2f} ms  ({r['fps']:6.2f} fps)   "
               f"p10 {r['p10_ms']:.2f}  p90 {r['p90_ms']:.2f}")
     s = report["stages"]
+    stage_sum = sum(s.values())
+    report["stages_sum_ms"] = round(stage_sum, 2)
+    report["unattributed_ms"] = round(report["slew"]["median_ms"] - stage_sum, 2)
     print(f"\n  stage split (median, ms):  decode {s['decode_ms']}  "
           f"crop+scale {s['crop_scale_ms']}  camera {s['camera_model_ms']}  "
           f"jpeg {s['jpeg_encode_ms']}")
     print(f"  -> a slew pays all four; a pan skips the decode.")
+    # The split is measured stage-by-stage on a handful of angles, so each stage
+    # reads data the previous stage just left in cache.  A real slew does not:
+    # it streams a DIFFERENT ~5 MB template through the pipeline every frame,
+    # from DRAM rather than L3.  Measured on the dev box, holding one template
+    # resident costs 10.3 ms a frame and holding four costs 14.1 -- the step is
+    # the L3 boundary, and it is the whole reason `pan` beats `slew_warm` when
+    # neither decodes.  On a memory-bound host the split can therefore
+    # under-report a slew badly, so say by how much rather than let it read as
+    # measurement error.
+    gap = report["unattributed_ms"]
+    if gap > 0.15 * stage_sum:
+        print(f"  -> the four stages sum to {stage_sum:.1f} ms but a slew "
+              f"measures {report['slew']['median_ms']:.1f}: the missing "
+              f"{gap:.1f} ms is per-frame\n     memory traffic the split cannot "
+              f"see (it re-reads cache-hot data; a slew streams a new "
+              f"{big[0] * big[1] * 3 / 1e6:.1f} MB\n     template from DRAM each "
+              f"frame). Compare `pan` against `slew_warm` to see it directly.")
     n_lib = report["library"]["frames"]
     if src._cache_size < n_lib:
         print(f"\n  WARNING cache holds {src._cache_size} of {n_lib} frames. "

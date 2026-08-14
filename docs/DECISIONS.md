@@ -8,6 +8,44 @@
 
 ## Decisions
 
+### 2026-08-14 (later) — voltron measured: the crop lands, and what is left is memory, not CPU
+
+The projection in the entry below said ~57 ms / 17.6 fps cold on voltron. **Measured: 71.4
+ms / 14.01 fps cold, 37.7 ms / 26.53 fps warm, on 1.64 GiB instead of 14.4.** voltron now
+clears the 10 fps goal on a COLD slew, which it missed by 3x before; the condition
+"usable there only with `--template-cache auto`" is retired.
+
+Two things the run taught that the projection could not.
+
+**Run it twice after a push.** The first run read 94.3 ms with p10 71.7 / p90 130.0 — a
+1.8x spread. The second read 71.4 ms with p10 67.7 / p90 77.3, a 1.14x spread, p10 barely
+moved. That is first-touch I/O off the shared ZFS pool on files rsynced minutes earlier:
+~23 ms a frame, paid exactly once. It is also the first direct evidence of what the E4
+experiment flagged as unmeasurable from here — cold I/O on that pool is real and large,
+which is another reason the raw-uncompressed-on-disk idea stayed on the shelf.
+
+**The remaining gap is DRAM, and the stage split cannot see it.** The four stages sum to
+52.8 ms against a 71.4 ms slew. The split re-renders a few angles back to back so each
+stage reads what the last left in cache; a real slew streams a different 4.89 MB template
+from DRAM every frame. Measured on the dev box: holding ONE template resident costs 10.3
+ms/frame, TWO costs 10.4, FOUR costs 14.1, and it is then flat out to 1762 MB. That step
+is the L3 boundary (30 MB on the E5-2650 v4, ~33 on the dev box). It is the same effect
+that makes `pan` (25.6 ms) beat `slew_warm` (37.7 ms) on voltron when neither decodes —
+and that 12 ms gap is only 2.9 ms on the newer box, i.e. it scales with the memory
+subsystem (DDR4-2400 era) rather than with the CPU ratio of ~2.4x.
+
+**Consequence for what to reach for next.** The serve path is now memory-bound on that
+host, not decode-bound. That reframes two shelved items: an LoD tier would cut the
+streamed template from 4.89 MB to 1.22 MB at zoom <= 1, which is now a bandwidth argument
+rather than only a decode one; and the 2026-08-11 refutation of float32 in the camera
+stage ("index-bound, not bandwidth-bound") was measured on the DEV box and may not hold on
+voltron, where the same stage is 2.4x slower against a 2.4x CPU ratio but sits behind a
+much weaker memory system. Neither is worth doing on this evidence alone — but neither is
+closed by the old measurement either.
+
+`bench_serve` now prints the stage-sum-vs-slew gap and names it, rather than leaving a 26%
+discrepancy to read as noise.
+
 ### 2026-08-14 — templates store their content, not the window; and the viewer delivers colour
 
 **The problem was footprint, not framerate.** voltron cleared the 10 fps goal
