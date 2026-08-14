@@ -27,27 +27,38 @@ WHAT IT REPORTS, AND WHY THE SPLIT IS THE POINT
          to separate fixed overhead from real work.
 
 Then a stage split -- decode / crop+scale / camera model / JPEG encode --
-because the remedy differs per stage.  A prefetch decode pool is already the
-identified lever for the slew case (~30 fps, no library rebuild); it would do
-nothing for the camera stage.
+because the remedy differs per stage, and every one of them has now been the
+lever at some point: the decode was cut ~7x by storing only a template's
+content (2026-08-14), the camera stage ~2x by moving the sensor resample into
+PIL, and the prefetch pool that used to be the identified remedy was closed
+without being built.
 
 DELIBERATELY NO SOCKET.  `TemplateSource.render(pose)` is the whole serve path
 below HTTP and returns the JPEG bytes, so this runs headless on a login shell
 with no port to bind and no browser -- which is the only way to benchmark a
 shared beamline node.
 
-THE CACHE IS LOAD-BEARING, AND IT IS NOW THE THING UNDER TEST.  `TemplateSource`
-sizes its decode cache from available RAM (`plan_template_cache`), so on a box
-that can hold the library the slew SHOULD collapse onto the pan number once
-warm -- that is the whole point of the 2026-08-13 change.  This benchmark
-deliberately drops the cache between regimes and warms the slew on angles the
-timed run never revisits, so what it reports is the COLD cost of each regime.
-Use `--template-cache 8` to see the old behaviour and `--frames` larger than the
-cache to keep measuring cold decodes on a big-cache host.
+WHAT IT COMPARES AGAINST.  A bare frame rate on a login shell is hard to read,
+so the report prints the recorded pre-2026-08-14 numbers for the same scene
+beside the measured ones, and a verdict against the 10 fps goal.  The baselines
+are labelled with the configuration they were taken in; they are history, not a
+target, and `--no-baseline` drops them.
+
+THE CACHE.  `TemplateSource` sizes its decode cache from available RAM
+(`plan_template_cache`), and since a template stores only its content that is
+~1.8 GiB rather than 14.4, so the server defaults to `auto` and this mirrors it.
+The benchmark still drops the cache between regimes and warms the slew on angles
+the timed run never revisits, so `slew` is the COLD cost however big the cache
+is; `slew_warm` is the second lap over the same angles.  Use
+`--template-cache off` for the old 8-entry behaviour.
 
 USAGE
     python bench_serve.py --scene scene_files/hampton_300um_realistic.yaml
     python bench_serve.py --scene ... --frames 60 --json serve_report.json
+
+On voltron, from the deployment venv (RUNBOOK "Deploy on the TITAN V"):
+    ~/projects/loopsim-torch26/bin/python bench_serve.py --json serve.json
+No GPU is touched, so it is safe to run while someone else has all eight cards.
 """
 import argparse
 import io
@@ -70,6 +81,35 @@ from loop_sim.library.frame_library import (frame_for_angle, library_dir,
 from loop_sim.renderer import field as _field
 from loop_sim.scene.scene import load as load_scene
 from loop_sim.server.camera_server import TemplateSource, plan_template_cache
+
+
+# The socket goal everything is graded against, shared with acceptance_voltron.
+TARGET_FPS = 10.0
+
+# Recorded BEFORE the 2026-08-14 tight crop, on `hampton_300um_realistic` with
+# full-window templates, --mono on and field.to_sensor doing the 640->704
+# resample.  History, not a target: they exist so a number on a login shell says
+# whether anything moved without the reader cross-referencing RUNBOOK.  Keyed by
+# hostname prefix because that is all a headless run knows about itself.
+_BASELINES = {
+    "voltron": {"label": "voltron, 2026-08-13, full-window templates",
+                "slew_cold_ms": 265.5, "slew_warm_ms": 67.3,
+                "cache_gib": 14.4,
+                "stages": {"decode_ms": 180.7, "crop_scale_ms": 32.6,
+                           "camera_model_ms": 33.0, "jpeg_encode_ms": 5.9}},
+    "DESKTOP-": {"label": "dev box, 2026-08-13, full-window templates",
+                 "slew_cold_ms": 91.1, "slew_warm_ms": 27.1,
+                 "cache_gib": 14.4,
+                 "stages": {"decode_ms": 66.6, "crop_scale_ms": 15.3,
+                            "camera_model_ms": 12.3, "jpeg_encode_ms": 2.7}},
+}
+
+
+def _baseline_for(host):
+    for prefix, rec in _BASELINES.items():
+        if host.startswith(prefix):
+            return rec
+    return None
 
 
 def _stats(samples_s):
@@ -196,15 +236,18 @@ def main():
                          "which is the library's own step and guarantees a "
                          "fresh template every frame)")
     ap.add_argument("--jpeg-quality", type=int, default=85)
-    ap.add_argument("--template-cache", default="off",
-                    help="decoded templates held in RAM. off (default, = 8) "
-                         "matches the server's shipped default, so the numbers "
-                         "describe what an operator actually gets. 'auto' "
-                         "sizes from available memory, or pass an integer -- "
-                         "use those to see what opting in would buy")
+    ap.add_argument("--template-cache", default="auto",
+                    help="decoded templates held in RAM. auto (default) mirrors "
+                         "the server's shipped default, so the numbers describe "
+                         "what an operator actually gets; it is affordable now "
+                         "that a template stores only its content (~1.8 GiB for "
+                         "a sweep, not 14.4). 'off' is the old 8-entry "
+                         "behaviour, or pass an integer")
     ap.add_argument("--no-camera", action="store_true",
                     help="serve raw transmittance -- isolates how much of the "
                          "frame is the camera model")
+    ap.add_argument("--no-baseline", action="store_true",
+                    help="omit the recorded pre-2026-08-14 comparison")
     ap.add_argument("--json", default=None, help="also write the report here")
     args = ap.parse_args()
 
@@ -293,7 +336,18 @@ def main():
     print(f"  camera emulation {'on' if camera else 'OFF'}, "
           f"delivered {sensor[0]}x{sensor[1]}")
     print(f"  template cache {src._cache_size} frames "
-          f"({resident:.2f} GiB resident if fully warmed)\n")
+          f"({resident:.2f} GiB resident if fully warmed)")
+    # Say it out loud rather than leaving it to be inferred from the geometry
+    # line: a host that has not picked up the cropped libraries yet will read
+    # ~7x slower on the decode and there is nothing in the numbers themselves to
+    # explain why.
+    report["library"]["cropped"] = big != window
+    if big == window:
+        print(f"  NOTE this library stores the FULL window -- it predates the "
+              f"2026-08-14 crop.\n       Numbers below are the old regime; "
+              f"`python -m loop_sim.library --recrop --all` migrates it in "
+              f"minutes,\n       with no GPU and no re-render.")
+    print()
     for k in ("slew", "slew_warm", "pan", "hold"):
         r = report[k]
         print(f"  {k:5s}  {r['median_ms']:7.2f} ms  ({r['fps']:6.2f} fps)   "
@@ -314,13 +368,45 @@ def main():
     else:
         print(f"\n  cache holds the whole {n_lib}-frame library: no eviction, "
               f"so a full revolution stays warm.")
+
+    base = None if args.no_baseline else _baseline_for(report["host"])
+    if base:
+        report["baseline"] = base
+        print(f"\n  AGAINST {base['label']}:")
+        print(f"    {'':22s}{'then':>12}{'now':>12}")
+        for key, label in (("slew", "slew (cold)"), ("slew_warm", "slew (warm)")):
+            then = base[f"{key}_cold_ms" if key == "slew" else "slew_warm_ms"]
+            now = report[key]["median_ms"]
+            print(f"    {label:22s}{then:9.1f} ms{now:9.1f} ms   "
+                  f"{then / max(now, 1e-9):5.2f}x  "
+                  f"({1000 / then:.1f} -> {1000 / max(now, 1e-9):.1f} fps)")
+        for k, label in (("decode_ms", "decode"), ("crop_scale_ms", "crop+scale"),
+                         ("camera_model_ms", "camera model"),
+                         ("jpeg_encode_ms", "jpeg encode")):
+            then, now = base["stages"][k], s[k]
+            print(f"    {label:22s}{then:9.1f} ms{now:9.1f} ms   "
+                  f"{then / max(now, 1e-9):5.2f}x")
+        print(f"    {'cache to do it':22s}{base['cache_gib']:9.1f} GiB"
+              f"{resident:9.2f} GiB")
+
+    # The verdict, because a bare millisecond count on a login shell does not
+    # say whether the box is usable.  Graded on the COLD slew: it is the worst
+    # case an operator meets, and the one a first revolution actually pays.
+    cold = report["slew"]["fps"]
+    report["target_fps"] = TARGET_FPS
+    report["verdict"] = "GO" if cold >= TARGET_FPS else "NO-GO"
+    print(f"\n  VERDICT  {report['verdict']}: a cold slew serves at "
+          f"{cold:.2f} fps against the {TARGET_FPS:g} fps goal"
+          + ("" if cold >= TARGET_FPS else " -- this host is not usable as a viewer"))
+    print(f"           (a browser shows roughly half the socket rate, so "
+          f"~{cold / 2:.1f} fps is what an operator sees)")
     print()
 
     if args.json:
         with open(args.json, "w") as fh:
             json.dump(report, fh, indent=2)
         print(f"  wrote {args.json}")
-    return 0
+    return 0 if cold >= TARGET_FPS else 1
 
 
 if __name__ == "__main__":

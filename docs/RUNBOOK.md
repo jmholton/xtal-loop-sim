@@ -514,29 +514,54 @@ For a render-level check after touching the renderer or a scene, use the SLURM c
 job (`sbatch run_gpu.slurm` renders CPU+GPU at n_cond 1 and 7 and reports diff stats);
 `../CLAUDE.md` "Comparison workflow" carries the acceptable thresholds.
 
-Benchmarking the **serve** path (no GPU, no socket, safe on a busy shared node):
+Benchmarking the **serve** path (no GPU, no socket, no display — safe on a busy shared
+node, and verified to import torch not at all):
 
 ```bash
 $PY bench_serve.py --scene scene_files/hampton_300um_realistic.yaml --frames 40
 ```
 
-It reports three regimes separately because they differ ~3x and one number would hide it:
-**slew** (spindle turning — every frame is a fresh PNG decode), **pan** (fixed angle — the
-decoded template is reused from the 8-entry cache), and **hold**. Measured 2026-08-13 on
-`hampton_300um_realistic`, 40 frames:
+On **voltron**, from the deployment venv, with all eight cards busy:
 
-| | dev box (RTX 4080S host) | **voltron** (2x Xeon E5-2650 v4) | ratio |
+```tcsh
+cd ~/projects/loop_sim_MINE/xtal-loop-sim
+~/projects/loopsim-torch26/bin/python bench_serve.py --json serve.json
+```
+
+It prints the three regimes, a per-stage split, a comparison against the recorded
+pre-crop numbers for that host, and a **GO/NO-GO against the 10 fps goal** (exit 0 / 1).
+If the host's libraries still store the full window it says so and points at
+`--recrop`, because otherwise a host that has not picked up the cropped libraries just
+reads ~7x slower on the decode with nothing to explain why.
+
+**slew** = spindle turning, every frame a fresh decode (the worst case, and what grades
+the host); **pan** = fixed angle, decode served from cache; **hold** = the floor.
+
+Dev box, 40 frames, `hampton_300um_realistic`, before and after the 2026-08-14 crop
+(`--mono off` and `--template-cache auto` in the "after" column, matching the server):
+
+| | before (2026-08-13) | **after (2026-08-14)** | gain |
 |---|---|---|---|
-| slew (cold) | 91.1 ms / 11.0 fps | **265.5 ms / 3.77 fps** | 2.9x |
-| **slew (warm, `--template-cache auto`)** | 27.1 ms / 37.0 fps | **67.3 ms / 14.87 fps** | 2.5x |
-| pan | 32.4 ms / 30.9 fps | 67.3 ms / 14.86 fps | 2.1x |
-| hold | 32.8 ms | 73.7 ms | 2.2x |
-| decode | 66.6 ms | 180.7 ms | 2.7x |
-| crop+scale / camera / jpeg | 15.3 / 12.3 / 2.7 | 32.6 / 33.0 / 5.9 | ~2.2x |
+| slew (cold) | 91.1 ms / 11.0 fps | **27.0 ms / 37.1 fps** | 3.4x |
+| slew (warm) | 27.1 ms / 36.9 fps | **13.4 ms / 74.8 fps** | 2.0x |
+| pan | 32.4 ms / 30.9 fps | 10.5 ms / 95.2 fps | 3.1x |
+| decode | 66.6 ms | **11.8 ms** | 5.7x |
+| crop+scale | 15.3 ms | **1.9 ms** | 8.0x |
+| camera model | 12.3 ms | **5.8 ms** | 2.1x |
+| jpeg encode | 2.7 ms | 2.4 ms | 1.1x |
+| RAM to hold the sweep | 14.4 GiB | **1.64 GiB** | 8.8x |
 
-**voltron misses the 10 fps goal on a COLD slew by 3x and clears it warm at 14.87 fps.**
-That is the whole deployment answer for the CPU side: the viewer is usable there only with
-`--template-cache auto`. The measured warm slew (67.25 ms) and pan (67.30 ms) agree to
+**voltron before the crop, for reference** (2026-08-13, full-window templates): cold slew
+265.5 ms / 3.77 fps, warm 67.3 ms / 14.87 fps at 14.4 GiB; stages 180.7 / 32.6 / 33.0 /
+5.9. Applying the per-stage dev→voltron ratios to the "after" column projects a cold slew
+near **57 ms / 17.6 fps with no cache at all** — but that is a projection, and running the
+command above on voltron is what replaces it with a measurement.
+
+**As of 2026-08-13, voltron missed the 10 fps goal on a COLD slew by 3x and cleared it
+warm at 14.87 fps** — the viewer was usable there only with `--template-cache auto` and
+its 14.4 GiB. The crop is expected to have removed that condition (the projection above is
+~17.6 fps cold with no cache), but **that is a projection until someone runs the command
+on voltron.** The measured warm slew (67.25 ms) and pan (67.30 ms) agreed to
 **0.05 ms** -- with the library resident a rotating frame costs exactly what a translating
 one costs, i.e. the decode is gone rather than reduced. All 360 frames fit voltron's RAM,
 so a full revolution stays warm; see the LRU caveat below for hosts where they do not.
