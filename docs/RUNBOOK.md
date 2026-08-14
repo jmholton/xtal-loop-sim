@@ -521,11 +521,14 @@ node, and verified to import torch not at all):
 $PY bench_serve.py --scene scene_files/hampton_300um_realistic.yaml --frames 40
 ```
 
-On **voltron**, from the deployment venv, with all eight cards busy:
+On **voltron**, with all eight cards busy. Use the **stock** interpreter — *not* the
+`~/projects/loopsim-torch26` venv from "Deploy on the TITAN V" below. That venv exists for
+the compiled GPU preview path; this benchmark imports torch not at all, so it needs no
+venv, no `CC`/`CXX` and no devtoolset:
 
 ```tcsh
 cd ~/projects/loop_sim_MINE/xtal-loop-sim
-~/projects/loopsim-torch26/bin/python bench_serve.py --json serve.json
+/programs/pytorch/envs/pt/bin/python bench_serve.py --json serve.json
 ```
 
 It prints the three regimes, a per-stage split, a comparison against the recorded
@@ -631,11 +634,25 @@ that decision (see HANDOFF "Current state"). Measure it rather than quoting this
 
 ### Deploy on the TITAN V (voltron)
 
-The 10 fps interactive path is **measured on the real TITAN V — 11.9 fps** — but only with
-the stack below. The beamline's default environment (the pt env's torch 2.0.1, system gcc
-4.8.5) cannot run `torch.compile` and silently falls back to eager at ~6.3 fps. Build a
-dedicated environment once. Voltron's login shell is **tcsh** (`setenv`, not `export`); call
-the venv's python by full path because venv `activate` is a bash script:
+**Read this first: the VIEWER does not need any of it.** Serving from templates imports
+torch *not at all* — verified 2026-08-14 by constructing a `CameraServer` and serving a
+frame with `torch` absent from `sys.modules` throughout. So to run the viewer on voltron:
+
+```tcsh
+cd ~/projects/loop_sim_MINE/xtal-loop-sim
+/programs/pytorch/envs/pt/bin/python -m loop_sim.server.camera_server --scene scene_files/hampton_300um_realistic.yaml --port 8080
+```
+
+No venv, no `CC`/`CXX`, no devtoolset, no GPU pinned, no compile warmup, and nothing that
+conflicts with someone else holding all eight cards. Same for `bench_serve.py`.
+
+Everything below is for **rendering** on the GPU — building libraries, `--templates off`,
+and `acceptance_voltron.py`. The 10 fps *live-render* path is **measured on the real
+TITAN V — 11.9 fps** — but only with the stack below. The beamline's default environment
+(the pt env's torch 2.0.1, system gcc 4.8.5) cannot run `torch.compile` and silently falls
+back to eager at ~6.3 fps. Build a dedicated environment once. Voltron's login shell is
+**tcsh** (`setenv`, not `export`); call the venv's python by full path because venv
+`activate` is a bash script:
 
 ```tcsh
 # 1) a torch-2.6 venv (the pt env's torch 2.0.1 has an Inductor pkg_resources bug)
@@ -656,12 +673,14 @@ cd ~/projects/loop_sim_MINE/xtal-loop-sim        # the repo's location on voltro
 ```
 
 `acceptance_voltron.py` prints a GO/NO-GO and writes `acceptance_report.json`; a GO means
-compile actually engaged and beat eager. Then launch the camera server from the same venv,
-with `CC`/`CXX` still set and a free GPU pinned:
+compile actually engaged and beat eager. To launch the camera server on the **live-render**
+path (`--templates off`, or a scene with no library yet), use the same venv with `CC`/`CXX`
+still set and a free GPU pinned — for the template path use the stock interpreter above
+instead:
 
 ```tcsh
 setenv CUDA_VISIBLE_DEVICES 6      # a free card (check nvidia-smi first)
-~/projects/loopsim-torch26/bin/python -m loop_sim.server.camera_server --scene scene_files/hampton_300um.yaml --port 8080
+~/projects/loopsim-torch26/bin/python -m loop_sim.server.camera_server --scene scene_files/hampton_300um.yaml --port 8080 --templates off
 ```
 
 Operational notes:

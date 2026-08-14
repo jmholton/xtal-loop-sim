@@ -56,9 +56,11 @@ USAGE
     python bench_serve.py --scene scene_files/hampton_300um_realistic.yaml
     python bench_serve.py --scene ... --frames 60 --json serve_report.json
 
-On voltron, from the deployment venv (RUNBOOK "Deploy on the TITAN V"):
-    ~/projects/loopsim-torch26/bin/python bench_serve.py --json serve.json
-No GPU is touched, so it is safe to run while someone else has all eight cards.
+On voltron, with the STOCK interpreter -- not the torch 2.6 deployment venv:
+    /programs/pytorch/envs/pt/bin/python bench_serve.py --json serve.json
+This path imports torch not at all, so it needs nothing the GPU render path
+needs: no venv to assemble, no CC/CXX, no devtoolset.  It is also why it is safe
+to run while someone else holds all eight cards.
 """
 import argparse
 import io
