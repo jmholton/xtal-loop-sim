@@ -41,7 +41,7 @@ Those are the legacy per-object CUDA path on voltron's TITAN V.  A newer
 **GPU-resident engine** (`loop_sim/renderer/engine_torch.py`) runs the whole
 trace on-device and is byte-identical to the numpy reference in float64.
 `camera_server` uses it automatically when CUDA is present; `render.py --device
-cuda` still uses the legacy per-object path.
+cuda` uses it too as of 2026-08-18 (docs/DECISIONS.md) — one GPU path, not two.
 
 2026-07-06 optimization pass (RTX 4080 SUPER, 640×480, hampton, all byte-exact
 unless noted): eager engine n_cond=1 ≈ 154 ms / n_cond=7 ≈ 988 ms (was 180 /
@@ -118,14 +118,24 @@ loop_sim/
                              attenuation (absorbed_dose, transmitted_frac,
                              beam_transmission); render_xray_numpy (radiograph, CPU ref)
     engine_torch.py          GPU-resident torch engine (TorchScene, render_torch);
-                             byte-identical to microscope.py in float64, ~6-8x faster;
-                             render_xray_torch (straight-ray transmission map)
+                             byte-identical to microscope.py in float64, ~6-8x faster
+    xray_torch.py            render_xray_torch/trace_xray (straight-ray transmission
+                             map), split out of engine_torch.py 2026-08-18 so an
+                             X-ray-only GPU edit never invalidates the optical frame
+                             libraries (docs/DECISIONS.md)
+  library/
+    xray_library.py          pre-computed 360-frame X-ray radiograph sweep, the
+                             analogue of frame_library.py; own root (xray_library/) and
+                             render_sha scope; CLI `python -m loop_sim.library
+                             --modality xray --scene <scene>`
   server/
     camera_server.py         AXIS HTTP server; renders via engine_torch on CUDA, else
-                             microscope; /beam (JSON) + /xray (radiograph PNG);
+                             microscope; /beam (JSON) + /xray (radiograph PNG, served
+                             from xray_library when current, else live);
                              control page (/), animated /move + /recenter (daemon
                              animator thread interpolates the goniometer)
-    static/index.html        interactive control UI (crosshair, pan/rot/zoom, speed dial)
+    static/index.html        interactive control UI (crosshair, pan/rot/zoom, speed
+                             dial, Microscope/Radiograph toggle, /beam readout panel)
 ```
 
 ## Server animation & concurrency
@@ -289,3 +299,10 @@ Almost all differing pixels are binary flips (TIR or NA cutoff crossing due to
 float32 geometry), not gradual noise.  The n_cond=7 count is ~1.6× the
 n_cond=1 count because independent condenser rays can each flip a different set
 of edge pixels.
+
+**As of 2026-08-18, `render.py --device cuda` no longer exercises the path these
+thresholds were measured against** — it now calls `engine_torch` (float64, previously
+measured byte-identical to the CPU reference) instead of the legacy per-object CUDA path.
+A fresh SLURM run should read far tighter than the table above; the table is left as the
+historical record until someone re-runs `run_gpu.slurm` on voltron and replaces it with a
+real number. See docs/DECISIONS.md §2026-08-18.

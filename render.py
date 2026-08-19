@@ -33,7 +33,10 @@ def parse_args():
     p.add_argument('--rotz', type=float, default=None, help='Rotation about z-axis (degrees)')
     p.add_argument('--n-cond', type=int, default=1,    help='Condenser rays (default 1)')
     p.add_argument('--device', default='cpu',
-                   help='Compute device: cpu (default) or cuda')
+                   help='Compute device: cpu (default) or cuda. cuda uses the '
+                        'GPU-resident engine_torch engine (the same one '
+                        'camera_server uses), byte-identical to the CPU '
+                        'reference in float64.')
     p.add_argument('--output', default=None,
                    help='Output JPEG path (default: <scene_basename>.jpg in same directory)')
     return p.parse_args()
@@ -64,7 +67,10 @@ def main():
     roty = args.roty if args.roty is not None else float(motor.get('roty', 0.0))
     rotz = args.rotz if args.rotz is not None else float(motor.get('rotz', 0.0))
 
-    scene = load_scene(args.scene, device=args.device)
+    # engine_torch mirrors a CPU-loaded scene onto the device itself (see
+    # TorchScene / build_torch_shape) -- always load 'cpu' here and let it do
+    # that, matching camera_server / loop_sim.library / the test suite.
+    scene = load_scene(args.scene, device='cpu' if args.device == 'cuda' else args.device)
     gonio = Goniometer(geometry)
     gonio.set(tx=tx, ty=ty, rotx=rotx, roty=roty, rotz=rotz)
 
@@ -74,7 +80,20 @@ def main():
           file=sys.stderr)
     print(f"Rendering {W}×{H}, n_cond={args.n_cond} ...", file=sys.stderr)
 
-    img_arr, jpeg_bytes = render(scene, gonio, n_cond=args.n_cond)
+    if args.device == 'cuda':
+        # The resident GPU engine (loop_sim/renderer/engine_torch.py) -- the
+        # same one camera_server uses -- rather than the legacy per-object
+        # CUDA path in scene/tube.py + scene/surface_mesh.py. Falls back to
+        # CPU transparently if no CUDA device is visible, same as
+        # camera_server's own device selection.
+        import torch
+        from loop_sim.renderer.engine_torch import TorchScene, render_torch
+        dev = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+        print(f"Device: {dev} (engine_torch)", file=sys.stderr)
+        tscene = TorchScene(scene, dev, torch.float64)
+        img_arr = render_torch(tscene, gonio, n_cond=args.n_cond).detach().cpu().numpy()
+    else:
+        img_arr, jpeg_bytes = render(scene, gonio, n_cond=args.n_cond)
 
     if args.output:
         out_path = args.output

@@ -11,6 +11,12 @@
 !frame_library/**/*.jpg
 !frame_library/**/manifest.json
 
+# ...and the X-ray radiograph libraries, the same deliverable for /xray
+# (loop_sim/library/xray_library.py). Always PNG (16-bit greyscale, no lossy
+# format offered) so no *.jpg re-include is needed here.
+!xray_library/**/*.png
+!xray_library/**/manifest.json
+
 # ...and except the real reference photographs, which are ground truth rather
 # than output: 44 real BL831 sample-camera frames the renders are judged
 # against, split hi_mag/ and mid_mag/, with MANIFEST.tsv naming the source of

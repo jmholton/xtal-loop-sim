@@ -8,6 +8,276 @@
 
 ## Decisions
 
+### 2026-08-19 (later) — the three real X-ray radiograph libraries are built
+
+All three shipped scenes now have a current `xray_library/` — the 2026-08-18 entry below
+left this deferred until the illustrative-vs-real `mu_xray` question was settled; it now
+is (keep illustrative), so the build was no longer at risk of being spent on constants
+that might change. Built sequentially on the dev box's RTX 4080 SUPER (one GPU job at a
+time — the card is shared with the desktop) via `python -m loop_sim.library --modality
+xray --scene <scene>` at each scene's own optically-correct supersample (RUNBOOK "Frame
+libraries"):
+
+| scene | supersample | frames | raster | size | build time | s/frame |
+|---|---|---|---|---|---|---|
+| `mitegen_200um` | 1 | 360 | 1840×2296 | 16.6 MB | 364.8 s (6.1 min) | 1.01 |
+| `hampton_300um` | 4 | 360 | 5578×2570 | 10.8 MB | 783.4 s (13.1 min) | 2.18 |
+| `hampton_300um_realistic` (flagship, mesh) | 4 | 360 | 5578×2570 | 9.0 MB | 4889.8 s (81.5 min) | 13.58 mean |
+
+39 MB total on disk; every manifest's frame count (360) and declared raster size matches
+what's actually on disk.
+
+**The flagship lands close to RUNBOOK's ~82 min estimate, above the earlier 4-frame
+DECISIONS projection of ~65-70 min** (2026-08-18, "X-ray radiograph frame library" entry
+below) — a 4-pose sample at coarse `--step 90` isn't representative of the full sweep's
+pose-dependent cost, the same lesson the optical build already carries (1.48x spread
+between face-on and edge-on droplet poses, "voltron measured" 2026-08-13). The flagship's
+own per-frame trace shows the same shape: 14.5-15.0 s/frame for the first ~73 frames,
+settling to 13.3-13.8 s/frame through the middle of the sweep.
+
+**A real gap found while checking this in: `xray_library/` had no `.gitignore`
+re-include.** `frame_library/`'s `!frame_library/**/*.png` / `!frame_library/**/manifest.json`
+pattern was never mirrored for the new tree, so every one of the 1083 files just built
+(360×3 frames + 3 manifests) matched the blanket `*.png` ignore and would have been
+silently dropped from `git add -A` — a fresh clone would see three manifests each
+claiming 360 frames and zero actual images, reading as `missing` (harmless-looking, not a
+crash) rather than shipping the library at all. Added `!xray_library/**/*.png` /
+`!xray_library/**/manifest.json` (no `*.jpg` re-include needed — the format is always
+16-bit PNG, never lossy). Verified: `git ls-files --others --exclude-standard
+xray_library | wc -l` reports 1083, matching `find xray_library -type f | wc -l` exactly.
+
+**Not committed** — same convention as the 2026-08-18 entries below (13 modified + 5 new
+files, now plus `xray_library/` and this `.gitignore` fix); Jacob commits.
+
+### 2026-08-19 — the viewer's Microscope/Radiograph toggle and /beam panel ship
+
+Closes Phase 3 of the plan referenced in HANDOFF's 2026-08-18 entry.
+`loop_sim/server/static/index.html` only — the serving side (`/xray`, `/beam`) was
+already fully wired by the 2026-08-18 lock fix, so "route wiring only" turned out to mean
+no `camera_server.py` change at all beyond one read-only addition, below.
+
+**No new endpoint, no new query param.** `/xray` already renders the server's LIVE
+goniometer pose with no arguments (`XrayTemplateSource.render_png` reads
+`_snapshot_gonio()`, same as the optical path), and already clamps identically to the
+optical view — `pose_crop(..., clamp=True)` was hardcoded there by the 2026-08-18 fix.
+Both of Phase 3's stated requirements ("clamped the same way as the optical view") were
+therefore already satisfied server-side; the toggle just swaps `#cam`'s `src`.
+
+**Mode toggle reuses the scene tab-strip verbatim** — same `.tab`/`.badge`/
+`aria-selected` CSS, same delegated-click-listener idiom (`renderTabs()`'s pattern).
+Named Microscope/Radiograph per the user's decision recorded in the plan.
+
+**Still a still, not a stream**, per the plan's reasoning: nothing needs 10 fps for a
+transmission check, and a second MJPEG pipeline would need its own single-flight
+machinery for no reason (the class of bug the 2026-07-06 `_active_compiled` incident
+was). `<img src>` swaps between `/axis-cgi/mjpg/video.cgi` and `/xray?t=...`.
+
+**Refresh is on pose-settle, detected client-side with no new server state:**
+`applyState` (already the single sink for every pose-changing action — poll, move, jog,
+recentre, GO) now computes a signature of `(tx,ty,tz,rotx,zoom)` and fires a
+radiograph/`/beam` refresh only when two consecutive readings carry the identical
+signature. An animated move's consecutive `/motor` polls differ while it is
+interpolating, so this fires exactly once, right after motion actually stops, regardless
+of which control caused it.
+
+**A read-only field, not a new lock:** `_scenes_json()` now reports each scene's
+`xray_library.status` (via the same no-params `xray_library_status()` call
+`_get_xray_templates` already makes) so the Radiograph tab can badge "no library, slow"
+*before* the operator clicks it, on a scene where `/xray` would otherwise fall through to
+a live render taking tens of seconds to minutes with zero feedback. `_scenes_json` takes
+no new lock and builds nothing — a pure read of what is already on disk.
+
+**`/beam`'s readout is a `<details>`, fetched only while open**, on its own
+`#beamOut`/`#modenotice` elements — never `#state` (rewritten every 600 ms by `poll()`)
+or `#notice` (owned by the scene-switch code), per the plan.
+
+Verified: `py_compile` clean; `tests/test_xray_serve.py` + `tests/test_scene_switch.py` +
+`tests/test_beam_attenuation.py` (40 tests) pass unchanged; the new `_scenes_json` field
+checked directly against the real on-disk library state for all three scenes (`missing`
+for the two still building at the time, `current` for the one already done). Full suite
+run separately, after the library builds finished so it would not contend with them for
+the GPU — see the entry above.
+
+### 2026-08-18 (yet later) — illustrative vs. real X-ray mu_xray: **DECIDED — keep illustrative**
+
+Rendered `hampton_300um_realistic` at the home pose twice — once at the shipped
+`mu_xray` values, once at literature-sourced real ones (crystal 0.20 mm⁻¹,
+cited at 12 keV; metal/pin 130 mm⁻¹, from NIST XCOM iron 170.6 cm²/g × 7.874
+g/cm³; solvent/nylon ~0.17-0.20 mm⁻¹, estimated, not independently verified
+against a primary XCOM query) — same code, same geometry, only the constants
+changed. Comparison with images: https://claude.ai/code/artifact/04a9be13-c61b-400d-91ba-a7a76730df57
+
+Two findings that survive regardless of which default ships:
+
+- **Peak crystal contrast drops 21% → 3.1% absorbed** (6.8×) — real coefficients
+  don't erase the structure (a contrast stretch excluding the saturated pin
+  recovers the loop, droplet and crystal clearly), but at ~3% native contrast
+  it reads as noise without deliberate tone-mapping.
+- **Not a uniform "everything is too high" story.** Crystal/solvent are
+  overstated 2-10×, but the metal pin's shipped value (100) is if anything
+  slightly *low* against the cited real one (~130) — both saturate the pin to
+  solid black regardless, so this was never visible, but it matters for
+  anyone reusing these constants elsewhere.
+
+Handed to the user with the rendered comparison rather than picked. **Decided
+2026-08-18: keep illustrative.** `mu_xray` stays as shipped; no scene or
+constant changes. The real-physics render and the display-stretch/path-length
+options above stay on the shelf, not chosen against on technical grounds —
+this was a usefulness call, not a correctness one. `xray_library/` now builds
+against the shipped (illustrative) constants.
+
+### 2026-08-18 (even later) — X-ray radiograph frame library: `loop_sim/library/xray_library.py`
+
+New module, not a parameter on `frame_library.py` — separate root
+(`xray_library/`), separate `render_sha` scope (`renderer/xray_torch.py`,
+`renderer/engine_torch.py` — deliberately shared with the optical scope,
+since `trace_xray` calls `tscene.next_interface()` — `renderer/beam.py`,
+`scene/*.py`, `motors/goniometer.py`), separate build/staleness functions.
+Reuses `pose_crop`/`zoom_limits`/`frame_for_angle`/`servable_pose`/
+`content_bbox`/`crop_to_content`/manifest I/O from `frame_library.py`
+unmodified — see `xray_library.py`'s module docstring for exactly what's
+reused and why (the `content_bbox` reuse trick: reshape the (H,W)
+transmission map to (H,W,1) so the exact-equality background crop, unchanged,
+works against a 1-tuple background).
+
+**Storage: 16-bit greyscale PNG**, confirmed via `Image.fromarray(arr)` with
+no explicit `mode=` (Pillow 12.2 infers `I;16` from a `uint16` array; passing
+`mode="I;16"` explicitly triggers a Pillow deprecation warning, removed in
+13.0). 8-bit was rejected before writing any code: the pin transmits at
+~1e-31 while the biological signal sits in roughly the top fifth of the
+range, so 8-bit would spend ~50 of 256 levels on the content the library
+exists to serve.
+
+**No depth blur, and no reader-side special case for it.** `pose_crop` is
+reused verbatim; the manifest's `camera.na_condenser` is stored as `0.0`,
+which makes `pose_crop`'s existing `sigma_px = 0.5 * na_condenser * |w| /
+eff_px` formula evaluate to exactly zero for any `tz` — encoding "a
+collimated beam's Beer-Lambert integral doesn't change when you translate
+the ray's start point along its own direction" as data, not as an if-branch.
+
+**Verified, not assumed:** built on both `hampton_300um` (tube) and
+`hampton_300um_realistic` (mesh, the flagship scene) at coarse steps.
+Re-rendered frame 0 live at the exact pose the build used and compared
+against the stored, cropped, 16-bit-quantized frame — **byte-exact, 0 of
+1,517,000 pixels differing**, not just "close." `is_current`/staleness,
+`pose_crop`'s zero-blur guarantee, and `frame_for_angle`/`servable_pose`
+clamping are covered by `tests/test_xray_library.py` (11 tests, CUDA-gated,
+build in tmp_path — no library is shipped/tracked yet). Full suite: 247
+passed (236 + 11), zero regressions.
+
+**Real build-time number, not the earlier ~2min estimate** (which conflated
+live 640×480 serve-time cost with a supersampled build): measured 4 frames
+of the flagship mesh scene at `--supersample 4` (the optically-correct value
+for `hampton_300um_realistic`, matching the optical library) at
+10.8–13.1s/frame — a full 360-frame build extrapolates to **~65-70 minutes**,
+close to but not identical to the optical library's build cost for the same
+scene, since the tracer itself is cheaper but the resolution and frame count
+are the same.
+
+**Not built yet.** No `xray_library/` is shipped or tracked — the physics
+constants (`mu_xray` per material) are still the illustrative/exaggerated
+values, and whether those or literature-real coefficients become the
+shipped default is an open comparison, not decided here. Building the real
+360-frame libraries for all three scenes is deferred until that's settled,
+so the ~65-70 min isn't spent three times on constants that might change.
+
+CLI: `python -m loop_sim.library --modality xray --scene <scene>`, mirroring
+the optical CLI's shape. `--recrop`/`--preview` are refused for
+`--modality xray` — not built yet, not part of this pass.
+
+### 2026-08-18 (later still) — `render_xray_torch`/`trace_xray` split into `renderer/xray_torch.py`; the three shipped manifests are stamped
+
+`frame_library.py`'s `_RENDER_SOURCES` hashes `renderer/engine_torch.py` whole, and that
+file held `render_xray_torch`/`trace_xray` alongside the genuinely-shared `TorchScene`
+machinery — so any X-ray-only GPU edit was silently invalidating all three shipped optical
+libraries (up to 9.5h to rebuild). Moved both into `renderer/xray_torch.py`, which is not
+(and won't be) in `_RENDER_SOURCES`; an eventual X-ray frame library gets its own separate
+`render_sha` over that file instead. `trace_xray` is now a free function taking `tscene`
+explicitly rather than a `TorchScene` method — its only caller was `render_xray_torch`,
+which moved with it.
+
+Pure code motion, no optical logic touched — the full 236-test suite (byte-exact GPU/CPU
+parity assertions included) passes unchanged. But `engine_torch.py`'s file bytes did
+change, so `render_sha()` changed too, which read all three shipped libraries as stale
+against their recorded hash. Stamped `manifest.json`'s `render_sha` to the new value on all
+three (`hampton_300um`, `hampton_300um_realistic`, `mitegen_200um`) — same pattern as the
+2026-08-10 stamping when `render_sha` was first introduced: honest because nothing that
+decides a template pixel actually changed, confirmed by the test suite rather than assumed.
+
+### 2026-08-18 (later) — `/beam`/`/xray` no longer hold `_scene_lock` across the render; the missing 0548868 entry
+
+Two things closed together: a real bug found while chasing a stale paper note, and the
+doc gap that let the note survive.
+
+**The bug.** `_beam_json`/`_render_xray_png` held `_scene_lock` for their whole render, and
+`_render_now` (the MJPEG background producer) needs the same lock — so on the deployed
+config (`--templates on`, where `_want_torch_engine()` returns `False` and there is no
+`_tscene`), one `/xray` or `/beam` request froze the live camera stream for as long as the
+numpy render took. **Measured on `hampton_300um_realistic` at 640×480: `/beam` 47.2s,
+`/xray` 27.9s.** Fix: snapshot `(scene, tscene, scene_gen, pose)` under one `_scene_lock`
+hold, release, then render — safe because `_install_bundle` swaps `self._scene`/
+`self._tscene` by reference rather than mutating them, so the snapshot stays consistent
+even if a switch lands mid-render. Verified empirically: 492 forced re-renders through
+`_render_now` during a live 27.9s `/xray` call all completed in ≤44ms (mean 2ms), same as
+baseline before the call. Also memoized on `(scene_gen, pose_phase)`: a repeat `/beam` at
+the same pose returned in 22ms, byte-identical to the first.
+
+**The missing entry.** Commit `0548868` (2026-06-25) added real, shadowing-aware
+Beer-Lambert attenuation to `/beam`/`/xray` — an ordered walk over `scene.path_segments()`
+with flux carried forward through each material, energy conservation checked
+(`Σ absorbed_dose + beam_transmission ≈ 1`), guarded by
+`test_stacked_slabs_downstream_is_shadowed`. It shipped with tests and doc updates but no
+DECISIONS entry, which is presumably why a paper note calling attenuation unimplemented —
+accurate before that commit — never got corrected.
+
+### 2026-08-18 — `render.py --device cuda` now uses the resident engine; the compile fallback is loud; the TITAN V env is scripted
+
+Three items closed from HANDOFF's open list. No renderer or scene change, no library rebuild.
+
+**`render.py --device cuda` now builds a `TorchScene` and calls `render_torch`, not the
+legacy per-object CUDA path.** `camera_server` was the only caller of `engine_torch`;
+`render.py` (and therefore `run_gpu.slurm`, the SLURM comparison job) still went through
+`scene/tube.py`'s and `scene/surface_mesh.py`'s own CUDA kernels. One GPU path now, not
+two. `load_scene` is always called with `device='cpu'` before wrapping in `TorchScene`,
+matching the convention every other `TorchScene` caller (`camera_server`, `loop_sim.library`,
+the test suite) already used — `TorchScene` builds its own device-resident mirror via
+`build_torch_shape`, so the scene-load device argument was always meant to stay `'cpu'`
+there. Falls back to CPU transparently if no CUDA device is visible, same as
+`camera_server`'s own device selection. Verified against `--device cpu` on `hampton_300um`,
+n_cond=1: 14 pixels differ by >10 (max 18) — JPEG double-compression noise from comparing
+two independently-encoded JPEGs, not a trace difference, and well inside `run_gpu.slurm`'s
+documented n_cond=1 tolerance (≤35K). Both paths were already float64 and already measured
+byte-identical to the CPU reference (see "GPU intersection precision (float64)" in
+`../CLAUDE.md`), so this changes which code runs, not what it computes.
+
+**The compile-fallback silence (HANDOFF risk B) is closed.** Both fallback sites in
+`camera_server.py` (`_warmup_compiled_preview`, and the once-and-done runtime fallback in
+`_render_frame`) now print to **stderr** with a `WARNING:` prefix instead of an unmarked
+stdout line, and set `self._compile_error`, which `GET /scene` now reports as
+`compile_preview: {compiled_ok, error}` — the endpoint RUNBOOK already tells an operator to
+check (`curl -s http://host:8080/scene`). A scene switch clearing `_compiled_ok` (deliberate
+— see `../CLAUDE.md` "Scene switching") leaves `_compile_error` at `None`, so the field
+distinguishes "not compiled because of a switch" from "not compiled because compilation
+failed." No test asserted on the old message text; `tests/test_compiled_preview.py` (4/4)
+still passes. **Still open:** declaring torch 2.6 as a hard requirement rather than a
+silently-degraded fallback (the other half of risk B).
+
+**`setup_titan_v_env.bash`** packages the five manual steps in RUNBOOK "Deploy on the
+TITAN V" (torch-2.6 cu118 venv, the pillow 10.4.0 pin, devtoolset-7 `CC`/`CXX`) into one
+idempotent script that ends by running `acceptance_voltron.py` for a GO/NO-GO. `--force`
+rebuilds the venv; `--skip-verify` skips the acceptance run. Not run on voltron itself —
+this session has no beamline-host access — so it is written and syntax-checked (`bash -n`)
+but unexecuted; whoever runs it next should confirm the `acceptance_voltron.py` verdict at
+the end rather than assume the script is correct because it parses.
+
+**Not done, and worth flagging rather than guessing at:** `run_gpu.slurm`'s own comparison
+thresholds (`../CLAUDE.md` "Comparison workflow", ≤35K/60K pixels, "due to float32
+geometry") describe the diff between the OLD legacy CUDA path and CPU. That path is gone
+from `render.py`; a fresh SLURM run should now read far tighter, since both sides are
+float64 `engine_torch`-adjacent code already measured byte-identical elsewhere. The table
+is not rewritten here because it needs an actual SLURM run on voltron to replace it with a
+number rather than a guess.
+
 ### 2026-08-14 (later still) — the viewer pre-warms, and every "GiB of cache" figure in this repo was 30% low
 
 **Pre-warm.** `--template-cache auto` sized the cache to hold the sweep but filled

@@ -334,6 +334,54 @@ Notes:
   on disk. Under WSL2 there is no OOM to catch (the driver spills to host RAM instead), so
   the builder also warns when frames slow down persistently; see "Dev-environment caveat".
 
+### X-ray radiograph library
+
+`/xray` has the same problem the optical camera had before templating: on the deployed
+config (`--templates on`, the default) there is no GPU-resident scene, so a live `/xray`
+request falls to the numpy reference — tens of seconds on the flagship scene (measured:
+21-57s on `hampton_300um_realistic`, holding a lock the optical stream also needs before
+the 2026-08-18 fix; see DECISIONS.md). The X-ray library is the same fix as the optical
+one, in its own module (`loop_sim/library/xray_library.py`), root (`xray_library/`, not
+`frame_library/`) and `render_sha` scope, so an X-ray-only change never costs an optical
+rebuild or vice versa:
+
+```bash
+python -m loop_sim.library --modality xray --scene scene_files/hampton_300um.yaml
+python -m loop_sim.library --modality xray --scene scene_files/hampton_300um.yaml --supersample 4
+```
+
+Simpler than the optical build throughout: no `--n-cond` condenser loop, no `--psf`, no
+`--format`/`--quality` (always lossless 16-bit greyscale PNG — 8-bit would quantize the
+crystal's contrast into ~50 usable levels), no depth-blur approximation to make (a
+collimated beam's Beer-Lambert integral genuinely does not change with `tz`). Cost,
+measured on the flagship mesh scene at `--supersample 4`: ~13.7 s/frame, ~82 min for a
+full 360-frame sweep (vs. optical's ~11.2 min at the same supersample — the X-ray tracer
+is cheaper per ray, but there is no template reuse across the two modalities).
+
+**Serving is read-only and never builds implicitly** — the one thing the optical launch
+path got wrong until it was fixed (HANDOFF "Hazards"). `--xray-library-root` points
+`camera_server` at a library root; if a complete one exists for the current scene (current
+*or* stale — a stale one is served as-is, same convention as the optical side), `/xray`
+serves from it in single-digit ms. If not, `/xray` keeps rendering live exactly as it
+always did — there is no `--allow-cpu`-style override here because there is nothing to
+refuse; a missing library is simply not used. Building one is always the explicit CLI
+command above, never a server side effect.
+
+**Built 2026-08-19, not yet committed.** All three shipped scenes have a current X-ray
+library, built with the illustrative `mu_xray` values settled 2026-08-18 (see
+DECISIONS.md) — a future switch to literature-real coefficients would need a rebuild:
+
+| scene | build time | size |
+|---|---|---|
+| `hampton_300um` | 783 s (13.1 min) | 10.8 MB |
+| `hampton_300um_realistic` (flagship, mesh) | 4890 s (81.5 min) | 9.0 MB |
+| `mitegen_200um` | 365 s (6.1 min) | 16.6 MB |
+
+39 MB total. `xray_library/` needs the same `.gitignore` re-include `frame_library/` has
+(`!xray_library/**/*.png` / `!xray_library/**/manifest.json`, added 2026-08-19) — without
+it every frame PNG matches the blanket `*.png` ignore and `git add -A` would silently
+ship an empty library. See DECISIONS.md for the full build numbers.
+
 ### Switching scenes on a running server
 
 The control page carries a tab per scene in `scene_files/`; clicking one swaps
@@ -445,11 +493,13 @@ server, whose `/motor` endpoint takes all seven axes.
 | `--scene-dir` | repo `scene_files/` | which `*.yaml` are offered for runtime switching on `/scenes` |
 | `--library-root` | repo `frame_library/` | frame-library root to serve from and report on |
 | `--preview-root` | repo `frame_library_preview/` | where on-demand **preview** libraries are written. Separate from `--library-root` deliberately — building into the live root overwrites frames the serving `TemplateSource` is caching by filename |
+| `--xray-library-root` | repo `xray_library/` | X-ray radiograph library root `/xray` serves from. **Read-only** — unlike `--library-root`, a missing or stale library here is never built implicitly; `/xray` just keeps rendering live (see "X-ray radiograph library" below) |
 
 ### `python -m loop_sim.library` — build a frame library
 
 | Flag | Default | Effect |
 |---|---|---|
+| `--modality` | `optical` | `xray` builds the radiograph library instead — see "X-ray radiograph library" below. Every flag past this row is optical-only and ignored (with `--modality xray`, only `--scene`/`--all`, `--root`, `--step`, `--supersample`, `--pan-mm`, `--axis`, `--device`, `--force` apply — no `--n-cond`/`--format`/`--psf`/`--quality`, the tracer has none of those) |
 | `--scene` / `--all` | — | one scene, or every `scene_files/*.yaml` |
 | `--root` | `frame_library/` | output directory |
 | `--step` | 1.0° | degrees between frames → 360 frames. *rebuilds library* |
@@ -661,7 +711,9 @@ Decode is 73% of a cold slew on both machines. Warmup deliberately uses angles t
 revisits: warming on the timed poses reads 78 ms with a p10 of 25.8, and that p10 is the
 pan number leaking in.
 
-Benchmarking the **render** path: `bench_frame.py` (flags `--compiled`, `--fp32`); soak the live server with
+Benchmarking the **render** path: `bench_frame.py` (flags `--compiled`, `--fp32`;
+`--modality xray` times `render_xray_torch`/`render_xray_numpy` instead — no
+n_cond/PSF/compiled sweep, since the X-ray tracer has none of those); soak the live server with
 `soak_server.py`, which lives **outside this repo** in the analysis tree at
 `/home/jadoughty/projects/loop_sim_MINE/investigation/2026-07_scene_and_perf_harnesses/`.
 That tree is mirrored to the gateway alongside the repo but is **not versioned**, so it
@@ -705,6 +757,11 @@ TITAN V — 11.9 fps** — but only with the stack below. The beamline's default
 back to eager at ~6.3 fps. Build a dedicated environment once. Voltron's login shell is
 **tcsh** (`setenv`, not `export`); call the venv's python by full path because venv
 `activate` is a bash script:
+
+**Scripted as of 2026-08-18:** `setup_titan_v_env.bash` (repo root) runs steps 1–3 below
+as one idempotent command — `bash setup_titan_v_env.bash` on voltron, `--force` to rebuild
+the venv, `--skip-verify` to skip the `acceptance_voltron.py` run at the end. The manual
+steps stay here for reference and troubleshooting.
 
 ```tcsh
 # 1) a torch-2.6 venv (the pt env's torch 2.0.1 has an Inductor pkg_resources bug)

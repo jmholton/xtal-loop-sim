@@ -191,7 +191,8 @@ def test_xray_numpy_map_casts_a_shadow():
 
 def test_xray_torch_matches_numpy():
     torch = pytest.importorskip("torch")
-    from loop_sim.renderer.engine_torch import TorchScene, render_xray_torch
+    from loop_sim.renderer.engine_torch import TorchScene
+    from loop_sim.renderer.xray_torch import render_xray_torch
 
     scene = _xray_scene()
     gonio = _gonio()

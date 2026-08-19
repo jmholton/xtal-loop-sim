@@ -58,6 +58,7 @@ import json
 import math
 import os
 import re
+import sys
 import threading
 import time
 import urllib.parse
@@ -76,6 +77,7 @@ from ..library.frame_library import (CPU_BUILD_REFUSAL,
                                      PREVIEW_BUILD, build_params, cuda_available,
                                      frame_for_angle, library_diff, library_dir,
                                      library_status, pose_crop, servable_pose)
+from ..library.xray_library import DEFAULT_ROOT as _XRAY_LIB_DEFAULT_ROOT
 
 _MJPEG_BOUNDARY = b"--myboundary"
 _MOTOR_KEYS = ("tx", "ty", "tz", "rotx", "roty", "rotz", "zoom")
@@ -568,6 +570,109 @@ class TemplateSource:
         gono = Goniometer(self.scene.geometry).set(
             **{self.manifest["axis"]: float(angle)})
         return project_pin(self.scene, gono, to_px, frame_wh)
+
+
+class XrayTemplateSource:
+    """Serves X-ray radiographs from a pre-rendered spindle sweep -- the
+    xray_library.py analogue of TemplateSource, simplified throughout: no
+    RGB (16-bit greyscale), no PSF/defocus blur (a collimated beam's
+    Beer-Lambert integral does not change with depth -- see
+    loop_sim/library/xray_library.py's module docstring), no pin streak, no
+    sensor stretch. On-demand only (not part of the MJPEG stream), so no
+    prewarm/RAM-budget machinery either -- a handful of decoded 16-bit frames
+    costs nothing next to the optical cache.
+    """
+
+    def __init__(self, manifest, lib_dir, cache_size=8):
+        self.manifest = manifest
+        self.lib_dir = lib_dir
+        self._cache_size = cache_size
+        self._cache = {}
+        self._order = []
+        self._lock = threading.Lock()
+        self._warned_clamp = False
+        self._background = int((manifest.get("background_i16") or [65535])[0])
+
+    def _frame(self, name):
+        from PIL import Image
+        with self._lock:
+            img = self._cache.get(name)
+            if img is not None:
+                self._order.remove(name)
+                self._order.append(name)
+                return img
+        img = Image.open(os.path.join(self.lib_dir, name))
+        img.load()
+        with self._lock:
+            cached = self._cache.get(name)
+            if cached is not None:
+                return cached
+            self._cache[name] = img
+            self._order.append(name)
+            while len(self._order) > self._cache_size:
+                self._cache.pop(self._order.pop(0), None)
+        return img
+
+    def _compose(self, rec, box, out_size):
+        """Mirrors TemplateSource._compose exactly -- see its docstring for
+        the half-pixel registration reasoning, unchanged here -- with the
+        mode/background parameterised for 16-bit greyscale instead of RGB.
+        """
+        from PIL import Image
+
+        src = self._frame(rec["file"])
+        rnd = self.manifest["rendered"]
+        ox, oy = rec.get("content_origin_px", (0, 0))
+        cw, ch = rec.get("content_size_px",
+                         (int(rnd["width"]), int(rnd["height"])))
+        left, upper, right, lower = box
+        W, H = out_size
+        sx = (right - left) / float(W)
+        sy = (lower - upper) / float(H)
+
+        i0 = max(0, int(math.ceil((ox - left) / sx)))
+        i1 = min(W, int(math.floor((ox + cw - left) / sx)))
+        j0 = max(0, int(math.ceil((oy - upper) / sy)))
+        j1 = min(H, int(math.floor((oy + ch - upper) / sy)))
+        if i0 == 0 and j0 == 0 and i1 == W and j1 == H and (ox, oy) == (0, 0) \
+                and (cw, ch) == (int(rnd["width"]), int(rnd["height"])):
+            return src.resize(out_size, Image.BILINEAR, box=box)
+
+        canvas = Image.new("I;16", out_size, self._background)
+        if i1 > i0 and j1 > j0:
+            sub = (max(0.0, left + i0 * sx - ox),
+                   max(0.0, upper + j0 * sy - oy),
+                   min(float(cw), left + i1 * sx - ox),
+                   min(float(ch), upper + j1 * sy - oy))
+            canvas.paste(src.resize((i1 - i0, j1 - j0), Image.BILINEAR, box=sub),
+                         (i0, j0))
+        return canvas
+
+    def render_png(self, pose):
+        """8-bit grayscale PNG bytes for a motor pose dict -- the SAME wire
+        format _render_xray_png's live-render fallback produces, so switching
+        between library and live is invisible to any consumer of /xray.
+        """
+        from PIL import Image
+
+        man = self.manifest
+        angle = float(pose.get(man["axis"], 0.0))
+        rec = frame_for_angle(man, angle)
+        box, out_size, _sigma, note = pose_crop(
+            man, tx=float(pose.get("tx", 0.0)), ty=float(pose.get("ty", 0.0)),
+            tz=float(pose.get("tz", 0.0)), angle_deg=angle,
+            zoom=float(pose.get("zoom", 1.0)), clamp=True)
+        if note and not self._warned_clamp:
+            self._warned_clamp = True
+            print(f"[xray-templates] request clamped to what the library can "
+                 f"serve: {note}")
+
+        img16 = self._compose(rec, box, out_size)
+        arr16 = np.asarray(img16, dtype=np.uint16)
+        img8 = (arr16.astype(np.float64) / 65535.0 * 255.0).astype(np.uint8)
+        buf = io.BytesIO()
+        Image.fromarray(img8, mode="L").save(buf, format="PNG")
+        return buf.getvalue()
 
 
 # ---------------------------------------------------------------------------
@@ -1106,7 +1211,7 @@ class CameraServer(ThreadingHTTPServer):
                  scene_path=None, templates=True, library_kwargs=None,
                  scene_dir=None, preview_root=None, camera_emulation=True,
                  mono=False, sensor_pitch=True, pin_streak=True,
-                 template_cache="auto", prewarm=True):
+                 template_cache="auto", prewarm=True, xray_library_root=None):
         # Camera emulation: the illumination field, black floor and tone
         # response the tracer does not model (loop_sim/renderer/field.py).
         # Default ON -- the raw transmittance a tracer produces is 85% pure
@@ -1141,8 +1246,26 @@ class CameraServer(ThreadingHTTPServer):
             self._library_kwargs.get("root", _LIB_DEFAULT_ROOT))
         self._preview_root   = os.path.abspath(preview_root or _LIB_PREVIEW_ROOT)
         self._scene_dir      = os.path.abspath(scene_dir or _SCENE_DIR_DEFAULT)
+        # X-ray library: a READ-ONLY lookup, not part of the scene-switch
+        # machinery above (_build_bundle/_install_bundle never touch it) --
+        # /xray never needs to change atomically with anything a switch
+        # swaps, so it is deliberately independent, opportunistic state,
+        # looked up lazily in _get_xray_templates and cached per scene_gen.
+        # Never builds; a missing/stale library just means /xray keeps
+        # rendering live, exactly as before this existed.
+        self._xray_library_root = os.path.abspath(xray_library_root or
+                                                   _XRAY_LIB_DEFAULT_ROOT)
+        self._xray_templates_cache = None   # (scene_gen, XrayTemplateSource|None)
         self._serving_from   = None    # "full" | "preview" | None
         self._scene_warning  = None    # set when a stale library is served
+        # Single-slot memo for /beam and /xray, keyed on (scene_gen, pose_phase).
+        # Both are expensive off the GPU-resident path (--templates on has no
+        # _tscene -- see _want_torch_engine) and a UI panel is expected to poll
+        # a settled pose repeatedly, so this turns every poll after the first
+        # into a dict lookup. Invalidates itself: the key changes the instant
+        # either the scene or the pose does, no explicit clearing needed.
+        self._beam_cache     = None    # (key, json_str) | None
+        self._xray_cache     = None    # (key, png_bytes) | None
 
         # Build BEFORE binding the socket. A cold build is tens of minutes; a
         # bound-but-unresponsive port leaves clients waiting in the backlog
@@ -1168,6 +1291,11 @@ class CameraServer(ThreadingHTTPServer):
         # threaded) compilation. Settle frames / /xray / offline stay eager+exact.
         self._compile_preview = bool(compile_preview)
         self._compiled_ok     = False   # flipped True once warmup compiles cleanly
+        # Set whenever compilation was requested but is NOT running -- warmup
+        # failure or a runtime fallback -- so a mis-set stack (RUNBOOK "Deploy
+        # on the TITAN V" risk B) shows up in GET /scene instead of only in a
+        # stderr line an operator has to already be watching for.
+        self._compile_error   = None
         # "Moving" is what selects the fast preview path. Animated /move sets
         # _anim_active; instant pose sets (/motor -- how AXIS-style consumers
         # such as MxCuBE/EPICS drive the goniometer) instead stamp
@@ -1340,7 +1468,9 @@ class CameraServer(ThreadingHTTPServer):
                     img = render_torch(self._tscene, gono, n_cond=n_cond, compiled=True)
                 except Exception as exc:      # once-and-done fallback to eager
                     self._compiled_ok = False
-                    print(f"[compile-preview] runtime failure, reverting to eager: {exc}")
+                    self._compile_error = f"runtime failure, reverted to eager: {exc}"
+                    print(f"WARNING: [compile-preview] {self._compile_error}",
+                         file=sys.stderr)
                     img = render_torch(self._tscene, gono, n_cond=n_cond, compiled=False)
             else:
                 img = render_torch(self._tscene, gono, n_cond=n_cond, compiled=False)
@@ -1427,40 +1557,126 @@ class CameraServer(ThreadingHTTPServer):
     def _beam_json(self):
         """X-ray volumes/dose for the live pose, as a JSON string.
 
-        On the server rather than in the handler so the scene and the pose it is
-        measured at come from one _scene_lock hold -- otherwise a switch between
-        the two reads reports one sample's volumes at another sample's pose.
+        Snapshots (scene, pose) under one _scene_lock hold -- so the scene and
+        the pose it is measured at can never straddle a switch -- then computes
+        OFF-lock. `compute_beam_volumes` is a per-material Beer-Lambert walk
+        that can run tens of seconds on a mesh scene with no GPU (--templates
+        on never builds a _tscene -- see _want_torch_engine), and holding
+        _scene_lock across that used to stall the optical MJPEG producer
+        (_render_now takes the same lock) for the whole computation. Safe
+        off-lock because `_install_bundle` SWAPS `self._scene` by reference on
+        a switch rather than mutating it in place, so this local `scene` stays
+        internally consistent even if `self._scene` changes under us mid-call.
+
+        Memoized on (scene_gen, pose_phase) so a UI panel polling a settled
+        pose repeatedly pays the cost once, not on every poll.
         """
         with self._scene_lock:
-            return beam_volumes_json(self._scene, self._snapshot_gonio())
+            scene = self._scene
+            scene_gen = self._scene_gen
+            gono = self._snapshot_gonio()
+        key = (scene_gen, pose_phase(gono.get()))
+        cached = self._beam_cache
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        result = beam_volumes_json(scene, gono)
+        self._beam_cache = (key, result)
+        return result
+
+    def _get_xray_templates(self, scene_path, scene_gen):
+        """XrayTemplateSource for the current scene, or None if no usable
+        X-ray library exists for it.
+
+        Accepts a `current` OR `stale` library (only `missing` is refused) --
+        same convention the optical side already established (RUNBOOK "Frame
+        libraries": "A stale library is served as-is, never rebuilt behind
+        your back"). No build-parameter grading here at all, deliberately:
+        unlike the optical side there is no --xray-supersample/--xray-step
+        flag for an operator to have asked something specific with, so there
+        is nothing to grade "stale" against in the first place -- whatever
+        complete, scene-matching library is on disk is the one to serve.
+
+        READ-ONLY lookup, cached per scene_gen so a naturally-invalidating
+        cache needs no explicit reset on a scene switch (a stale cache
+        entry's scene_gen just stops matching). Never builds -- a missing
+        library only means _render_xray_png keeps rendering live, exactly as
+        it did before this existed; building can cost hours (docs/RUNBOOK.md
+        "Frame libraries") and nothing here may ever start one implicitly,
+        the same rule the optical launch path learned the hard way.
+
+        No lock: this is independent of the scene-switch machinery
+        (_build_bundle/_install_bundle never touch it) because /xray never
+        needs to change atomically with anything a switch swaps. A benign
+        race between two request threads both missing the cache just builds
+        the lookup twice; both answers agree, so it costs a redundant
+        manifest read, never a wrong one.
+        """
+        cached = self._xray_templates_cache
+        if cached is not None and cached[0] == scene_gen:
+            return cached[1]
+        if scene_path is None:
+            self._xray_templates_cache = (scene_gen, None)
+            return None
+        from ..library.xray_library import (library_dir, load_manifest,
+                                            xray_library_status)
+        lib_dir = library_dir(scene_path, self._xray_library_root)
+        templates = None
+        if xray_library_status(scene_path, lib_dir) != "missing":
+            man = load_manifest(lib_dir)
+            if man is not None:
+                templates = XrayTemplateSource(man, lib_dir)
+        self._xray_templates_cache = (scene_gen, templates)
+        return templates
 
     def _render_xray_png(self):
         """Render the X-ray transmission map (radiograph) as a grayscale PNG.
 
-        Bright = transmitted, dark = absorbed.  Uses the GPU-resident engine
-        when present, else the numpy reference (slow at full resolution).
-        Rendered on demand (not cached) — it's a manual snapshot endpoint.
+        Bright = transmitted, dark = absorbed. Serves from a pre-computed
+        X-ray frame library when a current one exists for this scene
+        (single-digit ms, no GPU); otherwise the GPU-resident engine when
+        present, else the numpy reference (slow at full resolution --
+        --templates on never builds a _tscene, see _want_torch_engine, so the
+        deployed server always takes the numpy branch absent a library).
+
+        Snapshots (scene, tscene, pose) under one _scene_lock hold, then
+        renders OFF-lock -- see _beam_json for why holding the lock across a
+        render that can take tens of seconds to minutes stalled the optical
+        MJPEG producer, and why releasing it first is safe (`_install_bundle`
+        swaps references rather than mutating). Memoized on
+        (scene_gen, pose_phase), same rationale as _beam_json.
         """
         from PIL import Image
-        # _scene_lock spans the whole render: the pose, the engine and the scene
-        # must all belong to one scene, or the radiograph shows one sample
-        # registered to another's pose.  This is a full-resolution render, so a
-        # scene switch waits behind it -- acceptable for a manual snapshot
-        # endpoint that is not part of the stream.
         with self._scene_lock:
+            scene = self._scene
+            scene_path = self._scene_path
+            tscene = self._tscene
+            scene_gen = self._scene_gen
             gono = self._snapshot_gonio()
-            if self._tscene is not None:
-                from ..renderer.torch_compat import ensure_dynamo
-                ensure_dynamo()   # torch 2.0.1 does not bind torch._dynamo itself
-                from ..renderer.engine_torch import render_xray_torch
-                T = render_xray_torch(self._tscene, gono).clamp(0, 1).cpu().numpy()
-            else:
-                from ..renderer.beam import render_xray_numpy
-                T = render_xray_numpy(self._scene, gono)
+        key = (scene_gen, pose_phase(gono.get()))
+        cached = self._xray_cache
+        if cached is not None and cached[0] == key:
+            return cached[1]
+
+        templates = self._get_xray_templates(scene_path, scene_gen)
+        if templates is not None:
+            result = templates.render_png(gono.get())
+            self._xray_cache = (key, result)
+            return result
+
+        if tscene is not None:
+            from ..renderer.torch_compat import ensure_dynamo
+            ensure_dynamo()   # torch 2.0.1 does not bind torch._dynamo itself
+            from ..renderer.xray_torch import render_xray_torch
+            T = render_xray_torch(tscene, gono).clamp(0, 1).cpu().numpy()
+        else:
+            from ..renderer.beam import render_xray_numpy
+            T = render_xray_numpy(scene, gono)
         img8 = (np.clip(T, 0.0, 1.0) * 255).astype(np.uint8)
         buf = io.BytesIO()
         Image.fromarray(img8, mode="L").save(buf, format="PNG")
-        return buf.getvalue()
+        result = buf.getvalue()
+        self._xray_cache = (key, result)
+        return result
 
     # ------------------------------------------------------------------
     # Background render thread
@@ -2174,6 +2390,8 @@ class CameraServer(ThreadingHTTPServer):
 
     def _scenes_json(self):
         """Every switchable scene, with the library state of both roots."""
+        from ..library.xray_library import library_dir as xray_library_dir
+        from ..library.xray_library import xray_library_status
         with self._scene_lock:
             current = os.path.abspath(self._scene_path) if self._scene_path else None
         out = []
@@ -2182,6 +2400,14 @@ class CameraServer(ThreadingHTTPServer):
             _, source, status, diff = self._pick_library(path)
             can_serve = source is not None or not self._want_templates
             warning = describe_differences(diff) if status == "stale" else None
+            # Read-only, same no-params convention _get_xray_templates uses (never
+            # "stale" -- there is no --xray-supersample flag to grade against, see
+            # its docstring): tells the viewer's Radiograph tab whether /xray will
+            # answer in single-digit ms or fall through to a live render that can
+            # take tens of seconds to minutes on a mesh scene (docs/DECISIONS.md
+            # 2026-08-18). Purely informational -- never builds, never locks.
+            xray_lib_dir = xray_library_dir(path, self._xray_library_root)
+            xray_status = xray_library_status(path, xray_lib_dir)
             out.append({
                 "path": path,
                 "name": os.path.splitext(os.path.basename(path))[0],
@@ -2191,6 +2417,7 @@ class CameraServer(ThreadingHTTPServer):
                 "warning": warning,
                 "library": {"status": fstat, "differs": fdiff},
                 "preview": {"status": pstat, "differs": pdiff},
+                "xray_library": {"status": xray_status},
             })
         return {"current": current,
                 "root": self._library_root,
@@ -2210,6 +2437,13 @@ class CameraServer(ThreadingHTTPServer):
                        "templates": self._want_templates,
                        "serving_from": self._serving_from,
                        "warning": self._scene_warning}
+        if self._compile_preview:
+            # Server-wide, not scene-specific -- included here because this is
+            # the JSON endpoint an operator already checks (RUNBOOK "curl -s
+            # http://host:8080/scene"), so a silently-eager compile fallback
+            # (RUNBOOK "Deploy on the TITAN V" risk B) shows up there too.
+            payload["compile_preview"] = {"compiled_ok": self._compiled_ok,
+                                          "error": self._compile_error}
         payload["switch"] = self._switch_state()
         return payload
 
@@ -2251,10 +2485,13 @@ class CameraServer(ThreadingHTTPServer):
                     render_torch(self._tscene, gono, n_cond=1, compiled=True)
                 torch.cuda.synchronize()
                 self._compiled_ok = True
+                self._compile_error = None
                 print("[compile-preview] warmup ok — preview frames use torch.compile")
             except Exception as exc:
                 self._compiled_ok = False
-                print(f"[compile-preview] warmup failed, using eager preview: {exc}")
+                self._compile_error = f"warmup failed, using eager preview: {exc}"
+                print(f"WARNING: [compile-preview] {self._compile_error}",
+                     file=sys.stderr)
 
     def start(self, background=False):
         """
@@ -2490,6 +2727,12 @@ def main(argv=None):
                          "has to be built. Distinct from --jpeg-quality, which "
                          "is the quality of the frames this server sends. "
                          "Changing it invalidates an existing library")
+    ap.add_argument("--xray-library-root", default=None,
+                    help="X-ray radiograph library root to serve /xray from "
+                         "(default: the repo's xray_library/). Read-only: "
+                         "unlike --library-root/--templates, /xray never "
+                         "builds one implicitly -- a missing or stale library "
+                         "here just means /xray keeps rendering live")
     args = ap.parse_args(argv)
 
     lib_kwargs = library_kwargs_from_args(args)
@@ -2514,7 +2757,8 @@ def main(argv=None):
                           template_cache=(None if args.template_cache == "off"
                                           else args.template_cache
                                           if args.template_cache == "auto"
-                                          else int(args.template_cache)))
+                                          else int(args.template_cache)),
+                          xray_library_root=args.xray_library_root)
     server.start()
 
 

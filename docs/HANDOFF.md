@@ -1,8 +1,14 @@
 ---
 project: loop-sim (xtal-loop-sim) — bright-field microscope + X-ray simulator for protein crystals in cryo-loops
-status: active — camera served from pre-computed templates (no GPU at runtime) and usable interactively; renders go out through a measured camera model on the real 704x480 raster; all three frame libraries current; the camera calibration is fully settled (pixels 2026-08-10, NA 2026-08-11); library builds are 43x faster since the mesh path learned to cull and the VRAM budget is enforced rather than hoped for; the droplet scene now ships at the optically correct supersample 4 with a Rayleigh-matched drop mesh, so zoom reaches 4x; the pin's specular glint is projected from the scene rather than inferred from the silhouette, so it can no longer land on the droplet; BOTH HALVES OF THE VOLTRON DEPLOYMENT ARE NOW MEASURED (2026-08-13) — it renders 4% faster than the dev box, and since 2026-08-14 TEMPLATES STORE ONLY THEIR CONTENT (~10% of the frame), which takes the decoded sweep from 21.9 GB to 2.5 GB and the dev-box slew from 87 to 23 ms; THE VIEWER IS NOW MEASURED USABLE ON ALL THREE CANDIDATE HOSTS — dataserver3 33.9 fps, voltron 30.0, gateway 27.7, every one ~3x the 10 fps goal on 2.32 GiB — so `--template-cache` defaults to `auto`, the library is pre-warmed at boot (`--prewarm`), and frames are delivered in COLOUR (`--mono off`)
-last_verified: 2026-08-14        # `pytest tests/` = 236 passed in 357 s on this tree (branch performance-correctness-optimizations, RTX 4080 SUPER; branch depth is CHEAP TO MEASURE -- `git rev-list --count master..HEAD` -- so measure it rather than quoting a number here)
-verify: python -m pytest tests/ -q        # 236 tests; "python" = the torch-enabled project interpreter (see docs/RUNBOOK.md "Environment")
+status: active — camera served from pre-computed templates (no GPU at runtime) and usable interactively; renders go out through a measured camera model on the real 704x480 raster; all three frame libraries current; the camera calibration is fully settled (pixels 2026-08-10, NA 2026-08-11); library builds are 43x faster since the mesh path learned to cull and the VRAM budget is enforced rather than hoped for; the droplet scene now ships at the optically correct supersample 4 with a Rayleigh-matched drop mesh, so zoom reaches 4x; the pin's specular glint is projected from the scene rather than inferred from the silhouette, so it can no longer land on the droplet; BOTH HALVES OF THE VOLTRON DEPLOYMENT ARE NOW MEASURED (2026-08-13) — it renders 4% faster than the dev box, and since 2026-08-14 TEMPLATES STORE ONLY THEIR CONTENT (~10% of the frame), which takes the decoded sweep from 21.9 GB to 2.5 GB and the dev-box slew from 87 to 23 ms; THE VIEWER IS NOW MEASURED USABLE ON ALL THREE CANDIDATE HOSTS — dataserver3 33.9 fps, voltron 30.0, gateway 27.7, every one ~3x the 10 fps goal on 2.32 GiB — so `--template-cache` defaults to `auto`, the library is pre-warmed at boot (`--prewarm`), and frames are delivered in COLOUR (`--mono off`); AS OF 2026-08-18 `/xray` IS ALSO A
+FIRST-CLASS ENDPOINT — the `_scene_lock` freeze bug that had it stalling the live camera
+stream on every request is fixed, and it serves from a pre-computed 16-bit radiograph
+library (its own module/root/render_sha, `loop_sim/library/xray_library.py`) when one
+exists; AS OF 2026-08-19 ALL THREE REAL LIBRARIES ARE BUILT (39 MB, see DECISIONS.md) and
+the viewer has a Microscope/Radiograph toggle plus a `/beam` dose-and-volumes readout —
+see the 2026-08-19 work-log entry
+last_verified: 2026-08-19        # `pytest tests/` = 252 passed in 566 s on this tree (unchanged count from 2026-08-18 -- the day's work added no new tests, only the three X-ray libraries + the viewer toggle; branch performance-correctness-optimizations, RTX 4080 SUPER; branch depth is CHEAP TO MEASURE -- `git rev-list --count master..HEAD` -- so measure it rather than quoting a number here)
+verify: python -m pytest tests/ -q        # 252 tests; "python" = the torch-enabled project interpreter (see docs/RUNBOOK.md "Environment")
 ---
 
 # HANDOFF — loop-sim (xtal-loop-sim)
@@ -250,12 +256,17 @@ The highest-value open engineering items, in rough priority:
     moves 2800-4300 px by 5-16 levels — a real tier-switch pop. On the shelf.
 - **Give `TSurfaceMesh` the AABB cull that `TTube` has** — a speed optimisation for mesh
   scenes (they render, but slowly; the fidelity scene is ~5.5k faces now).
-- **Package the TITAN V deployment** (the recipe is measured; see RUNBOOK "Deploy on the
-  TITAN V"): a torch-2.6 env + a modern compiler for `torch.compile`, plus making the
-  silent-fallback-to-eager failure loud so a mis-set stack can't quietly miss 10 fps.
-- **Wire `render.py --device cuda` to the resident engine** — it still uses the legacy
-  per-object CUDA path; only `camera_server` uses `engine_torch`. Unifying them removes a
-  confusing second GPU path.
+- ~~Package the TITAN V deployment~~ (the recipe is measured; see RUNBOOK "Deploy on the
+  TITAN V") — **PARTLY CLOSED 2026-08-18.** `setup_titan_v_env.bash` scripts the torch-2.6
+  cu118 venv + devtoolset-7 `CC`/`CXX` recipe into one idempotent command and ends by
+  running `acceptance_voltron.py`. Written and syntax-checked locally, not run — this
+  session has no beamline-host access; run it on voltron and read its GO/NO-GO before
+  trusting it. The silent-fallback-to-eager half closed alongside it, below. **Still open:**
+  declaring torch 2.6 as a hard requirement. See DECISIONS.md §2026-08-18.
+- ~~Wire `render.py --device cuda` to the resident engine~~ — **CLOSED 2026-08-18.** It now
+  builds a `TorchScene` and calls `render_torch`, the same path `camera_server` uses,
+  instead of the legacy per-object CUDA path in `scene/tube.py` / `scene/surface_mesh.py`.
+  One GPU path now, not two. See DECISIONS.md §2026-08-18.
 - ~~Click-to-recentre bug~~ — **CLOSED 2026-08-11, by observation rather than by a
   fix.** The owner reports click-to-recentre landing correctly in ordinary use of the
   viewer, across the sessions since the template path shipped. That is the browser-side
@@ -643,8 +654,10 @@ fallback **6.3 fps**. The three things that decide whether you get 11.9 or 6.3:
   compiler at runtime (RUNBOOK "Deploy on the TITAN V"), assembled by hand in a venv. A
   reproducible env (a pinned recipe, or a launch wrapper that sets `CC`/`CXX`) would make
   deployment turnkey instead of a five-step manual setup.
-- **Make the silent compile-fallback loud** (risk B) and **declare torch 2.6** as required —
-  a mis-set stack currently misses 10 fps with no signal.
+- ~~Make the silent compile-fallback loud~~ (risk B) — **CLOSED 2026-08-18**: both
+  fallback sites now print to stderr with a `WARNING:` prefix and set `GET /scene`'s new
+  `compile_preview.error` field. **Still open:** declaring torch 2.6 as a hard requirement
+  — a mis-set stack still degrades rather than refusing to start.
 - **The perf-validation tooling lives outside the repo** (`soak_server.py`, profiling
   experiments — see Hazards); `bench_frame.py` and `acceptance_voltron.py` (repo root) ARE
   shipped. `acceptance_voltron.py` is the one-command GO/NO-GO check — run it on the target
@@ -667,7 +680,10 @@ those numbers don't have to be re-derived.
 - `loop_sim/` — the package: `scene/` (YAML loader, `next_interface`, primitives, `tube.py`,
   `surface_mesh.py`, `thin_shell.py`, CSG), `motors/goniometer.py`, `renderer/`
   (`microscope.py` numpy reference tracer, `beam.py` X-ray, **`engine_torch.py`**
-  GPU-resident engine, `optics.py` objective PSF, **`field.py`** the camera model —
+  GPU-resident engine, **`xray_torch.py`** its X-ray twin (`render_xray_torch`/
+  `trace_xray`, split out 2026-08-18 so an X-ray-only GPU edit can never invalidate
+  the optical frame libraries — see docs/DECISIONS.md), `optics.py` objective PSF,
+  **`field.py`** the camera model —
   sensor raster, illumination field, black floor, tone, the pin's specular streak;
   numpy-only, applied at SERVE time and inside neither tracer, which is what keeps it
   off the templates; **`pin_projection.py`** says WHERE the pin is, projected from
@@ -675,10 +691,15 @@ those numbers don't have to be re-derived.
   must stay in `renderer/` because `_RENDER_SOURCES` globs `scene/*.py`),
   `server/camera_server.py` (AXIS HTTP server + control page +
   runtime scene switching; `encode_frame` is the one place a served frame becomes
-  bytes),
+  bytes; **`XrayTemplateSource`** the X-ray analogue of `TemplateSource`, serving
+  `/xray` from a library when one exists, read-only, never builds),
   **`library/`** (pre-computed rotation sweeps — `build_library` / `ensure_library`,
   `library_status` / `library_diff` (current/stale/missing, and what differs),
-  `frame_for_angle`, `pose_crop`, `zoom_limits`; CLI `python -m loop_sim.library`).
+  `frame_for_angle`, `pose_crop`, `zoom_limits`; CLI `python -m loop_sim.library`;
+  **`xray_library.py`** the X-ray radiograph library, a separate module/root/
+  render_sha scope reusing the geometry functions above verbatim — CLI
+  `python -m loop_sim.library --modality xray`, docs/RUNBOOK.md "X-ray radiograph
+  library").
 - `frame_library/<scene>/` — **tracked deliverable**, not build output: a rendered 360°
   sweep plus a `manifest.json` per scene. The repo ignores `*.png` and `*.jpg` globally, so
   `.gitignore` carries explicit re-includes for both under this tree. **Currently shipped:
@@ -693,6 +714,14 @@ those numbers don't have to be re-derived.
   the same NA 0.10 optics very differently; RUNBOOK "Frame libraries" has the rule. Note
   library size in git (see DATA.md "Known gaps") — `--supersample 2` is 4× cheaper than 4
   if that matters for a future scene.
+- `xray_library/<scene>/` — the X-ray analogue of `frame_library/`: a rendered 360°
+  radiograph sweep plus a `manifest.json` per scene, always 16-bit greyscale PNG. Built
+  2026-08-19: `hampton_300um` (10.8 MB, 783 s), `hampton_300um_realistic` (flagship mesh,
+  9.0 MB, 4890 s / 81.5 min) and `mitegen_200um` (16.6 MB, 365 s) — 39 MB total, all three
+  `current`. Own `render_sha`/build-key scope, separate root, never rebuilt implicitly by
+  the server (DECISIONS.md 2026-08-18). **Not yet committed** — see the 2026-08-19
+  work-log entry, including the `.gitignore` re-include this needed before `git add`
+  would actually pick up the frames.
 - `crystal_harvester/` — scene *generator* (James's original geometry code: elastica loop
   mechanics, crystal habits, pin geometry; the droplet is a closed-form spherical-cap
   lens in `droplet.py`, shared with `add_droplet.py`). Builds a complete scene from
@@ -731,7 +760,98 @@ those numbers don't have to be re-derived.
 
 ## Work log (append-only)
 
-- **2026-08-14 (latest) — templates store their content, not their window; the
+- **2026-08-19 — the two items left open by 2026-08-18: the real X-ray libraries, and
+  the viewer toggle.** Uncommitted, same convention as the entry below (now plus
+  `xray_library/`, one `.gitignore` fix, `camera_server.py`'s `_scenes_json` and
+  `static/index.html` — Jacob commits).
+
+  **All three real 360-frame X-ray libraries are built.** `mitegen_200um` 364.8 s
+  (1.01 s/frame), `hampton_300um` 783.4 s (2.18 s/frame), `hampton_300um_realistic`
+  (flagship mesh) 4889.8 s / 81.5 min (13.58 s/frame mean) — 39 MB total, all `current`.
+  Run sequentially, one GPU job at a time (the card is shared with the desktop). Full
+  numbers and the pose-dependent per-frame spread in DECISIONS.md.
+
+  **A real bug caught before it shipped: `xray_library/` had no `.gitignore`
+  re-include.** Every frame PNG matched the blanket `*.png` ignore rule, so `git add -A`
+  would have committed three manifests each claiming 360 frames and zero actual images —
+  a fresh clone would see the library as `missing`, silently, with the 81-minute flagship
+  build never actually shipped. Fixed by mirroring `frame_library/`'s existing
+  `!frame_library/**/*.png` pattern for the new tree. Verified: `git ls-files --others
+  --exclude-standard xray_library | wc -l` now matches `find xray_library -type f | wc -l`
+  exactly (1083).
+
+  **The viewer has a Microscope/Radiograph toggle and a `/beam` readout panel.** Reuses
+  the scene tab-strip's CSS and delegated-click pattern verbatim; refreshes on
+  pose-settle (two consecutive identical `/motor` readings, detected client-side, no new
+  polling loop) rather than on every 600 ms tick or a stream. Turned out to need almost no
+  `camera_server.py` change: `/xray` already rendered the live pose with no query params
+  and already clamped exactly like the optical view, both by the 2026-08-18 lock fix — the
+  only server-side addition is a read-only `xray_library.status` field on `/scenes`, so
+  the Radiograph tab can badge "no library, slow" before an operator hits a scene with no
+  library built for it.
+
+  Verified: `py_compile` clean; the 40 tests in `test_xray_serve.py` /
+  `test_scene_switch.py` / `test_beam_attenuation.py` pass unchanged; full suite re-run
+  after the library builds finished (see `verify` above for the count). Full reasoning in
+  DECISIONS.md's two 2026-08-19 entries. **Next:** none of the plan's phases remain open;
+  see HANDOFF's Open questions for what's left in the repo generally (the NA-switch
+  decision, TITAN V packaging).
+
+- **2026-08-18 (latest) — GPU-path cleanup, then a first cut at making X-ray a
+  first-class feature.** Uncommitted (13 files modified, 5 new — Jacob commits).
+
+  **Morning: three small GPU/deploy items closed.** `render.py --device cuda` now
+  uses the resident `engine_torch` engine instead of the legacy per-object CUDA
+  path — one GPU path, not two. The silent `torch.compile`→eager fallback now
+  prints to stderr with a `WARNING:` prefix and surfaces in `GET /scene`'s new
+  `compile_preview` field. `setup_titan_v_env.bash` scripts the five-step TITAN V
+  recipe (written and syntax-checked, not run — no beamline-host access this
+  session).
+
+  **Then: `/beam`/`/xray` went from correct-but-undiscoverable to a first-class,
+  fast, tested feature — four phases done, one still open.**
+  - **The bug that reordered everything.** Both endpoints held `_scene_lock`
+    across their whole render — 21-57s measured on the flagship scene — freezing
+    the live camera stream for that entire span on any request, on the deployed
+    config (`--templates on` has no GPU-resident scene). Fixed: snapshot the
+    pose/scene under the lock, release, then render. Verified live: 492 forced
+    re-renders through the real MJPEG producer during a 28s `/xray` call, all
+    ≤44ms — the freeze is gone, not just faster.
+  - **A landmine defused.** `render_xray_torch`/`trace_xray` used to live inside
+    `engine_torch.py`, which the optical frame library hashes whole — any
+    X-ray-only GPU edit was silently invalidating all three shipped optical
+    libraries. Split into `renderer/xray_torch.py`; confirmed pure code motion
+    (full suite unchanged) before re-stamping the three shipped manifests'
+    `render_sha`.
+  - **A new library subsystem.** `loop_sim/library/xray_library.py` — an X-ray
+    radiograph frame library mirroring the optical one's geometry (reuses
+    `pose_crop`/`zoom_limits`/`frame_for_angle` verbatim) but its own module,
+    root (`xray_library/`) and `render_sha` scope. 16-bit greyscale, not 8-bit —
+    the crystal's real contrast is a few percent of the range, and 8-bit would
+    quantize that to ~50 usable levels. Verified byte-exact against a live
+    render on both a tube and the flagship mesh scene.
+  - **A physics question, resolved.** Illustrative `mu_xray` (never calibrated)
+    vs. literature-real coefficients (crystal 0.20 mm⁻¹ cited at 12 keV; metal
+    130 mm⁻¹ from NIST XCOM iron) were rendered side by side and handed to the
+    owner with the images, not picked. Real coefficients drop peak crystal
+    contrast 21%→3.1% absorbed but do not erase the structure. **Decided: keep
+    illustrative** — see DECISIONS.md.
+  - **Serving wired, UI not.** `/xray` now serves from an X-ray library when one
+    exists for the scene (sub-10ms, accepts a stale one same as the optical
+    convention, never builds implicitly) and falls back to live rendering
+    otherwise. The viewer-side "Microscope"/"Radiograph" toggle and `/beam`
+    readout panel are **not started**.
+  - **Not done:** the real 360-frame libraries for the three shipped scenes were
+    building in the background and were stopped partway through at the owner's
+    request (to run unattended later, not mid-session) — safe to resume or
+    restart any time, since the manifest is written last and an interrupted
+    build simply reads as `missing`, never as corrupt.
+
+  Full reasoning, every measurement, and the open items are in DECISIONS.md's
+  five 2026-08-18 entries — this entry is the map, not the detail. **Next:**
+  resume the X-ray library builds, then the viewer toggle.
+
+- **2026-08-14 — templates store their content, not their window; the
   viewer delivers colour; and three beamline hosts are measured.** Seven
   commits, `fb23293`..`ce853f3`.
   **The change.** A template's sample occupies ~10% of its frame — the rest is

@@ -14,6 +14,13 @@ Every run writes a JSON record to bench_results/ so phases can be compared:
 
     ~/miniconda3/envs/loopsim/bin/python bench_frame.py --label baseline
     ~/miniconda3/envs/loopsim/bin/python bench_frame.py --quick
+
+--modality xray times render_xray_torch (GPU) and render_xray_numpy (CPU --
+the path --templates on actually serves from, see docs/DECISIONS.md
+2026-08-18) instead. No n_cond/PSF/compiled sweep -- the X-ray tracer has
+none of those.
+
+    ~/miniconda3/envs/loopsim/bin/python bench_frame.py --modality xray --quick
 """
 import argparse
 import io
@@ -102,6 +109,54 @@ def op_count_one_frame(tscene, gono, n_cond, compiled=False):
         sum(evt.self_cpu_time_total for evt in ka) / 1000.0)
 
 
+def bench_xray_config(tscene, scene, pose, frames, warmup, include_numpy):
+    """Time render_xray_torch (GPU, if present) and render_xray_numpy (CPU --
+    the path the DEPLOYED server actually takes under --templates on, since
+    _want_torch_engine() returns False whenever templates are on; see
+    docs/DECISIONS.md 2026-08-18). No n_cond/PSF/compiled knobs to sweep --
+    the X-ray tracer has none of those.
+    """
+    from loop_sim.renderer.beam import render_xray_numpy
+    gono = Goniometer(tscene.scene.geometry if tscene is not None
+                      else scene.geometry).set(**POSES[pose])
+    result = {"pose": pose, "frames": frames}
+
+    cuda = tscene is not None and tscene.dev.type == "cuda"
+    if cuda:
+        from loop_sim.renderer.xray_torch import render_xray_torch
+        torch.cuda.reset_peak_memory_stats()
+        for _ in range(warmup):
+            render_xray_torch(tscene, gono)
+        torch.cuda.synchronize()
+        times = []
+        for _ in range(frames):
+            t0 = time.perf_counter()
+            render_xray_torch(tscene, gono)
+            torch.cuda.synchronize()
+            times.append((time.perf_counter() - t0) * 1000.0)
+        result["gpu_median_ms"] = round(statistics.median(times), 2)
+        result["gpu_fps"] = round(1000.0 / result["gpu_median_ms"], 2)
+        result["gpu_peak_alloc_mb"] = round(
+            torch.cuda.max_memory_allocated() / 2**20, 1)
+    else:
+        result["gpu_median_ms"] = result["gpu_fps"] = result["gpu_peak_alloc_mb"] = None
+
+    if include_numpy:
+        # Deliberately slow -- this IS the deployed path. One frame is
+        # already tens of seconds on a mesh scene at 640x480; --frames
+        # defaults small for xray for exactly this reason.
+        times = []
+        for _ in range(frames):
+            t0 = time.perf_counter()
+            render_xray_numpy(scene, gono)
+            times.append((time.perf_counter() - t0) * 1000.0)
+        result["numpy_median_ms"] = round(statistics.median(times), 2)
+    else:
+        result["numpy_median_ms"] = None
+
+    return result
+
+
 def bench_config(tscene, pose, n_cond, frames, warmup, compiled=False):
     gono = Goniometer(tscene.scene.geometry).set(**POSES[pose])
     cuda = tscene.dev.type == "cuda"
@@ -168,10 +223,21 @@ def main():
     ap.add_argument("--fp32", action="store_true",
                     help="bench a float32 TorchScene (the preview-scene dtype; "
                          "tube/mesh intersection math stays float64 internally)")
+    ap.add_argument("--modality", choices=["optical", "xray"], default="optical",
+                    help="optical: render_torch (default, all flags above apply). "
+                         "xray: render_xray_torch + render_xray_numpy -- no "
+                         "n_cond/PSF/compiled knobs, since the tracer has none")
+    ap.add_argument("--no-numpy", action="store_true",
+                    help="xray modality only: skip render_xray_numpy (the slow "
+                         "CPU path, but the one --templates on actually serves "
+                         "from -- see docs/DECISIONS.md 2026-08-18)")
     args = ap.parse_args()
 
     if args.quick:
-        args.poses, args.n_cond, args.frames = "id", "1", 10
+        # xray's numpy path is tens of seconds/frame (see bench_xray_config) --
+        # 10 frames there is not "quick". Only optical gets the historical 10.
+        args.poses, args.n_cond = "id", "1"
+        args.frames = 3 if args.modality == "xray" else 10
 
     dev = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     if dev.type != "cuda":
@@ -184,16 +250,30 @@ def main():
     tscene = TorchScene(scene, dev, dt)
 
     results = []
-    for n_cond in [int(x) for x in args.n_cond.split(",")]:
-        frames = args.frames or (30 if n_cond == 1 else 8)
+    if args.modality == "xray":
+        # numpy render_xray_numpy is tens of seconds per frame on a mesh scene
+        # -- default small unless the caller asks for more.
+        frames = args.frames or 3
         for pose in args.poses.split(","):
-            r = bench_config(tscene, pose, n_cond, frames, args.warmup, compiled=compiled)
+            r = bench_xray_config(tscene, scene, pose, frames, args.warmup,
+                                  include_numpy=not args.no_numpy)
             results.append(r)
-            tag = "C" if compiled else " "
-            print(f"[{tag}] n_cond={n_cond} pose={pose:<7} median={r['median_ms']:8.2f} ms "
-                  f"({r['fps']:5.2f} fps)  p90={r['p90_ms']:8.2f}  "
-                  f"encode={r['encode_ms']:5.2f} ms  ops={r['ops_per_frame']:5d}  "
-                  f"util={r['gpu_util_mean']}%  peak={r['torch_peak_alloc_mb']} MB")
+            gpu = (f"gpu={r['gpu_median_ms']:.1f}ms ({r['gpu_fps']:.1f}fps)"
+                  if r["gpu_median_ms"] is not None else "gpu=n/a")
+            npy = (f"numpy={r['numpy_median_ms']:.1f}ms"
+                  if r["numpy_median_ms"] is not None else "numpy=skipped")
+            print(f"[xray] pose={pose:<7} {gpu}  {npy}")
+    else:
+        for n_cond in [int(x) for x in args.n_cond.split(",")]:
+            frames = args.frames or (30 if n_cond == 1 else 8)
+            for pose in args.poses.split(","):
+                r = bench_config(tscene, pose, n_cond, frames, args.warmup, compiled=compiled)
+                results.append(r)
+                tag = "C" if compiled else " "
+                print(f"[{tag}] n_cond={n_cond} pose={pose:<7} median={r['median_ms']:8.2f} ms "
+                      f"({r['fps']:5.2f} fps)  p90={r['p90_ms']:8.2f}  "
+                      f"encode={r['encode_ms']:5.2f} ms  ops={r['ops_per_frame']:5d}  "
+                      f"util={r['gpu_util_mean']}%  peak={r['torch_peak_alloc_mb']} MB")
 
     if compiled:
         try:
@@ -212,6 +292,7 @@ def main():
         "torch": torch.__version__,
         "device": torch.cuda.get_device_name(0) if dev.type == "cuda" else "cpu",
         "scene": os.path.basename(args.scene),
+        "modality": args.modality,
         "compiled": compiled,
         "results": results,
     }

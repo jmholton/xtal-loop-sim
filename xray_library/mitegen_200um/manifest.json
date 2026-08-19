@@ -1,0 +1,4716 @@
+{
+  "scene": "scene_files/mitegen_200um.yaml",
+  "scene_sha256": "06eaf2a107463ea607918fb114ca13748674ecad816baba37ff59ef3f67f005d",
+  "built_utc": "2026-08-19T16:34:48Z",
+  "modality": "xray",
+  "axis": "rotx",
+  "step_deg": 1.0,
+  "supersample": 1,
+  "pan_mm": 0.6,
+  "render_sha": "614a5c8695df9b7d36ec15deddafe053b9e1fb536c640978c12e659b212d8e95",
+  "camera": {
+    "width": 640,
+    "height": 480,
+    "pixel_size": 0.001,
+    "na_condenser": 0.0
+  },
+  "rendered": {
+    "width": 1840,
+    "height": 2296,
+    "pixel_size": 0.001
+  },
+  "window_mm": {
+    "x0": -0.9199999999999999,
+    "x1": 0.9200000000000002,
+    "y0": -1.1440000000000001,
+    "y1": 1.1520000000000001,
+    "centre_x": 1.1102230246251565e-16,
+    "centre_y": 0.0040000000000000036
+  },
+  "background_i16": [
+    65535
+  ],
+  "crop_margin_px": 16,
+  "frames": [
+    {
+      "index": 0,
+      "angle_deg": 0.0,
+      "file": "rot_0000.png",
+      "content_origin_px": [
+        818,
+        1062
+      ],
+      "content_size_px": [
+        240,
+        165
+      ]
+    },
+    {
+      "index": 1,
+      "angle_deg": 1.0,
+      "file": "rot_0001.png",
+      "content_origin_px": [
+        655,
+        879
+      ],
+      "content_size_px": [
+        531,
+        537
+      ]
+    },
+    {
+      "index": 2,
+      "angle_deg": 2.0,
+      "file": "rot_0002.png",
+      "content_origin_px": [
+        655,
+        879
+      ],
+      "content_size_px": [
+        531,
+        542
+      ]
+    },
+    {
+      "index": 3,
+      "angle_deg": 3.0,
+      "file": "rot_0003.png",
+      "content_origin_px": [
+        655,
+        879
+      ],
+      "content_size_px": [
+        531,
+        547
+      ]
+    },
+    {
+      "index": 4,
+      "angle_deg": 4.0,
+      "file": "rot_0004.png",
+      "content_origin_px": [
+        655,
+        879
+      ],
+      "content_size_px": [
+        531,
+        552
+      ]
+    },
+    {
+      "index": 5,
+      "angle_deg": 5.0,
+      "file": "rot_0005.png",
+      "content_origin_px": [
+        655,
+        879
+      ],
+      "content_size_px": [
+        531,
+        558
+      ]
+    },
+    {
+      "index": 6,
+      "angle_deg": 6.0,
+      "file": "rot_0006.png",
+      "content_origin_px": [
+        655,
+        880
+      ],
+      "content_size_px": [
+        531,
+        562
+      ]
+    },
+    {
+      "index": 7,
+      "angle_deg": 7.0,
+      "file": "rot_0007.png",
+      "content_origin_px": [
+        655,
+        880
+      ],
+      "content_size_px": [
+        531,
+        567
+      ]
+    },
+    {
+      "index": 8,
+      "angle_deg": 8.0,
+      "file": "rot_0008.png",
+      "content_origin_px": [
+        655,
+        881
+      ],
+      "content_size_px": [
+        531,
+        571
+      ]
+    },
+    {
+      "index": 9,
+      "angle_deg": 9.0,
+      "file": "rot_0009.png",
+      "content_origin_px": [
+        655,
+        882
+      ],
+      "content_size_px": [
+        531,
+        575
+      ]
+    },
+    {
+      "index": 10,
+      "angle_deg": 10.0,
+      "file": "rot_0010.png",
+      "content_origin_px": [
+        655,
+        882
+      ],
+      "content_size_px": [
+        531,
+        581
+      ]
+    },
+    {
+      "index": 11,
+      "angle_deg": 11.0,
+      "file": "rot_0011.png",
+      "content_origin_px": [
+        655,
+        883
+      ],
+      "content_size_px": [
+        531,
+        585
+      ]
+    },
+    {
+      "index": 12,
+      "angle_deg": 12.0,
+      "file": "rot_0012.png",
+      "content_origin_px": [
+        655,
+        884
+      ],
+      "content_size_px": [
+        531,
+        589
+      ]
+    },
+    {
+      "index": 13,
+      "angle_deg": 13.0,
+      "file": "rot_0013.png",
+      "content_origin_px": [
+        655,
+        885
+      ],
+      "content_size_px": [
+        531,
+        593
+      ]
+    },
+    {
+      "index": 14,
+      "angle_deg": 14.0,
+      "file": "rot_0014.png",
+      "content_origin_px": [
+        655,
+        886
+      ],
+      "content_size_px": [
+        531,
+        597
+      ]
+    },
+    {
+      "index": 15,
+      "angle_deg": 15.0,
+      "file": "rot_0015.png",
+      "content_origin_px": [
+        655,
+        887
+      ],
+      "content_size_px": [
+        531,
+        601
+      ]
+    },
+    {
+      "index": 16,
+      "angle_deg": 16.0,
+      "file": "rot_0016.png",
+      "content_origin_px": [
+        655,
+        888
+      ],
+      "content_size_px": [
+        531,
+        605
+      ]
+    },
+    {
+      "index": 17,
+      "angle_deg": 17.0,
+      "file": "rot_0017.png",
+      "content_origin_px": [
+        655,
+        889
+      ],
+      "content_size_px": [
+        531,
+        609
+      ]
+    },
+    {
+      "index": 18,
+      "angle_deg": 18.0,
+      "file": "rot_0018.png",
+      "content_origin_px": [
+        655,
+        891
+      ],
+      "content_size_px": [
+        531,
+        612
+      ]
+    },
+    {
+      "index": 19,
+      "angle_deg": 19.0,
+      "file": "rot_0019.png",
+      "content_origin_px": [
+        655,
+        892
+      ],
+      "content_size_px": [
+        531,
+        616
+      ]
+    },
+    {
+      "index": 20,
+      "angle_deg": 20.0,
+      "file": "rot_0020.png",
+      "content_origin_px": [
+        655,
+        894
+      ],
+      "content_size_px": [
+        531,
+        619
+      ]
+    },
+    {
+      "index": 21,
+      "angle_deg": 21.0,
+      "file": "rot_0021.png",
+      "content_origin_px": [
+        655,
+        895
+      ],
+      "content_size_px": [
+        531,
+        623
+      ]
+    },
+    {
+      "index": 22,
+      "angle_deg": 22.0,
+      "file": "rot_0022.png",
+      "content_origin_px": [
+        655,
+        897
+      ],
+      "content_size_px": [
+        531,
+        626
+      ]
+    },
+    {
+      "index": 23,
+      "angle_deg": 23.0,
+      "file": "rot_0023.png",
+      "content_origin_px": [
+        655,
+        898
+      ],
+      "content_size_px": [
+        531,
+        630
+      ]
+    },
+    {
+      "index": 24,
+      "angle_deg": 24.0,
+      "file": "rot_0024.png",
+      "content_origin_px": [
+        655,
+        900
+      ],
+      "content_size_px": [
+        531,
+        632
+      ]
+    },
+    {
+      "index": 25,
+      "angle_deg": 25.0,
+      "file": "rot_0025.png",
+      "content_origin_px": [
+        655,
+        902
+      ],
+      "content_size_px": [
+        531,
+        635
+      ]
+    },
+    {
+      "index": 26,
+      "angle_deg": 26.0,
+      "file": "rot_0026.png",
+      "content_origin_px": [
+        655,
+        904
+      ],
+      "content_size_px": [
+        531,
+        638
+      ]
+    },
+    {
+      "index": 27,
+      "angle_deg": 27.0,
+      "file": "rot_0027.png",
+      "content_origin_px": [
+        655,
+        906
+      ],
+      "content_size_px": [
+        531,
+        641
+      ]
+    },
+    {
+      "index": 28,
+      "angle_deg": 28.0,
+      "file": "rot_0028.png",
+      "content_origin_px": [
+        655,
+        908
+      ],
+      "content_size_px": [
+        531,
+        643
+      ]
+    },
+    {
+      "index": 29,
+      "angle_deg": 29.0,
+      "file": "rot_0029.png",
+      "content_origin_px": [
+        655,
+        910
+      ],
+      "content_size_px": [
+        531,
+        646
+      ]
+    },
+    {
+      "index": 30,
+      "angle_deg": 30.0,
+      "file": "rot_0030.png",
+      "content_origin_px": [
+        655,
+        912
+      ],
+      "content_size_px": [
+        531,
+        648
+      ]
+    },
+    {
+      "index": 31,
+      "angle_deg": 31.0,
+      "file": "rot_0031.png",
+      "content_origin_px": [
+        655,
+        914
+      ],
+      "content_size_px": [
+        531,
+        651
+      ]
+    },
+    {
+      "index": 32,
+      "angle_deg": 32.0,
+      "file": "rot_0032.png",
+      "content_origin_px": [
+        655,
+        917
+      ],
+      "content_size_px": [
+        531,
+        652
+      ]
+    },
+    {
+      "index": 33,
+      "angle_deg": 33.0,
+      "file": "rot_0033.png",
+      "content_origin_px": [
+        655,
+        919
+      ],
+      "content_size_px": [
+        531,
+        655
+      ]
+    },
+    {
+      "index": 34,
+      "angle_deg": 34.0,
+      "file": "rot_0034.png",
+      "content_origin_px": [
+        655,
+        921
+      ],
+      "content_size_px": [
+        531,
+        657
+      ]
+    },
+    {
+      "index": 35,
+      "angle_deg": 35.0,
+      "file": "rot_0035.png",
+      "content_origin_px": [
+        655,
+        924
+      ],
+      "content_size_px": [
+        531,
+        659
+      ]
+    },
+    {
+      "index": 36,
+      "angle_deg": 36.0,
+      "file": "rot_0036.png",
+      "content_origin_px": [
+        655,
+        926
+      ],
+      "content_size_px": [
+        531,
+        661
+      ]
+    },
+    {
+      "index": 37,
+      "angle_deg": 37.0,
+      "file": "rot_0037.png",
+      "content_origin_px": [
+        655,
+        929
+      ],
+      "content_size_px": [
+        531,
+        662
+      ]
+    },
+    {
+      "index": 38,
+      "angle_deg": 38.0,
+      "file": "rot_0038.png",
+      "content_origin_px": [
+        655,
+        932
+      ],
+      "content_size_px": [
+        531,
+        663
+      ]
+    },
+    {
+      "index": 39,
+      "angle_deg": 39.0,
+      "file": "rot_0039.png",
+      "content_origin_px": [
+        655,
+        934
+      ],
+      "content_size_px": [
+        531,
+        665
+      ]
+    },
+    {
+      "index": 40,
+      "angle_deg": 40.0,
+      "file": "rot_0040.png",
+      "content_origin_px": [
+        655,
+        937
+      ],
+      "content_size_px": [
+        531,
+        666
+      ]
+    },
+    {
+      "index": 41,
+      "angle_deg": 41.0,
+      "file": "rot_0041.png",
+      "content_origin_px": [
+        655,
+        940
+      ],
+      "content_size_px": [
+        531,
+        667
+      ]
+    },
+    {
+      "index": 42,
+      "angle_deg": 42.0,
+      "file": "rot_0042.png",
+      "content_origin_px": [
+        655,
+        943
+      ],
+      "content_size_px": [
+        531,
+        668
+      ]
+    },
+    {
+      "index": 43,
+      "angle_deg": 43.0,
+      "file": "rot_0043.png",
+      "content_origin_px": [
+        655,
+        946
+      ],
+      "content_size_px": [
+        531,
+        669
+      ]
+    },
+    {
+      "index": 44,
+      "angle_deg": 44.0,
+      "file": "rot_0044.png",
+      "content_origin_px": [
+        655,
+        949
+      ],
+      "content_size_px": [
+        531,
+        670
+      ]
+    },
+    {
+      "index": 45,
+      "angle_deg": 45.0,
+      "file": "rot_0045.png",
+      "content_origin_px": [
+        655,
+        952
+      ],
+      "content_size_px": [
+        531,
+        671
+      ]
+    },
+    {
+      "index": 46,
+      "angle_deg": 46.0,
+      "file": "rot_0046.png",
+      "content_origin_px": [
+        655,
+        955
+      ],
+      "content_size_px": [
+        531,
+        671
+      ]
+    },
+    {
+      "index": 47,
+      "angle_deg": 47.0,
+      "file": "rot_0047.png",
+      "content_origin_px": [
+        655,
+        958
+      ],
+      "content_size_px": [
+        531,
+        672
+      ]
+    },
+    {
+      "index": 48,
+      "angle_deg": 48.0,
+      "file": "rot_0048.png",
+      "content_origin_px": [
+        655,
+        961
+      ],
+      "content_size_px": [
+        531,
+        672
+      ]
+    },
+    {
+      "index": 49,
+      "angle_deg": 49.0,
+      "file": "rot_0049.png",
+      "content_origin_px": [
+        655,
+        965
+      ],
+      "content_size_px": [
+        531,
+        672
+      ]
+    },
+    {
+      "index": 50,
+      "angle_deg": 50.0,
+      "file": "rot_0050.png",
+      "content_origin_px": [
+        655,
+        968
+      ],
+      "content_size_px": [
+        531,
+        672
+      ]
+    },
+    {
+      "index": 51,
+      "angle_deg": 51.0,
+      "file": "rot_0051.png",
+      "content_origin_px": [
+        655,
+        971
+      ],
+      "content_size_px": [
+        531,
+        673
+      ]
+    },
+    {
+      "index": 52,
+      "angle_deg": 52.0,
+      "file": "rot_0052.png",
+      "content_origin_px": [
+        655,
+        975
+      ],
+      "content_size_px": [
+        531,
+        672
+      ]
+    },
+    {
+      "index": 53,
+      "angle_deg": 53.0,
+      "file": "rot_0053.png",
+      "content_origin_px": [
+        655,
+        977
+      ],
+      "content_size_px": [
+        531,
+        673
+      ]
+    },
+    {
+      "index": 54,
+      "angle_deg": 54.0,
+      "file": "rot_0054.png",
+      "content_origin_px": [
+        655,
+        975
+      ],
+      "content_size_px": [
+        531,
+        678
+      ]
+    },
+    {
+      "index": 55,
+      "angle_deg": 55.0,
+      "file": "rot_0055.png",
+      "content_origin_px": [
+        655,
+        973
+      ],
+      "content_size_px": [
+        531,
+        683
+      ]
+    },
+    {
+      "index": 56,
+      "angle_deg": 56.0,
+      "file": "rot_0056.png",
+      "content_origin_px": [
+        655,
+        971
+      ],
+      "content_size_px": [
+        531,
+        688
+      ]
+    },
+    {
+      "index": 57,
+      "angle_deg": 57.0,
+      "file": "rot_0057.png",
+      "content_origin_px": [
+        655,
+        969
+      ],
+      "content_size_px": [
+        531,
+        693
+      ]
+    },
+    {
+      "index": 58,
+      "angle_deg": 58.0,
+      "file": "rot_0058.png",
+      "content_origin_px": [
+        655,
+        967
+      ],
+      "content_size_px": [
+        531,
+        698
+      ]
+    },
+    {
+      "index": 59,
+      "angle_deg": 59.0,
+      "file": "rot_0059.png",
+      "content_origin_px": [
+        655,
+        966
+      ],
+      "content_size_px": [
+        531,
+        702
+      ]
+    },
+    {
+      "index": 60,
+      "angle_deg": 60.0,
+      "file": "rot_0060.png",
+      "content_origin_px": [
+        655,
+        964
+      ],
+      "content_size_px": [
+        531,
+        706
+      ]
+    },
+    {
+      "index": 61,
+      "angle_deg": 61.0,
+      "file": "rot_0061.png",
+      "content_origin_px": [
+        655,
+        962
+      ],
+      "content_size_px": [
+        531,
+        711
+      ]
+    },
+    {
+      "index": 62,
+      "angle_deg": 62.0,
+      "file": "rot_0062.png",
+      "content_origin_px": [
+        655,
+        961
+      ],
+      "content_size_px": [
+        531,
+        714
+      ]
+    },
+    {
+      "index": 63,
+      "angle_deg": 63.0,
+      "file": "rot_0063.png",
+      "content_origin_px": [
+        655,
+        959
+      ],
+      "content_size_px": [
+        531,
+        719
+      ]
+    },
+    {
+      "index": 64,
+      "angle_deg": 64.0,
+      "file": "rot_0064.png",
+      "content_origin_px": [
+        655,
+        958
+      ],
+      "content_size_px": [
+        531,
+        722
+      ]
+    },
+    {
+      "index": 65,
+      "angle_deg": 65.0,
+      "file": "rot_0065.png",
+      "content_origin_px": [
+        655,
+        956
+      ],
+      "content_size_px": [
+        531,
+        726
+      ]
+    },
+    {
+      "index": 66,
+      "angle_deg": 66.0,
+      "file": "rot_0066.png",
+      "content_origin_px": [
+        655,
+        955
+      ],
+      "content_size_px": [
+        531,
+        730
+      ]
+    },
+    {
+      "index": 67,
+      "angle_deg": 67.0,
+      "file": "rot_0067.png",
+      "content_origin_px": [
+        655,
+        954
+      ],
+      "content_size_px": [
+        531,
+        733
+      ]
+    },
+    {
+      "index": 68,
+      "angle_deg": 68.0,
+      "file": "rot_0068.png",
+      "content_origin_px": [
+        655,
+        953
+      ],
+      "content_size_px": [
+        531,
+        736
+      ]
+    },
+    {
+      "index": 69,
+      "angle_deg": 69.0,
+      "file": "rot_0069.png",
+      "content_origin_px": [
+        655,
+        951
+      ],
+      "content_size_px": [
+        531,
+        740
+      ]
+    },
+    {
+      "index": 70,
+      "angle_deg": 70.0,
+      "file": "rot_0070.png",
+      "content_origin_px": [
+        655,
+        950
+      ],
+      "content_size_px": [
+        531,
+        742
+      ]
+    },
+    {
+      "index": 71,
+      "angle_deg": 71.0,
+      "file": "rot_0071.png",
+      "content_origin_px": [
+        655,
+        949
+      ],
+      "content_size_px": [
+        531,
+        745
+      ]
+    },
+    {
+      "index": 72,
+      "angle_deg": 72.0,
+      "file": "rot_0072.png",
+      "content_origin_px": [
+        655,
+        948
+      ],
+      "content_size_px": [
+        531,
+        748
+      ]
+    },
+    {
+      "index": 73,
+      "angle_deg": 73.0,
+      "file": "rot_0073.png",
+      "content_origin_px": [
+        655,
+        947
+      ],
+      "content_size_px": [
+        531,
+        750
+      ]
+    },
+    {
+      "index": 74,
+      "angle_deg": 74.0,
+      "file": "rot_0074.png",
+      "content_origin_px": [
+        655,
+        946
+      ],
+      "content_size_px": [
+        531,
+        753
+      ]
+    },
+    {
+      "index": 75,
+      "angle_deg": 75.0,
+      "file": "rot_0075.png",
+      "content_origin_px": [
+        655,
+        945
+      ],
+      "content_size_px": [
+        531,
+        755
+      ]
+    },
+    {
+      "index": 76,
+      "angle_deg": 76.0,
+      "file": "rot_0076.png",
+      "content_origin_px": [
+        655,
+        945
+      ],
+      "content_size_px": [
+        531,
+        757
+      ]
+    },
+    {
+      "index": 77,
+      "angle_deg": 77.0,
+      "file": "rot_0077.png",
+      "content_origin_px": [
+        655,
+        944
+      ],
+      "content_size_px": [
+        531,
+        759
+      ]
+    },
+    {
+      "index": 78,
+      "angle_deg": 78.0,
+      "file": "rot_0078.png",
+      "content_origin_px": [
+        655,
+        943
+      ],
+      "content_size_px": [
+        531,
+        761
+      ]
+    },
+    {
+      "index": 79,
+      "angle_deg": 79.0,
+      "file": "rot_0079.png",
+      "content_origin_px": [
+        655,
+        943
+      ],
+      "content_size_px": [
+        531,
+        762
+      ]
+    },
+    {
+      "index": 80,
+      "angle_deg": 80.0,
+      "file": "rot_0080.png",
+      "content_origin_px": [
+        655,
+        942
+      ],
+      "content_size_px": [
+        531,
+        764
+      ]
+    },
+    {
+      "index": 81,
+      "angle_deg": 81.0,
+      "file": "rot_0081.png",
+      "content_origin_px": [
+        655,
+        941
+      ],
+      "content_size_px": [
+        531,
+        766
+      ]
+    },
+    {
+      "index": 82,
+      "angle_deg": 82.0,
+      "file": "rot_0082.png",
+      "content_origin_px": [
+        655,
+        941
+      ],
+      "content_size_px": [
+        531,
+        767
+      ]
+    },
+    {
+      "index": 83,
+      "angle_deg": 83.0,
+      "file": "rot_0083.png",
+      "content_origin_px": [
+        655,
+        941
+      ],
+      "content_size_px": [
+        531,
+        767
+      ]
+    },
+    {
+      "index": 84,
+      "angle_deg": 84.0,
+      "file": "rot_0084.png",
+      "content_origin_px": [
+        655,
+        940
+      ],
+      "content_size_px": [
+        531,
+        769
+      ]
+    },
+    {
+      "index": 85,
+      "angle_deg": 85.0,
+      "file": "rot_0085.png",
+      "content_origin_px": [
+        655,
+        940
+      ],
+      "content_size_px": [
+        531,
+        769
+      ]
+    },
+    {
+      "index": 86,
+      "angle_deg": 86.0,
+      "file": "rot_0086.png",
+      "content_origin_px": [
+        655,
+        940
+      ],
+      "content_size_px": [
+        531,
+        770
+      ]
+    },
+    {
+      "index": 87,
+      "angle_deg": 87.0,
+      "file": "rot_0087.png",
+      "content_origin_px": [
+        655,
+        940
+      ],
+      "content_size_px": [
+        531,
+        770
+      ]
+    },
+    {
+      "index": 88,
+      "angle_deg": 88.0,
+      "file": "rot_0088.png",
+      "content_origin_px": [
+        655,
+        939
+      ],
+      "content_size_px": [
+        531,
+        771
+      ]
+    },
+    {
+      "index": 89,
+      "angle_deg": 89.0,
+      "file": "rot_0089.png",
+      "content_origin_px": [
+        655,
+        939
+      ],
+      "content_size_px": [
+        531,
+        771
+      ]
+    },
+    {
+      "index": 90,
+      "angle_deg": 90.0,
+      "file": "rot_0090.png",
+      "content_origin_px": [
+        655,
+        939
+      ],
+      "content_size_px": [
+        531,
+        770
+      ]
+    },
+    {
+      "index": 91,
+      "angle_deg": 91.0,
+      "file": "rot_0091.png",
+      "content_origin_px": [
+        655,
+        939
+      ],
+      "content_size_px": [
+        531,
+        771
+      ]
+    },
+    {
+      "index": 92,
+      "angle_deg": 92.0,
+      "file": "rot_0092.png",
+      "content_origin_px": [
+        655,
+        939
+      ],
+      "content_size_px": [
+        531,
+        771
+      ]
+    },
+    {
+      "index": 93,
+      "angle_deg": 93.0,
+      "file": "rot_0093.png",
+      "content_origin_px": [
+        655,
+        939
+      ],
+      "content_size_px": [
+        531,
+        771
+      ]
+    },
+    {
+      "index": 94,
+      "angle_deg": 94.0,
+      "file": "rot_0094.png",
+      "content_origin_px": [
+        655,
+        939
+      ],
+      "content_size_px": [
+        531,
+        771
+      ]
+    },
+    {
+      "index": 95,
+      "angle_deg": 95.0,
+      "file": "rot_0095.png",
+      "content_origin_px": [
+        655,
+        940
+      ],
+      "content_size_px": [
+        531,
+        769
+      ]
+    },
+    {
+      "index": 96,
+      "angle_deg": 96.0,
+      "file": "rot_0096.png",
+      "content_origin_px": [
+        655,
+        940
+      ],
+      "content_size_px": [
+        531,
+        769
+      ]
+    },
+    {
+      "index": 97,
+      "angle_deg": 97.0,
+      "file": "rot_0097.png",
+      "content_origin_px": [
+        655,
+        940
+      ],
+      "content_size_px": [
+        531,
+        768
+      ]
+    },
+    {
+      "index": 98,
+      "angle_deg": 98.0,
+      "file": "rot_0098.png",
+      "content_origin_px": [
+        655,
+        940
+      ],
+      "content_size_px": [
+        531,
+        768
+      ]
+    },
+    {
+      "index": 99,
+      "angle_deg": 99.0,
+      "file": "rot_0099.png",
+      "content_origin_px": [
+        655,
+        941
+      ],
+      "content_size_px": [
+        531,
+        766
+      ]
+    },
+    {
+      "index": 100,
+      "angle_deg": 100.0,
+      "file": "rot_0100.png",
+      "content_origin_px": [
+        655,
+        941
+      ],
+      "content_size_px": [
+        531,
+        765
+      ]
+    },
+    {
+      "index": 101,
+      "angle_deg": 101.0,
+      "file": "rot_0101.png",
+      "content_origin_px": [
+        655,
+        942
+      ],
+      "content_size_px": [
+        531,
+        763
+      ]
+    },
+    {
+      "index": 102,
+      "angle_deg": 102.0,
+      "file": "rot_0102.png",
+      "content_origin_px": [
+        655,
+        942
+      ],
+      "content_size_px": [
+        531,
+        762
+      ]
+    },
+    {
+      "index": 103,
+      "angle_deg": 103.0,
+      "file": "rot_0103.png",
+      "content_origin_px": [
+        655,
+        943
+      ],
+      "content_size_px": [
+        531,
+        760
+      ]
+    },
+    {
+      "index": 104,
+      "angle_deg": 104.0,
+      "file": "rot_0104.png",
+      "content_origin_px": [
+        655,
+        944
+      ],
+      "content_size_px": [
+        531,
+        758
+      ]
+    },
+    {
+      "index": 105,
+      "angle_deg": 105.0,
+      "file": "rot_0105.png",
+      "content_origin_px": [
+        655,
+        944
+      ],
+      "content_size_px": [
+        531,
+        756
+      ]
+    },
+    {
+      "index": 106,
+      "angle_deg": 106.0,
+      "file": "rot_0106.png",
+      "content_origin_px": [
+        655,
+        945
+      ],
+      "content_size_px": [
+        531,
+        754
+      ]
+    },
+    {
+      "index": 107,
+      "angle_deg": 107.0,
+      "file": "rot_0107.png",
+      "content_origin_px": [
+        655,
+        946
+      ],
+      "content_size_px": [
+        531,
+        751
+      ]
+    },
+    {
+      "index": 108,
+      "angle_deg": 108.0,
+      "file": "rot_0108.png",
+      "content_origin_px": [
+        655,
+        947
+      ],
+      "content_size_px": [
+        531,
+        749
+      ]
+    },
+    {
+      "index": 109,
+      "angle_deg": 109.0,
+      "file": "rot_0109.png",
+      "content_origin_px": [
+        655,
+        948
+      ],
+      "content_size_px": [
+        531,
+        746
+      ]
+    },
+    {
+      "index": 110,
+      "angle_deg": 110.0,
+      "file": "rot_0110.png",
+      "content_origin_px": [
+        655,
+        949
+      ],
+      "content_size_px": [
+        531,
+        743
+      ]
+    },
+    {
+      "index": 111,
+      "angle_deg": 111.0,
+      "file": "rot_0111.png",
+      "content_origin_px": [
+        655,
+        950
+      ],
+      "content_size_px": [
+        531,
+        741
+      ]
+    },
+    {
+      "index": 112,
+      "angle_deg": 112.0,
+      "file": "rot_0112.png",
+      "content_origin_px": [
+        655,
+        951
+      ],
+      "content_size_px": [
+        531,
+        738
+      ]
+    },
+    {
+      "index": 113,
+      "angle_deg": 113.0,
+      "file": "rot_0113.png",
+      "content_origin_px": [
+        655,
+        952
+      ],
+      "content_size_px": [
+        531,
+        735
+      ]
+    },
+    {
+      "index": 114,
+      "angle_deg": 114.0,
+      "file": "rot_0114.png",
+      "content_origin_px": [
+        655,
+        954
+      ],
+      "content_size_px": [
+        531,
+        731
+      ]
+    },
+    {
+      "index": 115,
+      "angle_deg": 115.0,
+      "file": "rot_0115.png",
+      "content_origin_px": [
+        655,
+        955
+      ],
+      "content_size_px": [
+        531,
+        727
+      ]
+    },
+    {
+      "index": 116,
+      "angle_deg": 116.0,
+      "file": "rot_0116.png",
+      "content_origin_px": [
+        655,
+        956
+      ],
+      "content_size_px": [
+        531,
+        724
+      ]
+    },
+    {
+      "index": 117,
+      "angle_deg": 117.0,
+      "file": "rot_0117.png",
+      "content_origin_px": [
+        655,
+        958
+      ],
+      "content_size_px": [
+        531,
+        720
+      ]
+    },
+    {
+      "index": 118,
+      "angle_deg": 118.0,
+      "file": "rot_0118.png",
+      "content_origin_px": [
+        655,
+        959
+      ],
+      "content_size_px": [
+        531,
+        716
+      ]
+    },
+    {
+      "index": 119,
+      "angle_deg": 119.0,
+      "file": "rot_0119.png",
+      "content_origin_px": [
+        655,
+        960
+      ],
+      "content_size_px": [
+        531,
+        713
+      ]
+    },
+    {
+      "index": 120,
+      "angle_deg": 120.0,
+      "file": "rot_0120.png",
+      "content_origin_px": [
+        655,
+        962
+      ],
+      "content_size_px": [
+        531,
+        708
+      ]
+    },
+    {
+      "index": 121,
+      "angle_deg": 121.0,
+      "file": "rot_0121.png",
+      "content_origin_px": [
+        655,
+        964
+      ],
+      "content_size_px": [
+        531,
+        704
+      ]
+    },
+    {
+      "index": 122,
+      "angle_deg": 122.0,
+      "file": "rot_0122.png",
+      "content_origin_px": [
+        655,
+        965
+      ],
+      "content_size_px": [
+        531,
+        700
+      ]
+    },
+    {
+      "index": 123,
+      "angle_deg": 123.0,
+      "file": "rot_0123.png",
+      "content_origin_px": [
+        655,
+        967
+      ],
+      "content_size_px": [
+        531,
+        695
+      ]
+    },
+    {
+      "index": 124,
+      "angle_deg": 124.0,
+      "file": "rot_0124.png",
+      "content_origin_px": [
+        655,
+        969
+      ],
+      "content_size_px": [
+        531,
+        690
+      ]
+    },
+    {
+      "index": 125,
+      "angle_deg": 125.0,
+      "file": "rot_0125.png",
+      "content_origin_px": [
+        655,
+        971
+      ],
+      "content_size_px": [
+        531,
+        685
+      ]
+    },
+    {
+      "index": 126,
+      "angle_deg": 126.0,
+      "file": "rot_0126.png",
+      "content_origin_px": [
+        655,
+        972
+      ],
+      "content_size_px": [
+        531,
+        681
+      ]
+    },
+    {
+      "index": 127,
+      "angle_deg": 127.0,
+      "file": "rot_0127.png",
+      "content_origin_px": [
+        655,
+        974
+      ],
+      "content_size_px": [
+        531,
+        676
+      ]
+    },
+    {
+      "index": 128,
+      "angle_deg": 128.0,
+      "file": "rot_0128.png",
+      "content_origin_px": [
+        655,
+        975
+      ],
+      "content_size_px": [
+        531,
+        672
+      ]
+    },
+    {
+      "index": 129,
+      "angle_deg": 129.0,
+      "file": "rot_0129.png",
+      "content_origin_px": [
+        655,
+        971
+      ],
+      "content_size_px": [
+        531,
+        673
+      ]
+    },
+    {
+      "index": 130,
+      "angle_deg": 130.0,
+      "file": "rot_0130.png",
+      "content_origin_px": [
+        655,
+        968
+      ],
+      "content_size_px": [
+        531,
+        672
+      ]
+    },
+    {
+      "index": 131,
+      "angle_deg": 131.0,
+      "file": "rot_0131.png",
+      "content_origin_px": [
+        655,
+        965
+      ],
+      "content_size_px": [
+        531,
+        672
+      ]
+    },
+    {
+      "index": 132,
+      "angle_deg": 132.0,
+      "file": "rot_0132.png",
+      "content_origin_px": [
+        655,
+        961
+      ],
+      "content_size_px": [
+        531,
+        672
+      ]
+    },
+    {
+      "index": 133,
+      "angle_deg": 133.0,
+      "file": "rot_0133.png",
+      "content_origin_px": [
+        655,
+        958
+      ],
+      "content_size_px": [
+        531,
+        672
+      ]
+    },
+    {
+      "index": 134,
+      "angle_deg": 134.0,
+      "file": "rot_0134.png",
+      "content_origin_px": [
+        655,
+        955
+      ],
+      "content_size_px": [
+        531,
+        671
+      ]
+    },
+    {
+      "index": 135,
+      "angle_deg": 135.0,
+      "file": "rot_0135.png",
+      "content_origin_px": [
+        655,
+        952
+      ],
+      "content_size_px": [
+        531,
+        671
+      ]
+    },
+    {
+      "index": 136,
+      "angle_deg": 136.0,
+      "file": "rot_0136.png",
+      "content_origin_px": [
+        655,
+        949
+      ],
+      "content_size_px": [
+        531,
+        670
+      ]
+    },
+    {
+      "index": 137,
+      "angle_deg": 137.0,
+      "file": "rot_0137.png",
+      "content_origin_px": [
+        655,
+        946
+      ],
+      "content_size_px": [
+        531,
+        669
+      ]
+    },
+    {
+      "index": 138,
+      "angle_deg": 138.0,
+      "file": "rot_0138.png",
+      "content_origin_px": [
+        655,
+        943
+      ],
+      "content_size_px": [
+        531,
+        668
+      ]
+    },
+    {
+      "index": 139,
+      "angle_deg": 139.0,
+      "file": "rot_0139.png",
+      "content_origin_px": [
+        655,
+        940
+      ],
+      "content_size_px": [
+        531,
+        667
+      ]
+    },
+    {
+      "index": 140,
+      "angle_deg": 140.0,
+      "file": "rot_0140.png",
+      "content_origin_px": [
+        655,
+        937
+      ],
+      "content_size_px": [
+        531,
+        666
+      ]
+    },
+    {
+      "index": 141,
+      "angle_deg": 141.0,
+      "file": "rot_0141.png",
+      "content_origin_px": [
+        655,
+        934
+      ],
+      "content_size_px": [
+        531,
+        665
+      ]
+    },
+    {
+      "index": 142,
+      "angle_deg": 142.0,
+      "file": "rot_0142.png",
+      "content_origin_px": [
+        655,
+        932
+      ],
+      "content_size_px": [
+        531,
+        663
+      ]
+    },
+    {
+      "index": 143,
+      "angle_deg": 143.0,
+      "file": "rot_0143.png",
+      "content_origin_px": [
+        655,
+        929
+      ],
+      "content_size_px": [
+        531,
+        662
+      ]
+    },
+    {
+      "index": 144,
+      "angle_deg": 144.0,
+      "file": "rot_0144.png",
+      "content_origin_px": [
+        655,
+        926
+      ],
+      "content_size_px": [
+        531,
+        661
+      ]
+    },
+    {
+      "index": 145,
+      "angle_deg": 145.0,
+      "file": "rot_0145.png",
+      "content_origin_px": [
+        655,
+        924
+      ],
+      "content_size_px": [
+        531,
+        659
+      ]
+    },
+    {
+      "index": 146,
+      "angle_deg": 146.0,
+      "file": "rot_0146.png",
+      "content_origin_px": [
+        655,
+        921
+      ],
+      "content_size_px": [
+        531,
+        657
+      ]
+    },
+    {
+      "index": 147,
+      "angle_deg": 147.0,
+      "file": "rot_0147.png",
+      "content_origin_px": [
+        655,
+        919
+      ],
+      "content_size_px": [
+        531,
+        655
+      ]
+    },
+    {
+      "index": 148,
+      "angle_deg": 148.0,
+      "file": "rot_0148.png",
+      "content_origin_px": [
+        655,
+        917
+      ],
+      "content_size_px": [
+        531,
+        652
+      ]
+    },
+    {
+      "index": 149,
+      "angle_deg": 149.0,
+      "file": "rot_0149.png",
+      "content_origin_px": [
+        655,
+        914
+      ],
+      "content_size_px": [
+        531,
+        651
+      ]
+    },
+    {
+      "index": 150,
+      "angle_deg": 150.0,
+      "file": "rot_0150.png",
+      "content_origin_px": [
+        655,
+        912
+      ],
+      "content_size_px": [
+        531,
+        648
+      ]
+    },
+    {
+      "index": 151,
+      "angle_deg": 151.0,
+      "file": "rot_0151.png",
+      "content_origin_px": [
+        655,
+        910
+      ],
+      "content_size_px": [
+        531,
+        646
+      ]
+    },
+    {
+      "index": 152,
+      "angle_deg": 152.0,
+      "file": "rot_0152.png",
+      "content_origin_px": [
+        655,
+        908
+      ],
+      "content_size_px": [
+        531,
+        643
+      ]
+    },
+    {
+      "index": 153,
+      "angle_deg": 153.0,
+      "file": "rot_0153.png",
+      "content_origin_px": [
+        655,
+        906
+      ],
+      "content_size_px": [
+        531,
+        641
+      ]
+    },
+    {
+      "index": 154,
+      "angle_deg": 154.0,
+      "file": "rot_0154.png",
+      "content_origin_px": [
+        655,
+        904
+      ],
+      "content_size_px": [
+        531,
+        638
+      ]
+    },
+    {
+      "index": 155,
+      "angle_deg": 155.0,
+      "file": "rot_0155.png",
+      "content_origin_px": [
+        655,
+        902
+      ],
+      "content_size_px": [
+        531,
+        635
+      ]
+    },
+    {
+      "index": 156,
+      "angle_deg": 156.0,
+      "file": "rot_0156.png",
+      "content_origin_px": [
+        655,
+        900
+      ],
+      "content_size_px": [
+        531,
+        632
+      ]
+    },
+    {
+      "index": 157,
+      "angle_deg": 157.0,
+      "file": "rot_0157.png",
+      "content_origin_px": [
+        655,
+        898
+      ],
+      "content_size_px": [
+        531,
+        630
+      ]
+    },
+    {
+      "index": 158,
+      "angle_deg": 158.0,
+      "file": "rot_0158.png",
+      "content_origin_px": [
+        655,
+        897
+      ],
+      "content_size_px": [
+        531,
+        626
+      ]
+    },
+    {
+      "index": 159,
+      "angle_deg": 159.0,
+      "file": "rot_0159.png",
+      "content_origin_px": [
+        655,
+        895
+      ],
+      "content_size_px": [
+        531,
+        623
+      ]
+    },
+    {
+      "index": 160,
+      "angle_deg": 160.0,
+      "file": "rot_0160.png",
+      "content_origin_px": [
+        655,
+        894
+      ],
+      "content_size_px": [
+        531,
+        619
+      ]
+    },
+    {
+      "index": 161,
+      "angle_deg": 161.0,
+      "file": "rot_0161.png",
+      "content_origin_px": [
+        655,
+        892
+      ],
+      "content_size_px": [
+        531,
+        616
+      ]
+    },
+    {
+      "index": 162,
+      "angle_deg": 162.0,
+      "file": "rot_0162.png",
+      "content_origin_px": [
+        655,
+        891
+      ],
+      "content_size_px": [
+        531,
+        612
+      ]
+    },
+    {
+      "index": 163,
+      "angle_deg": 163.0,
+      "file": "rot_0163.png",
+      "content_origin_px": [
+        655,
+        889
+      ],
+      "content_size_px": [
+        531,
+        609
+      ]
+    },
+    {
+      "index": 164,
+      "angle_deg": 164.0,
+      "file": "rot_0164.png",
+      "content_origin_px": [
+        655,
+        888
+      ],
+      "content_size_px": [
+        531,
+        605
+      ]
+    },
+    {
+      "index": 165,
+      "angle_deg": 165.0,
+      "file": "rot_0165.png",
+      "content_origin_px": [
+        655,
+        887
+      ],
+      "content_size_px": [
+        531,
+        601
+      ]
+    },
+    {
+      "index": 166,
+      "angle_deg": 166.0,
+      "file": "rot_0166.png",
+      "content_origin_px": [
+        655,
+        886
+      ],
+      "content_size_px": [
+        531,
+        597
+      ]
+    },
+    {
+      "index": 167,
+      "angle_deg": 167.0,
+      "file": "rot_0167.png",
+      "content_origin_px": [
+        655,
+        885
+      ],
+      "content_size_px": [
+        531,
+        593
+      ]
+    },
+    {
+      "index": 168,
+      "angle_deg": 168.0,
+      "file": "rot_0168.png",
+      "content_origin_px": [
+        655,
+        884
+      ],
+      "content_size_px": [
+        531,
+        589
+      ]
+    },
+    {
+      "index": 169,
+      "angle_deg": 169.0,
+      "file": "rot_0169.png",
+      "content_origin_px": [
+        655,
+        883
+      ],
+      "content_size_px": [
+        531,
+        585
+      ]
+    },
+    {
+      "index": 170,
+      "angle_deg": 170.0,
+      "file": "rot_0170.png",
+      "content_origin_px": [
+        655,
+        882
+      ],
+      "content_size_px": [
+        531,
+        581
+      ]
+    },
+    {
+      "index": 171,
+      "angle_deg": 171.0,
+      "file": "rot_0171.png",
+      "content_origin_px": [
+        655,
+        882
+      ],
+      "content_size_px": [
+        531,
+        575
+      ]
+    },
+    {
+      "index": 172,
+      "angle_deg": 172.0,
+      "file": "rot_0172.png",
+      "content_origin_px": [
+        655,
+        881
+      ],
+      "content_size_px": [
+        531,
+        571
+      ]
+    },
+    {
+      "index": 173,
+      "angle_deg": 173.0,
+      "file": "rot_0173.png",
+      "content_origin_px": [
+        655,
+        880
+      ],
+      "content_size_px": [
+        531,
+        567
+      ]
+    },
+    {
+      "index": 174,
+      "angle_deg": 174.0,
+      "file": "rot_0174.png",
+      "content_origin_px": [
+        655,
+        880
+      ],
+      "content_size_px": [
+        531,
+        562
+      ]
+    },
+    {
+      "index": 175,
+      "angle_deg": 175.0,
+      "file": "rot_0175.png",
+      "content_origin_px": [
+        655,
+        879
+      ],
+      "content_size_px": [
+        531,
+        558
+      ]
+    },
+    {
+      "index": 176,
+      "angle_deg": 176.0,
+      "file": "rot_0176.png",
+      "content_origin_px": [
+        655,
+        879
+      ],
+      "content_size_px": [
+        531,
+        552
+      ]
+    },
+    {
+      "index": 177,
+      "angle_deg": 177.0,
+      "file": "rot_0177.png",
+      "content_origin_px": [
+        655,
+        879
+      ],
+      "content_size_px": [
+        531,
+        547
+      ]
+    },
+    {
+      "index": 178,
+      "angle_deg": 178.0,
+      "file": "rot_0178.png",
+      "content_origin_px": [
+        655,
+        879
+      ],
+      "content_size_px": [
+        531,
+        542
+      ]
+    },
+    {
+      "index": 179,
+      "angle_deg": 179.0,
+      "file": "rot_0179.png",
+      "content_origin_px": [
+        655,
+        879
+      ],
+      "content_size_px": [
+        531,
+        537
+      ]
+    },
+    {
+      "index": 180,
+      "angle_deg": 180.0,
+      "file": "rot_0180.png",
+      "content_origin_px": [
+        818,
+        1062
+      ],
+      "content_size_px": [
+        240,
+        165
+      ]
+    },
+    {
+      "index": 181,
+      "angle_deg": 181.0,
+      "file": "rot_0181.png",
+      "content_origin_px": [
+        655,
+        873
+      ],
+      "content_size_px": [
+        531,
+        537
+      ]
+    },
+    {
+      "index": 182,
+      "angle_deg": 182.0,
+      "file": "rot_0182.png",
+      "content_origin_px": [
+        655,
+        868
+      ],
+      "content_size_px": [
+        531,
+        542
+      ]
+    },
+    {
+      "index": 183,
+      "angle_deg": 183.0,
+      "file": "rot_0183.png",
+      "content_origin_px": [
+        655,
+        863
+      ],
+      "content_size_px": [
+        531,
+        547
+      ]
+    },
+    {
+      "index": 184,
+      "angle_deg": 184.0,
+      "file": "rot_0184.png",
+      "content_origin_px": [
+        655,
+        858
+      ],
+      "content_size_px": [
+        531,
+        552
+      ]
+    },
+    {
+      "index": 185,
+      "angle_deg": 185.0,
+      "file": "rot_0185.png",
+      "content_origin_px": [
+        655,
+        852
+      ],
+      "content_size_px": [
+        531,
+        558
+      ]
+    },
+    {
+      "index": 186,
+      "angle_deg": 186.0,
+      "file": "rot_0186.png",
+      "content_origin_px": [
+        655,
+        847
+      ],
+      "content_size_px": [
+        531,
+        562
+      ]
+    },
+    {
+      "index": 187,
+      "angle_deg": 187.0,
+      "file": "rot_0187.png",
+      "content_origin_px": [
+        655,
+        842
+      ],
+      "content_size_px": [
+        531,
+        567
+      ]
+    },
+    {
+      "index": 188,
+      "angle_deg": 188.0,
+      "file": "rot_0188.png",
+      "content_origin_px": [
+        655,
+        837
+      ],
+      "content_size_px": [
+        531,
+        571
+      ]
+    },
+    {
+      "index": 189,
+      "angle_deg": 189.0,
+      "file": "rot_0189.png",
+      "content_origin_px": [
+        655,
+        832
+      ],
+      "content_size_px": [
+        531,
+        575
+      ]
+    },
+    {
+      "index": 190,
+      "angle_deg": 190.0,
+      "file": "rot_0190.png",
+      "content_origin_px": [
+        655,
+        826
+      ],
+      "content_size_px": [
+        531,
+        581
+      ]
+    },
+    {
+      "index": 191,
+      "angle_deg": 191.0,
+      "file": "rot_0191.png",
+      "content_origin_px": [
+        655,
+        821
+      ],
+      "content_size_px": [
+        531,
+        585
+      ]
+    },
+    {
+      "index": 192,
+      "angle_deg": 192.0,
+      "file": "rot_0192.png",
+      "content_origin_px": [
+        655,
+        816
+      ],
+      "content_size_px": [
+        531,
+        589
+      ]
+    },
+    {
+      "index": 193,
+      "angle_deg": 193.0,
+      "file": "rot_0193.png",
+      "content_origin_px": [
+        655,
+        811
+      ],
+      "content_size_px": [
+        531,
+        593
+      ]
+    },
+    {
+      "index": 194,
+      "angle_deg": 194.0,
+      "file": "rot_0194.png",
+      "content_origin_px": [
+        655,
+        806
+      ],
+      "content_size_px": [
+        531,
+        597
+      ]
+    },
+    {
+      "index": 195,
+      "angle_deg": 195.0,
+      "file": "rot_0195.png",
+      "content_origin_px": [
+        655,
+        801
+      ],
+      "content_size_px": [
+        531,
+        601
+      ]
+    },
+    {
+      "index": 196,
+      "angle_deg": 196.0,
+      "file": "rot_0196.png",
+      "content_origin_px": [
+        655,
+        796
+      ],
+      "content_size_px": [
+        531,
+        605
+      ]
+    },
+    {
+      "index": 197,
+      "angle_deg": 197.0,
+      "file": "rot_0197.png",
+      "content_origin_px": [
+        655,
+        791
+      ],
+      "content_size_px": [
+        531,
+        609
+      ]
+    },
+    {
+      "index": 198,
+      "angle_deg": 198.0,
+      "file": "rot_0198.png",
+      "content_origin_px": [
+        655,
+        786
+      ],
+      "content_size_px": [
+        531,
+        612
+      ]
+    },
+    {
+      "index": 199,
+      "angle_deg": 199.0,
+      "file": "rot_0199.png",
+      "content_origin_px": [
+        655,
+        781
+      ],
+      "content_size_px": [
+        531,
+        616
+      ]
+    },
+    {
+      "index": 200,
+      "angle_deg": 200.0,
+      "file": "rot_0200.png",
+      "content_origin_px": [
+        655,
+        776
+      ],
+      "content_size_px": [
+        531,
+        619
+      ]
+    },
+    {
+      "index": 201,
+      "angle_deg": 201.0,
+      "file": "rot_0201.png",
+      "content_origin_px": [
+        655,
+        771
+      ],
+      "content_size_px": [
+        531,
+        623
+      ]
+    },
+    {
+      "index": 202,
+      "angle_deg": 202.0,
+      "file": "rot_0202.png",
+      "content_origin_px": [
+        655,
+        766
+      ],
+      "content_size_px": [
+        531,
+        626
+      ]
+    },
+    {
+      "index": 203,
+      "angle_deg": 203.0,
+      "file": "rot_0203.png",
+      "content_origin_px": [
+        655,
+        761
+      ],
+      "content_size_px": [
+        531,
+        630
+      ]
+    },
+    {
+      "index": 204,
+      "angle_deg": 204.0,
+      "file": "rot_0204.png",
+      "content_origin_px": [
+        655,
+        757
+      ],
+      "content_size_px": [
+        531,
+        632
+      ]
+    },
+    {
+      "index": 205,
+      "angle_deg": 205.0,
+      "file": "rot_0205.png",
+      "content_origin_px": [
+        655,
+        752
+      ],
+      "content_size_px": [
+        531,
+        635
+      ]
+    },
+    {
+      "index": 206,
+      "angle_deg": 206.0,
+      "file": "rot_0206.png",
+      "content_origin_px": [
+        655,
+        747
+      ],
+      "content_size_px": [
+        531,
+        638
+      ]
+    },
+    {
+      "index": 207,
+      "angle_deg": 207.0,
+      "file": "rot_0207.png",
+      "content_origin_px": [
+        655,
+        742
+      ],
+      "content_size_px": [
+        531,
+        641
+      ]
+    },
+    {
+      "index": 208,
+      "angle_deg": 208.0,
+      "file": "rot_0208.png",
+      "content_origin_px": [
+        655,
+        738
+      ],
+      "content_size_px": [
+        531,
+        643
+      ]
+    },
+    {
+      "index": 209,
+      "angle_deg": 209.0,
+      "file": "rot_0209.png",
+      "content_origin_px": [
+        655,
+        733
+      ],
+      "content_size_px": [
+        531,
+        646
+      ]
+    },
+    {
+      "index": 210,
+      "angle_deg": 210.0,
+      "file": "rot_0210.png",
+      "content_origin_px": [
+        655,
+        729
+      ],
+      "content_size_px": [
+        531,
+        648
+      ]
+    },
+    {
+      "index": 211,
+      "angle_deg": 211.0,
+      "file": "rot_0211.png",
+      "content_origin_px": [
+        655,
+        724
+      ],
+      "content_size_px": [
+        531,
+        651
+      ]
+    },
+    {
+      "index": 212,
+      "angle_deg": 212.0,
+      "file": "rot_0212.png",
+      "content_origin_px": [
+        655,
+        720
+      ],
+      "content_size_px": [
+        531,
+        652
+      ]
+    },
+    {
+      "index": 213,
+      "angle_deg": 213.0,
+      "file": "rot_0213.png",
+      "content_origin_px": [
+        655,
+        715
+      ],
+      "content_size_px": [
+        531,
+        655
+      ]
+    },
+    {
+      "index": 214,
+      "angle_deg": 214.0,
+      "file": "rot_0214.png",
+      "content_origin_px": [
+        655,
+        711
+      ],
+      "content_size_px": [
+        531,
+        657
+      ]
+    },
+    {
+      "index": 215,
+      "angle_deg": 215.0,
+      "file": "rot_0215.png",
+      "content_origin_px": [
+        655,
+        706
+      ],
+      "content_size_px": [
+        531,
+        659
+      ]
+    },
+    {
+      "index": 216,
+      "angle_deg": 216.0,
+      "file": "rot_0216.png",
+      "content_origin_px": [
+        655,
+        702
+      ],
+      "content_size_px": [
+        531,
+        661
+      ]
+    },
+    {
+      "index": 217,
+      "angle_deg": 217.0,
+      "file": "rot_0217.png",
+      "content_origin_px": [
+        655,
+        698
+      ],
+      "content_size_px": [
+        531,
+        662
+      ]
+    },
+    {
+      "index": 218,
+      "angle_deg": 218.0,
+      "file": "rot_0218.png",
+      "content_origin_px": [
+        655,
+        694
+      ],
+      "content_size_px": [
+        531,
+        663
+      ]
+    },
+    {
+      "index": 219,
+      "angle_deg": 219.0,
+      "file": "rot_0219.png",
+      "content_origin_px": [
+        655,
+        690
+      ],
+      "content_size_px": [
+        531,
+        665
+      ]
+    },
+    {
+      "index": 220,
+      "angle_deg": 220.0,
+      "file": "rot_0220.png",
+      "content_origin_px": [
+        655,
+        686
+      ],
+      "content_size_px": [
+        531,
+        666
+      ]
+    },
+    {
+      "index": 221,
+      "angle_deg": 221.0,
+      "file": "rot_0221.png",
+      "content_origin_px": [
+        655,
+        682
+      ],
+      "content_size_px": [
+        531,
+        667
+      ]
+    },
+    {
+      "index": 222,
+      "angle_deg": 222.0,
+      "file": "rot_0222.png",
+      "content_origin_px": [
+        655,
+        678
+      ],
+      "content_size_px": [
+        531,
+        668
+      ]
+    },
+    {
+      "index": 223,
+      "angle_deg": 223.0,
+      "file": "rot_0223.png",
+      "content_origin_px": [
+        655,
+        674
+      ],
+      "content_size_px": [
+        531,
+        669
+      ]
+    },
+    {
+      "index": 224,
+      "angle_deg": 224.0,
+      "file": "rot_0224.png",
+      "content_origin_px": [
+        655,
+        670
+      ],
+      "content_size_px": [
+        531,
+        670
+      ]
+    },
+    {
+      "index": 225,
+      "angle_deg": 225.0,
+      "file": "rot_0225.png",
+      "content_origin_px": [
+        655,
+        666
+      ],
+      "content_size_px": [
+        531,
+        671
+      ]
+    },
+    {
+      "index": 226,
+      "angle_deg": 226.0,
+      "file": "rot_0226.png",
+      "content_origin_px": [
+        655,
+        663
+      ],
+      "content_size_px": [
+        531,
+        671
+      ]
+    },
+    {
+      "index": 227,
+      "angle_deg": 227.0,
+      "file": "rot_0227.png",
+      "content_origin_px": [
+        655,
+        659
+      ],
+      "content_size_px": [
+        531,
+        672
+      ]
+    },
+    {
+      "index": 228,
+      "angle_deg": 228.0,
+      "file": "rot_0228.png",
+      "content_origin_px": [
+        655,
+        656
+      ],
+      "content_size_px": [
+        531,
+        672
+      ]
+    },
+    {
+      "index": 229,
+      "angle_deg": 229.0,
+      "file": "rot_0229.png",
+      "content_origin_px": [
+        655,
+        652
+      ],
+      "content_size_px": [
+        531,
+        672
+      ]
+    },
+    {
+      "index": 230,
+      "angle_deg": 230.0,
+      "file": "rot_0230.png",
+      "content_origin_px": [
+        655,
+        649
+      ],
+      "content_size_px": [
+        531,
+        672
+      ]
+    },
+    {
+      "index": 231,
+      "angle_deg": 231.0,
+      "file": "rot_0231.png",
+      "content_origin_px": [
+        655,
+        645
+      ],
+      "content_size_px": [
+        531,
+        673
+      ]
+    },
+    {
+      "index": 232,
+      "angle_deg": 232.0,
+      "file": "rot_0232.png",
+      "content_origin_px": [
+        655,
+        642
+      ],
+      "content_size_px": [
+        531,
+        672
+      ]
+    },
+    {
+      "index": 233,
+      "angle_deg": 233.0,
+      "file": "rot_0233.png",
+      "content_origin_px": [
+        655,
+        639
+      ],
+      "content_size_px": [
+        531,
+        673
+      ]
+    },
+    {
+      "index": 234,
+      "angle_deg": 234.0,
+      "file": "rot_0234.png",
+      "content_origin_px": [
+        655,
+        636
+      ],
+      "content_size_px": [
+        531,
+        678
+      ]
+    },
+    {
+      "index": 235,
+      "angle_deg": 235.0,
+      "file": "rot_0235.png",
+      "content_origin_px": [
+        655,
+        633
+      ],
+      "content_size_px": [
+        531,
+        683
+      ]
+    },
+    {
+      "index": 236,
+      "angle_deg": 236.0,
+      "file": "rot_0236.png",
+      "content_origin_px": [
+        655,
+        630
+      ],
+      "content_size_px": [
+        531,
+        688
+      ]
+    },
+    {
+      "index": 237,
+      "angle_deg": 237.0,
+      "file": "rot_0237.png",
+      "content_origin_px": [
+        655,
+        627
+      ],
+      "content_size_px": [
+        531,
+        693
+      ]
+    },
+    {
+      "index": 238,
+      "angle_deg": 238.0,
+      "file": "rot_0238.png",
+      "content_origin_px": [
+        655,
+        624
+      ],
+      "content_size_px": [
+        531,
+        698
+      ]
+    },
+    {
+      "index": 239,
+      "angle_deg": 239.0,
+      "file": "rot_0239.png",
+      "content_origin_px": [
+        655,
+        621
+      ],
+      "content_size_px": [
+        531,
+        702
+      ]
+    },
+    {
+      "index": 240,
+      "angle_deg": 240.0,
+      "file": "rot_0240.png",
+      "content_origin_px": [
+        655,
+        619
+      ],
+      "content_size_px": [
+        531,
+        706
+      ]
+    },
+    {
+      "index": 241,
+      "angle_deg": 241.0,
+      "file": "rot_0241.png",
+      "content_origin_px": [
+        655,
+        616
+      ],
+      "content_size_px": [
+        531,
+        711
+      ]
+    },
+    {
+      "index": 242,
+      "angle_deg": 242.0,
+      "file": "rot_0242.png",
+      "content_origin_px": [
+        655,
+        614
+      ],
+      "content_size_px": [
+        531,
+        714
+      ]
+    },
+    {
+      "index": 243,
+      "angle_deg": 243.0,
+      "file": "rot_0243.png",
+      "content_origin_px": [
+        655,
+        611
+      ],
+      "content_size_px": [
+        531,
+        719
+      ]
+    },
+    {
+      "index": 244,
+      "angle_deg": 244.0,
+      "file": "rot_0244.png",
+      "content_origin_px": [
+        655,
+        609
+      ],
+      "content_size_px": [
+        531,
+        722
+      ]
+    },
+    {
+      "index": 245,
+      "angle_deg": 245.0,
+      "file": "rot_0245.png",
+      "content_origin_px": [
+        655,
+        607
+      ],
+      "content_size_px": [
+        531,
+        726
+      ]
+    },
+    {
+      "index": 246,
+      "angle_deg": 246.0,
+      "file": "rot_0246.png",
+      "content_origin_px": [
+        655,
+        604
+      ],
+      "content_size_px": [
+        531,
+        730
+      ]
+    },
+    {
+      "index": 247,
+      "angle_deg": 247.0,
+      "file": "rot_0247.png",
+      "content_origin_px": [
+        655,
+        602
+      ],
+      "content_size_px": [
+        531,
+        733
+      ]
+    },
+    {
+      "index": 248,
+      "angle_deg": 248.0,
+      "file": "rot_0248.png",
+      "content_origin_px": [
+        655,
+        600
+      ],
+      "content_size_px": [
+        531,
+        736
+      ]
+    },
+    {
+      "index": 249,
+      "angle_deg": 249.0,
+      "file": "rot_0249.png",
+      "content_origin_px": [
+        655,
+        598
+      ],
+      "content_size_px": [
+        531,
+        740
+      ]
+    },
+    {
+      "index": 250,
+      "angle_deg": 250.0,
+      "file": "rot_0250.png",
+      "content_origin_px": [
+        655,
+        597
+      ],
+      "content_size_px": [
+        531,
+        742
+      ]
+    },
+    {
+      "index": 251,
+      "angle_deg": 251.0,
+      "file": "rot_0251.png",
+      "content_origin_px": [
+        655,
+        595
+      ],
+      "content_size_px": [
+        531,
+        745
+      ]
+    },
+    {
+      "index": 252,
+      "angle_deg": 252.0,
+      "file": "rot_0252.png",
+      "content_origin_px": [
+        655,
+        593
+      ],
+      "content_size_px": [
+        531,
+        748
+      ]
+    },
+    {
+      "index": 253,
+      "angle_deg": 253.0,
+      "file": "rot_0253.png",
+      "content_origin_px": [
+        655,
+        592
+      ],
+      "content_size_px": [
+        531,
+        750
+      ]
+    },
+    {
+      "index": 254,
+      "angle_deg": 254.0,
+      "file": "rot_0254.png",
+      "content_origin_px": [
+        655,
+        590
+      ],
+      "content_size_px": [
+        531,
+        753
+      ]
+    },
+    {
+      "index": 255,
+      "angle_deg": 255.0,
+      "file": "rot_0255.png",
+      "content_origin_px": [
+        655,
+        589
+      ],
+      "content_size_px": [
+        531,
+        755
+      ]
+    },
+    {
+      "index": 256,
+      "angle_deg": 256.0,
+      "file": "rot_0256.png",
+      "content_origin_px": [
+        655,
+        587
+      ],
+      "content_size_px": [
+        531,
+        757
+      ]
+    },
+    {
+      "index": 257,
+      "angle_deg": 257.0,
+      "file": "rot_0257.png",
+      "content_origin_px": [
+        655,
+        586
+      ],
+      "content_size_px": [
+        531,
+        759
+      ]
+    },
+    {
+      "index": 258,
+      "angle_deg": 258.0,
+      "file": "rot_0258.png",
+      "content_origin_px": [
+        655,
+        585
+      ],
+      "content_size_px": [
+        531,
+        761
+      ]
+    },
+    {
+      "index": 259,
+      "angle_deg": 259.0,
+      "file": "rot_0259.png",
+      "content_origin_px": [
+        655,
+        584
+      ],
+      "content_size_px": [
+        531,
+        762
+      ]
+    },
+    {
+      "index": 260,
+      "angle_deg": 260.0,
+      "file": "rot_0260.png",
+      "content_origin_px": [
+        655,
+        583
+      ],
+      "content_size_px": [
+        531,
+        764
+      ]
+    },
+    {
+      "index": 261,
+      "angle_deg": 261.0,
+      "file": "rot_0261.png",
+      "content_origin_px": [
+        655,
+        582
+      ],
+      "content_size_px": [
+        531,
+        766
+      ]
+    },
+    {
+      "index": 262,
+      "angle_deg": 262.0,
+      "file": "rot_0262.png",
+      "content_origin_px": [
+        655,
+        581
+      ],
+      "content_size_px": [
+        531,
+        767
+      ]
+    },
+    {
+      "index": 263,
+      "angle_deg": 263.0,
+      "file": "rot_0263.png",
+      "content_origin_px": [
+        655,
+        581
+      ],
+      "content_size_px": [
+        531,
+        767
+      ]
+    },
+    {
+      "index": 264,
+      "angle_deg": 264.0,
+      "file": "rot_0264.png",
+      "content_origin_px": [
+        655,
+        580
+      ],
+      "content_size_px": [
+        531,
+        769
+      ]
+    },
+    {
+      "index": 265,
+      "angle_deg": 265.0,
+      "file": "rot_0265.png",
+      "content_origin_px": [
+        655,
+        580
+      ],
+      "content_size_px": [
+        531,
+        769
+      ]
+    },
+    {
+      "index": 266,
+      "angle_deg": 266.0,
+      "file": "rot_0266.png",
+      "content_origin_px": [
+        655,
+        579
+      ],
+      "content_size_px": [
+        531,
+        770
+      ]
+    },
+    {
+      "index": 267,
+      "angle_deg": 267.0,
+      "file": "rot_0267.png",
+      "content_origin_px": [
+        655,
+        579
+      ],
+      "content_size_px": [
+        531,
+        770
+      ]
+    },
+    {
+      "index": 268,
+      "angle_deg": 268.0,
+      "file": "rot_0268.png",
+      "content_origin_px": [
+        655,
+        579
+      ],
+      "content_size_px": [
+        531,
+        771
+      ]
+    },
+    {
+      "index": 269,
+      "angle_deg": 269.0,
+      "file": "rot_0269.png",
+      "content_origin_px": [
+        655,
+        579
+      ],
+      "content_size_px": [
+        531,
+        771
+      ]
+    },
+    {
+      "index": 270,
+      "angle_deg": 270.0,
+      "file": "rot_0270.png",
+      "content_origin_px": [
+        655,
+        580
+      ],
+      "content_size_px": [
+        531,
+        770
+      ]
+    },
+    {
+      "index": 271,
+      "angle_deg": 271.0,
+      "file": "rot_0271.png",
+      "content_origin_px": [
+        655,
+        579
+      ],
+      "content_size_px": [
+        531,
+        771
+      ]
+    },
+    {
+      "index": 272,
+      "angle_deg": 272.0,
+      "file": "rot_0272.png",
+      "content_origin_px": [
+        655,
+        579
+      ],
+      "content_size_px": [
+        531,
+        771
+      ]
+    },
+    {
+      "index": 273,
+      "angle_deg": 273.0,
+      "file": "rot_0273.png",
+      "content_origin_px": [
+        655,
+        579
+      ],
+      "content_size_px": [
+        531,
+        771
+      ]
+    },
+    {
+      "index": 274,
+      "angle_deg": 274.0,
+      "file": "rot_0274.png",
+      "content_origin_px": [
+        655,
+        579
+      ],
+      "content_size_px": [
+        531,
+        771
+      ]
+    },
+    {
+      "index": 275,
+      "angle_deg": 275.0,
+      "file": "rot_0275.png",
+      "content_origin_px": [
+        655,
+        580
+      ],
+      "content_size_px": [
+        531,
+        769
+      ]
+    },
+    {
+      "index": 276,
+      "angle_deg": 276.0,
+      "file": "rot_0276.png",
+      "content_origin_px": [
+        655,
+        580
+      ],
+      "content_size_px": [
+        531,
+        769
+      ]
+    },
+    {
+      "index": 277,
+      "angle_deg": 277.0,
+      "file": "rot_0277.png",
+      "content_origin_px": [
+        655,
+        581
+      ],
+      "content_size_px": [
+        531,
+        768
+      ]
+    },
+    {
+      "index": 278,
+      "angle_deg": 278.0,
+      "file": "rot_0278.png",
+      "content_origin_px": [
+        655,
+        581
+      ],
+      "content_size_px": [
+        531,
+        768
+      ]
+    },
+    {
+      "index": 279,
+      "angle_deg": 279.0,
+      "file": "rot_0279.png",
+      "content_origin_px": [
+        655,
+        582
+      ],
+      "content_size_px": [
+        531,
+        766
+      ]
+    },
+    {
+      "index": 280,
+      "angle_deg": 280.0,
+      "file": "rot_0280.png",
+      "content_origin_px": [
+        655,
+        583
+      ],
+      "content_size_px": [
+        531,
+        765
+      ]
+    },
+    {
+      "index": 281,
+      "angle_deg": 281.0,
+      "file": "rot_0281.png",
+      "content_origin_px": [
+        655,
+        584
+      ],
+      "content_size_px": [
+        531,
+        763
+      ]
+    },
+    {
+      "index": 282,
+      "angle_deg": 282.0,
+      "file": "rot_0282.png",
+      "content_origin_px": [
+        655,
+        585
+      ],
+      "content_size_px": [
+        531,
+        762
+      ]
+    },
+    {
+      "index": 283,
+      "angle_deg": 283.0,
+      "file": "rot_0283.png",
+      "content_origin_px": [
+        655,
+        586
+      ],
+      "content_size_px": [
+        531,
+        760
+      ]
+    },
+    {
+      "index": 284,
+      "angle_deg": 284.0,
+      "file": "rot_0284.png",
+      "content_origin_px": [
+        655,
+        587
+      ],
+      "content_size_px": [
+        531,
+        758
+      ]
+    },
+    {
+      "index": 285,
+      "angle_deg": 285.0,
+      "file": "rot_0285.png",
+      "content_origin_px": [
+        655,
+        589
+      ],
+      "content_size_px": [
+        531,
+        756
+      ]
+    },
+    {
+      "index": 286,
+      "angle_deg": 286.0,
+      "file": "rot_0286.png",
+      "content_origin_px": [
+        655,
+        590
+      ],
+      "content_size_px": [
+        531,
+        754
+      ]
+    },
+    {
+      "index": 287,
+      "angle_deg": 287.0,
+      "file": "rot_0287.png",
+      "content_origin_px": [
+        655,
+        592
+      ],
+      "content_size_px": [
+        531,
+        751
+      ]
+    },
+    {
+      "index": 288,
+      "angle_deg": 288.0,
+      "file": "rot_0288.png",
+      "content_origin_px": [
+        655,
+        593
+      ],
+      "content_size_px": [
+        531,
+        749
+      ]
+    },
+    {
+      "index": 289,
+      "angle_deg": 289.0,
+      "file": "rot_0289.png",
+      "content_origin_px": [
+        655,
+        595
+      ],
+      "content_size_px": [
+        531,
+        746
+      ]
+    },
+    {
+      "index": 290,
+      "angle_deg": 290.0,
+      "file": "rot_0290.png",
+      "content_origin_px": [
+        655,
+        597
+      ],
+      "content_size_px": [
+        531,
+        743
+      ]
+    },
+    {
+      "index": 291,
+      "angle_deg": 291.0,
+      "file": "rot_0291.png",
+      "content_origin_px": [
+        655,
+        598
+      ],
+      "content_size_px": [
+        531,
+        741
+      ]
+    },
+    {
+      "index": 292,
+      "angle_deg": 292.0,
+      "file": "rot_0292.png",
+      "content_origin_px": [
+        655,
+        600
+      ],
+      "content_size_px": [
+        531,
+        738
+      ]
+    },
+    {
+      "index": 293,
+      "angle_deg": 293.0,
+      "file": "rot_0293.png",
+      "content_origin_px": [
+        655,
+        602
+      ],
+      "content_size_px": [
+        531,
+        735
+      ]
+    },
+    {
+      "index": 294,
+      "angle_deg": 294.0,
+      "file": "rot_0294.png",
+      "content_origin_px": [
+        655,
+        604
+      ],
+      "content_size_px": [
+        531,
+        731
+      ]
+    },
+    {
+      "index": 295,
+      "angle_deg": 295.0,
+      "file": "rot_0295.png",
+      "content_origin_px": [
+        655,
+        607
+      ],
+      "content_size_px": [
+        531,
+        727
+      ]
+    },
+    {
+      "index": 296,
+      "angle_deg": 296.0,
+      "file": "rot_0296.png",
+      "content_origin_px": [
+        655,
+        609
+      ],
+      "content_size_px": [
+        531,
+        724
+      ]
+    },
+    {
+      "index": 297,
+      "angle_deg": 297.0,
+      "file": "rot_0297.png",
+      "content_origin_px": [
+        655,
+        611
+      ],
+      "content_size_px": [
+        531,
+        720
+      ]
+    },
+    {
+      "index": 298,
+      "angle_deg": 298.0,
+      "file": "rot_0298.png",
+      "content_origin_px": [
+        655,
+        614
+      ],
+      "content_size_px": [
+        531,
+        716
+      ]
+    },
+    {
+      "index": 299,
+      "angle_deg": 299.0,
+      "file": "rot_0299.png",
+      "content_origin_px": [
+        655,
+        616
+      ],
+      "content_size_px": [
+        531,
+        713
+      ]
+    },
+    {
+      "index": 300,
+      "angle_deg": 300.0,
+      "file": "rot_0300.png",
+      "content_origin_px": [
+        655,
+        619
+      ],
+      "content_size_px": [
+        531,
+        708
+      ]
+    },
+    {
+      "index": 301,
+      "angle_deg": 301.0,
+      "file": "rot_0301.png",
+      "content_origin_px": [
+        655,
+        621
+      ],
+      "content_size_px": [
+        531,
+        704
+      ]
+    },
+    {
+      "index": 302,
+      "angle_deg": 302.0,
+      "file": "rot_0302.png",
+      "content_origin_px": [
+        655,
+        624
+      ],
+      "content_size_px": [
+        531,
+        700
+      ]
+    },
+    {
+      "index": 303,
+      "angle_deg": 303.0,
+      "file": "rot_0303.png",
+      "content_origin_px": [
+        655,
+        627
+      ],
+      "content_size_px": [
+        531,
+        695
+      ]
+    },
+    {
+      "index": 304,
+      "angle_deg": 304.0,
+      "file": "rot_0304.png",
+      "content_origin_px": [
+        655,
+        630
+      ],
+      "content_size_px": [
+        531,
+        690
+      ]
+    },
+    {
+      "index": 305,
+      "angle_deg": 305.0,
+      "file": "rot_0305.png",
+      "content_origin_px": [
+        655,
+        633
+      ],
+      "content_size_px": [
+        531,
+        685
+      ]
+    },
+    {
+      "index": 306,
+      "angle_deg": 306.0,
+      "file": "rot_0306.png",
+      "content_origin_px": [
+        655,
+        636
+      ],
+      "content_size_px": [
+        531,
+        681
+      ]
+    },
+    {
+      "index": 307,
+      "angle_deg": 307.0,
+      "file": "rot_0307.png",
+      "content_origin_px": [
+        655,
+        639
+      ],
+      "content_size_px": [
+        531,
+        676
+      ]
+    },
+    {
+      "index": 308,
+      "angle_deg": 308.0,
+      "file": "rot_0308.png",
+      "content_origin_px": [
+        655,
+        642
+      ],
+      "content_size_px": [
+        531,
+        672
+      ]
+    },
+    {
+      "index": 309,
+      "angle_deg": 309.0,
+      "file": "rot_0309.png",
+      "content_origin_px": [
+        655,
+        645
+      ],
+      "content_size_px": [
+        531,
+        673
+      ]
+    },
+    {
+      "index": 310,
+      "angle_deg": 310.0,
+      "file": "rot_0310.png",
+      "content_origin_px": [
+        655,
+        649
+      ],
+      "content_size_px": [
+        531,
+        672
+      ]
+    },
+    {
+      "index": 311,
+      "angle_deg": 311.0,
+      "file": "rot_0311.png",
+      "content_origin_px": [
+        655,
+        652
+      ],
+      "content_size_px": [
+        531,
+        672
+      ]
+    },
+    {
+      "index": 312,
+      "angle_deg": 312.0,
+      "file": "rot_0312.png",
+      "content_origin_px": [
+        655,
+        656
+      ],
+      "content_size_px": [
+        531,
+        672
+      ]
+    },
+    {
+      "index": 313,
+      "angle_deg": 313.0,
+      "file": "rot_0313.png",
+      "content_origin_px": [
+        655,
+        659
+      ],
+      "content_size_px": [
+        531,
+        672
+      ]
+    },
+    {
+      "index": 314,
+      "angle_deg": 314.0,
+      "file": "rot_0314.png",
+      "content_origin_px": [
+        655,
+        663
+      ],
+      "content_size_px": [
+        531,
+        671
+      ]
+    },
+    {
+      "index": 315,
+      "angle_deg": 315.0,
+      "file": "rot_0315.png",
+      "content_origin_px": [
+        655,
+        666
+      ],
+      "content_size_px": [
+        531,
+        671
+      ]
+    },
+    {
+      "index": 316,
+      "angle_deg": 316.0,
+      "file": "rot_0316.png",
+      "content_origin_px": [
+        655,
+        670
+      ],
+      "content_size_px": [
+        531,
+        670
+      ]
+    },
+    {
+      "index": 317,
+      "angle_deg": 317.0,
+      "file": "rot_0317.png",
+      "content_origin_px": [
+        655,
+        674
+      ],
+      "content_size_px": [
+        531,
+        669
+      ]
+    },
+    {
+      "index": 318,
+      "angle_deg": 318.0,
+      "file": "rot_0318.png",
+      "content_origin_px": [
+        655,
+        678
+      ],
+      "content_size_px": [
+        531,
+        668
+      ]
+    },
+    {
+      "index": 319,
+      "angle_deg": 319.0,
+      "file": "rot_0319.png",
+      "content_origin_px": [
+        655,
+        682
+      ],
+      "content_size_px": [
+        531,
+        667
+      ]
+    },
+    {
+      "index": 320,
+      "angle_deg": 320.0,
+      "file": "rot_0320.png",
+      "content_origin_px": [
+        655,
+        686
+      ],
+      "content_size_px": [
+        531,
+        666
+      ]
+    },
+    {
+      "index": 321,
+      "angle_deg": 321.0,
+      "file": "rot_0321.png",
+      "content_origin_px": [
+        655,
+        690
+      ],
+      "content_size_px": [
+        531,
+        665
+      ]
+    },
+    {
+      "index": 322,
+      "angle_deg": 322.0,
+      "file": "rot_0322.png",
+      "content_origin_px": [
+        655,
+        694
+      ],
+      "content_size_px": [
+        531,
+        663
+      ]
+    },
+    {
+      "index": 323,
+      "angle_deg": 323.0,
+      "file": "rot_0323.png",
+      "content_origin_px": [
+        655,
+        698
+      ],
+      "content_size_px": [
+        531,
+        662
+      ]
+    },
+    {
+      "index": 324,
+      "angle_deg": 324.0,
+      "file": "rot_0324.png",
+      "content_origin_px": [
+        655,
+        702
+      ],
+      "content_size_px": [
+        531,
+        661
+      ]
+    },
+    {
+      "index": 325,
+      "angle_deg": 325.0,
+      "file": "rot_0325.png",
+      "content_origin_px": [
+        655,
+        706
+      ],
+      "content_size_px": [
+        531,
+        659
+      ]
+    },
+    {
+      "index": 326,
+      "angle_deg": 326.0,
+      "file": "rot_0326.png",
+      "content_origin_px": [
+        655,
+        711
+      ],
+      "content_size_px": [
+        531,
+        657
+      ]
+    },
+    {
+      "index": 327,
+      "angle_deg": 327.0,
+      "file": "rot_0327.png",
+      "content_origin_px": [
+        655,
+        715
+      ],
+      "content_size_px": [
+        531,
+        655
+      ]
+    },
+    {
+      "index": 328,
+      "angle_deg": 328.0,
+      "file": "rot_0328.png",
+      "content_origin_px": [
+        655,
+        720
+      ],
+      "content_size_px": [
+        531,
+        652
+      ]
+    },
+    {
+      "index": 329,
+      "angle_deg": 329.0,
+      "file": "rot_0329.png",
+      "content_origin_px": [
+        655,
+        724
+      ],
+      "content_size_px": [
+        531,
+        651
+      ]
+    },
+    {
+      "index": 330,
+      "angle_deg": 330.0,
+      "file": "rot_0330.png",
+      "content_origin_px": [
+        655,
+        729
+      ],
+      "content_size_px": [
+        531,
+        648
+      ]
+    },
+    {
+      "index": 331,
+      "angle_deg": 331.0,
+      "file": "rot_0331.png",
+      "content_origin_px": [
+        655,
+        733
+      ],
+      "content_size_px": [
+        531,
+        646
+      ]
+    },
+    {
+      "index": 332,
+      "angle_deg": 332.0,
+      "file": "rot_0332.png",
+      "content_origin_px": [
+        655,
+        738
+      ],
+      "content_size_px": [
+        531,
+        643
+      ]
+    },
+    {
+      "index": 333,
+      "angle_deg": 333.0,
+      "file": "rot_0333.png",
+      "content_origin_px": [
+        655,
+        742
+      ],
+      "content_size_px": [
+        531,
+        641
+      ]
+    },
+    {
+      "index": 334,
+      "angle_deg": 334.0,
+      "file": "rot_0334.png",
+      "content_origin_px": [
+        655,
+        747
+      ],
+      "content_size_px": [
+        531,
+        638
+      ]
+    },
+    {
+      "index": 335,
+      "angle_deg": 335.0,
+      "file": "rot_0335.png",
+      "content_origin_px": [
+        655,
+        752
+      ],
+      "content_size_px": [
+        531,
+        635
+      ]
+    },
+    {
+      "index": 336,
+      "angle_deg": 336.0,
+      "file": "rot_0336.png",
+      "content_origin_px": [
+        655,
+        757
+      ],
+      "content_size_px": [
+        531,
+        632
+      ]
+    },
+    {
+      "index": 337,
+      "angle_deg": 337.0,
+      "file": "rot_0337.png",
+      "content_origin_px": [
+        655,
+        761
+      ],
+      "content_size_px": [
+        531,
+        630
+      ]
+    },
+    {
+      "index": 338,
+      "angle_deg": 338.0,
+      "file": "rot_0338.png",
+      "content_origin_px": [
+        655,
+        766
+      ],
+      "content_size_px": [
+        531,
+        626
+      ]
+    },
+    {
+      "index": 339,
+      "angle_deg": 339.0,
+      "file": "rot_0339.png",
+      "content_origin_px": [
+        655,
+        771
+      ],
+      "content_size_px": [
+        531,
+        623
+      ]
+    },
+    {
+      "index": 340,
+      "angle_deg": 340.0,
+      "file": "rot_0340.png",
+      "content_origin_px": [
+        655,
+        776
+      ],
+      "content_size_px": [
+        531,
+        619
+      ]
+    },
+    {
+      "index": 341,
+      "angle_deg": 341.0,
+      "file": "rot_0341.png",
+      "content_origin_px": [
+        655,
+        781
+      ],
+      "content_size_px": [
+        531,
+        616
+      ]
+    },
+    {
+      "index": 342,
+      "angle_deg": 342.0,
+      "file": "rot_0342.png",
+      "content_origin_px": [
+        655,
+        786
+      ],
+      "content_size_px": [
+        531,
+        612
+      ]
+    },
+    {
+      "index": 343,
+      "angle_deg": 343.0,
+      "file": "rot_0343.png",
+      "content_origin_px": [
+        655,
+        791
+      ],
+      "content_size_px": [
+        531,
+        609
+      ]
+    },
+    {
+      "index": 344,
+      "angle_deg": 344.0,
+      "file": "rot_0344.png",
+      "content_origin_px": [
+        655,
+        796
+      ],
+      "content_size_px": [
+        531,
+        605
+      ]
+    },
+    {
+      "index": 345,
+      "angle_deg": 345.0,
+      "file": "rot_0345.png",
+      "content_origin_px": [
+        655,
+        801
+      ],
+      "content_size_px": [
+        531,
+        601
+      ]
+    },
+    {
+      "index": 346,
+      "angle_deg": 346.0,
+      "file": "rot_0346.png",
+      "content_origin_px": [
+        655,
+        806
+      ],
+      "content_size_px": [
+        531,
+        597
+      ]
+    },
+    {
+      "index": 347,
+      "angle_deg": 347.0,
+      "file": "rot_0347.png",
+      "content_origin_px": [
+        655,
+        811
+      ],
+      "content_size_px": [
+        531,
+        593
+      ]
+    },
+    {
+      "index": 348,
+      "angle_deg": 348.0,
+      "file": "rot_0348.png",
+      "content_origin_px": [
+        655,
+        816
+      ],
+      "content_size_px": [
+        531,
+        589
+      ]
+    },
+    {
+      "index": 349,
+      "angle_deg": 349.0,
+      "file": "rot_0349.png",
+      "content_origin_px": [
+        655,
+        821
+      ],
+      "content_size_px": [
+        531,
+        585
+      ]
+    },
+    {
+      "index": 350,
+      "angle_deg": 350.0,
+      "file": "rot_0350.png",
+      "content_origin_px": [
+        655,
+        826
+      ],
+      "content_size_px": [
+        531,
+        581
+      ]
+    },
+    {
+      "index": 351,
+      "angle_deg": 351.0,
+      "file": "rot_0351.png",
+      "content_origin_px": [
+        655,
+        832
+      ],
+      "content_size_px": [
+        531,
+        575
+      ]
+    },
+    {
+      "index": 352,
+      "angle_deg": 352.0,
+      "file": "rot_0352.png",
+      "content_origin_px": [
+        655,
+        837
+      ],
+      "content_size_px": [
+        531,
+        571
+      ]
+    },
+    {
+      "index": 353,
+      "angle_deg": 353.0,
+      "file": "rot_0353.png",
+      "content_origin_px": [
+        655,
+        842
+      ],
+      "content_size_px": [
+        531,
+        567
+      ]
+    },
+    {
+      "index": 354,
+      "angle_deg": 354.0,
+      "file": "rot_0354.png",
+      "content_origin_px": [
+        655,
+        847
+      ],
+      "content_size_px": [
+        531,
+        562
+      ]
+    },
+    {
+      "index": 355,
+      "angle_deg": 355.0,
+      "file": "rot_0355.png",
+      "content_origin_px": [
+        655,
+        852
+      ],
+      "content_size_px": [
+        531,
+        558
+      ]
+    },
+    {
+      "index": 356,
+      "angle_deg": 356.0,
+      "file": "rot_0356.png",
+      "content_origin_px": [
+        655,
+        858
+      ],
+      "content_size_px": [
+        531,
+        552
+      ]
+    },
+    {
+      "index": 357,
+      "angle_deg": 357.0,
+      "file": "rot_0357.png",
+      "content_origin_px": [
+        655,
+        863
+      ],
+      "content_size_px": [
+        531,
+        547
+      ]
+    },
+    {
+      "index": 358,
+      "angle_deg": 358.0,
+      "file": "rot_0358.png",
+      "content_origin_px": [
+        655,
+        868
+      ],
+      "content_size_px": [
+        531,
+        542
+      ]
+    },
+    {
+      "index": 359,
+      "angle_deg": 359.0,
+      "file": "rot_0359.png",
+      "content_origin_px": [
+        655,
+        873
+      ],
+      "content_size_px": [
+        531,
+        537
+      ]
+    }
+  ]
+}

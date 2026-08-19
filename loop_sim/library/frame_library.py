@@ -193,7 +193,13 @@ _BUILD_KEYS = ("axis", "step_deg", "n_cond", "supersample", "pan_mm",
 #                       of pose_crop, and never written into a template.  Being
 #                       able to change it without a rebuild is the whole reason
 #                       it was placed there; hashing it would give that back.
-#   renderer/beam.py    the X-ray path.  No optical template comes from it.
+#   renderer/beam.py,
+#   renderer/xray_torch.py   the X-ray path.  No optical template comes from
+#                       either -- render_xray_torch/trace_xray used to live
+#                       IN engine_torch.py (which IS hashed below), so an
+#                       X-ray-only GPU edit silently invalidated every optical
+#                       library until they were split out (2026-08-18, see
+#                       docs/DECISIONS.md).  Keep X-ray code out of this file.
 #   library/, server/   delivery, not content -- and `pose_crop` lives in
 #                       library/, so hashing it would invalidate every library
 #                       for a change to how frames are CROPPED.

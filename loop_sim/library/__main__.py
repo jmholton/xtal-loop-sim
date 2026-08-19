@@ -9,6 +9,14 @@ are part of the deliverable, not build output.
 
 Tile size defaults to `auto`, which calibrates peak memory against two cheap
 probe renders and sizes each pass to fit inside --vram-fraction of free VRAM.
+
+--modality xray builds the X-ray radiograph library instead (16-bit
+greyscale, no --n-cond/--psf/--quality/--format -- the tracer has none of
+those; --tile-size/--recrop/--preview are also optical-only and not
+supported here yet). Separate root (xray_library/) and render_sha -- see
+loop_sim/library/xray_library.py and docs/DECISIONS.md 2026-08-18.
+
+    python -m loop_sim.library --modality xray --scene scene_files/hampton_300um.yaml
 """
 import argparse
 import glob
@@ -22,6 +30,51 @@ from .frame_library import (CPU_BUILD_REFUSAL, DEFAULT_FORMAT, DEFAULT_N_COND,
                             PREVIEW_BUILD, build_library, build_params,
                             cuda_available, is_current, library_dir,
                             recrop_library, zoom_limits)
+from .xray_library import DEFAULT_ROOT as XRAY_DEFAULT_ROOT
+from .xray_library import (build_xray_library, xray_build_params,
+                           xray_is_current)
+from .xray_library import zoom_limits as xray_zoom_limits
+
+
+def _main_xray(args, scenes):
+    """The --modality xray build loop -- see this module's docstring.
+
+    No --n-cond/--psf/--quality/--format/--tile-size/--vram-fraction: the
+    tracer has none of those knobs. Kept as a separate function rather than
+    threading a branch through the optical loop below, since the two share
+    almost no options.
+    """
+    root = XRAY_DEFAULT_ROOT if args.root == DEFAULT_ROOT else args.root
+    opts = dict(axis=args.axis, step_deg=args.step, supersample=args.supersample,
+               pan_mm=args.pan_mm)
+    refuse_cpu = (not args.allow_cpu) and (
+        args.device == "cpu" or (args.device is None and not cuda_available()))
+
+    rc = 0
+    for s in scenes:
+        lib = library_dir(s, root)
+        if not args.force and xray_is_current(s, lib, **xray_build_params(**opts)):
+            print(f"[xray-library] {s}: already current -> {lib}")
+            continue
+        if refuse_cpu:
+            print(f"[xray-library] {s}: {CPU_BUILD_REFUSAL}", file=sys.stderr)
+            rc = 2
+            continue
+        print(f"[xray-library] building {s} -> {lib}")
+        try:
+            man = build_xray_library(s, root=root, device=args.device, **opts)
+        except RuntimeError as exc:
+            print(f"[xray-library] FAILED {s}: {exc}", file=sys.stderr)
+            rc = 1
+            continue
+        n = len(man["frames"])
+        size = sum(os.path.getsize(os.path.join(lib, f["file"]))
+                   for f in man["frames"]) / 2**20
+        rnd = man["rendered"]
+        zmin, zmax = xray_zoom_limits(man)
+        print(f"[xray-library] {s}: {n} frames at {rnd['width']}x{rnd['height']}, "
+              f"{size:.1f} MB, zoom range {zmin:.2f}..{zmax:.0f}x")
+    return rc
 
 
 def main(argv=None):
@@ -82,6 +135,10 @@ def main(argv=None):
                         "roughly 179 s/frame -- ~3.6 h for a 72-frame preview "
                         "and ~18 h for a full library -- so it is refused "
                         "unless you ask for it explicitly")
+    p.add_argument("--modality", choices=["optical", "xray"], default="optical",
+                   help="optical (default): the bright-field camera library. "
+                        "xray: the transmission-radiograph library -- see "
+                        "this module's docstring")
     args = p.parse_args(argv)
 
     scenes = list(args.scene)
@@ -89,6 +146,12 @@ def main(argv=None):
         scenes += sorted(glob.glob(os.path.join("scene_files", "*.yaml")))
     if not scenes:
         p.error("give --scene FILE or --all")
+
+    if args.modality == "xray":
+        if args.recrop or args.preview:
+            p.error("--recrop and --preview are optical-only; not "
+                    "supported yet for --modality xray")
+        return _main_xray(args, scenes)
 
     # Would an actual build run on the CPU?  Checked per scene below, AFTER the
     # already-current short-circuit, so that on a GPU-less box a run with
