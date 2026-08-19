@@ -362,12 +362,17 @@ is cheaper per ray, but there is no template reuse across the two modalities).
 path got wrong until it was fixed (HANDOFF "Hazards"). `--xray-library-root` points
 `camera_server` at a library root; if a complete one exists for the current scene (current
 *or* stale — a stale one is served as-is, same convention as the optical side), `/xray`
-serves from it in single-digit ms. If not, `/xray` keeps rendering live exactly as it
-always did — there is no `--allow-cpu`-style override here because there is nothing to
-refuse; a missing library is simply not used. Building one is always the explicit CLI
-command above, never a server side effect.
+serves from it in single-digit ms and it is also **prewarmed into RAM at boot and on
+every scene switch** (`XrayTemplateSource.prewarm()`, mirroring the optical templates'
+own prewarm), which is what `GET /xray-stream` — the MJPEG-style push stream, started by
+`POST /stream-mode?mode=radiograph` and stopped by `mode=microscope` — needs to run at
+close to the optical stream's own frame rate (~28 fps measured in motion) rather than
+paying a disk decode per frame. If no library exists, both `/xray` and `/xray-stream`
+keep rendering live exactly as `/xray` always did — there is no `--allow-cpu`-style
+override here because there is nothing to refuse; a missing library is simply not used.
+Building one is always the explicit CLI command above, never a server side effect.
 
-**Built 2026-08-19, not yet committed.** All three shipped scenes have a current X-ray
+**Built 2026-08-19, committed.** All three shipped scenes have a current X-ray
 library, built with the illustrative `mu_xray` values settled 2026-08-18 (see
 DECISIONS.md) — a future switch to literature-real coefficients would need a rebuild:
 
