@@ -130,12 +130,16 @@ loop_sim/
                              --modality xray --scene <scene>`
   server/
     camera_server.py         AXIS HTTP server; renders via engine_torch on CUDA, else
-                             microscope; /beam (JSON) + /xray (radiograph PNG, served
-                             from xray_library when current, else live);
-                             control page (/), animated /move + /recenter (daemon
-                             animator thread interpolates the goniometer)
+                             microscope; /beam (JSON) + /xray (radiograph PNG,
+                             single-shot) + /xray-stream (radiograph MJPEG-style
+                             push stream, its own producer thread/_xray_frame_cv,
+                             started/stopped by POST /stream-mode -- see
+                             _set_stream_mode); control page (/), animated
+                             /move + /recenter (daemon animator thread
+                             interpolates the goniometer)
     static/index.html        interactive control UI (crosshair, pan/rot/zoom, speed
-                             dial, Microscope/Radiograph toggle, /beam readout panel)
+                             dial, Microscope/Radiograph toggle -- a real push
+                             stream each, not client polling -- /beam readout panel)
 ```
 
 ## Server animation & concurrency

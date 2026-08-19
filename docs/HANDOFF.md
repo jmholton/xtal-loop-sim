@@ -5,10 +5,15 @@ FIRST-CLASS ENDPOINT — the `_scene_lock` freeze bug that had it stalling the l
 stream on every request is fixed, and it serves from a pre-computed 16-bit radiograph
 library (its own module/root/render_sha, `loop_sim/library/xray_library.py`) when one
 exists; AS OF 2026-08-19 ALL THREE REAL LIBRARIES ARE BUILT (39 MB, see DECISIONS.md) and
-the viewer has a Microscope/Radiograph toggle plus a `/beam` dose-and-volumes readout —
-see the 2026-08-19 work-log entry
-last_verified: 2026-08-19        # `pytest tests/` = 252 passed in 566 s on this tree (unchanged count from 2026-08-18 -- the day's work added no new tests, only the three X-ray libraries + the viewer toggle; branch performance-correctness-optimizations, RTX 4080 SUPER; branch depth is CHEAP TO MEASURE -- `git rev-list --count master..HEAD` -- so measure it rather than quoting a number here)
-verify: python -m pytest tests/ -q        # 252 tests; "python" = the torch-enabled project interpreter (see docs/RUNBOOK.md "Environment")
+RADIOGRAPH IS A REAL PUSH STREAM (`/xray-stream`, `POST /stream-mode`) — ~28 fps in
+motion, reversing the original still-not-a-stream call now that the concurrency risk it
+was avoiding is addressed directly (two producers, neither sharing state, only one
+active at a time) rather than avoided; both the optical AND X-ray template caches are
+prewarmed at boot/switch (8.8 s combined on the flagship scene); a `/beam`
+dose-and-volumes readout ships alongside it — see the 2026-08-19 (later still) work-log
+entry
+last_verified: 2026-08-19        # `pytest tests/` = 262 passed in 461 s on this tree (was 252; +10 for the X-ray stream -- see DECISIONS.md; branch performance-correctness-optimizations, RTX 4080 SUPER; branch depth is CHEAP TO MEASURE -- `git rev-list --count master..HEAD` -- so measure it rather than quoting a number here)
+verify: python -m pytest tests/ -q        # 262 tests; "python" = the torch-enabled project interpreter (see docs/RUNBOOK.md "Environment")
 ---
 
 # HANDOFF — loop-sim (xtal-loop-sim)
@@ -759,6 +764,65 @@ those numbers don't have to be re-derived.
   `/home/jadoughty/projects/loop_sim_MINE/investigation/`.
 
 ## Work log (append-only)
+
+- **2026-08-19 (later still) — Radiograph became a real push stream, prewarmed
+  alongside the microscope view.** Uncommitted, same convention as the entries below
+  (now plus `camera_server.py`'s X-ray producer/consumer machinery,
+  `tests/test_xray_stream.py`, and lock-order/prewarm test additions — Jacob commits).
+
+  Started from live user feedback after the polling-based Radiograph shipped earlier
+  today: it worked, but nowhere near the microscope view's frame rate, and "why can't
+  it be as fast" turned into a real architecture change once the operator proposed the
+  fix directly — Microscope XOR Radiograph, so only one producer thread needs to be
+  *active* at a time, addressing the exact concurrency risk (docs/DECISIONS.md
+  2026-07-06 `_active_compiled`) the original still-not-a-stream call was avoiding,
+  rather than sidestepping it. Went through plan mode given the size and the
+  concurrency-sensitivity of what it touches; the approved plan is preserved at
+  `~/.claude/plans/idempotent-zooming-pumpkin.md`.
+
+  **`/xray-stream` mirrors the optical MJPEG producer/consumer pattern
+  (`_bg_render_loop`/`_frame_cv`) with entirely separate state** — never shared with the
+  optical producer's, the actual lesson the 2026-07-06 fix left behind.
+  `POST /stream-mode?mode=microscope|radiograph` starts/stops the X-ray producer alone;
+  **the optical producer is never touched** — other consumers (a second tab, an
+  AXIS-protocol poller) have no notion of this UI's toggle, and freezing their view
+  would have been a real regression the original XOR framing didn't account for. Ships
+  single-active-radiograph-viewer, not connection-refcounted (a second tab watching
+  Radiograph freezes if the first switches away) — matches the operator's own framing,
+  and a refcounted upgrade is a bounded follow-up if that turns out to matter.
+
+  **Both template caches now prewarm at boot and on every scene switch.**
+  `XrayTemplateSource` gained `prewarm()` (mirroring `TemplateSource.prewarm()`) and
+  `cache_size="all"`; wired into the existing `_build_bundle`/`_install_bundle` split, no
+  new lock needed. Measured on the flagship mesh scene: optical 360 frames/2.32 GiB/5.2s
+  + X-ray 360 frames/1.08 GiB/3.6s = 8.8s combined at boot. **Streaming throughput while
+  actively moving: ~28 fps**, close to the microscope's own rate — the actual fix for
+  "why is Radiograph slower," not a further latency chase.
+
+  **A real false positive in the lock-order checker, worth remembering:** it maps
+  method names to bodies by name only, not by class, so `t.start()` (a
+  `threading.Thread` method) inside a lock was resolved as a call to
+  `CameraServer.start()` (name collision) and flagged a lock-order violation that
+  wasn't real. Fixed by moving `Thread.start()` outside the lock anyway — better
+  practice regardless of the checker, and it stopped flagging. Verified the checker's
+  generalization to a second leaf lock is real (temporarily reintroduced the nested
+  call, confirmed both tests fail, reverted) rather than assuming it from reading the
+  code.
+
+  A crash mid-session (WSL2, likely from stacking a live server holding two full
+  prewarmed caches, a background full test-suite run, and manual load-testing all at
+  once) cost no work — everything was already on disk — but is the reason verification
+  below ran in strictly separate steps rather than overlapping them.
+
+  Verified: full suite **262 passed** (was 252, +10: `tests/test_xray_stream.py` new —
+  7 tests for single-flight coalescing, start/stop lifecycle, idempotence, rapid
+  toggling leaving exactly one thread, survival across a scene switch with the next
+  frame reflecting the new scene, live-render fallback with no library, and proof the
+  optical producer is untouched by an X-ray mode switch; `test_xray_serve.py` +2 for
+  `prewarm()`; `test_scene_switch.py` +1 for the bundle/install wiring), run alone, not
+  concurrently with the live server. Full reasoning in DECISIONS.md's 2026-08-19 (later
+  still) entry — this is the map, not the detail. **Next:** none of the plan's phases
+  remain open.
 
 - **2026-08-19 — the two items left open by 2026-08-18: the real X-ray libraries, and
   the viewer toggle.** Uncommitted, same convention as the entry below (now plus

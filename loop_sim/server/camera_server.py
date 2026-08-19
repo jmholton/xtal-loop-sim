@@ -578,20 +578,59 @@ class XrayTemplateSource:
     RGB (16-bit greyscale), no PSF/defocus blur (a collimated beam's
     Beer-Lambert integral does not change with depth -- see
     loop_sim/library/xray_library.py's module docstring), no pin streak, no
-    sensor stretch. On-demand only (not part of the MJPEG stream), so no
-    prewarm/RAM-budget machinery either -- a handful of decoded 16-bit frames
-    costs nothing next to the optical cache.
+    sensor stretch.
+
+    Two cache regimes: the lazy default (`cache_size=8`, an on-demand LRU for
+    the plain /xray snapshot path) and `cache_size="all"` with `prewarm()`
+    (for the /xray-stream producer, which needs every frame already decoded
+    -- see prewarm()'s docstring for why and CameraServer's boot/scene-switch
+    prewarm wiring). No RAM-fraction-aware "auto" sizing like TemplateSource's
+    -- its per-pixel byte constant is measured for RGBX-padded 8-bit
+    templates and does not apply to 16-bit greyscale, and a full X-ray sweep
+    is small enough (measured 256 MB-1.2 GB per scene) that a budget is not
+    worth building.
     """
 
     def __init__(self, manifest, lib_dir, cache_size=8):
         self.manifest = manifest
         self.lib_dir = lib_dir
+        if isinstance(cache_size, str):
+            if cache_size != "all":
+                raise ValueError(f"cache_size must be an int or 'all', "
+                                 f"got {cache_size!r}")
+            cache_size = len(manifest.get("frames") or ()) or 1
         self._cache_size = cache_size
         self._cache = {}
         self._order = []
         self._lock = threading.Lock()
         self._warned_clamp = False
         self._background = int((manifest.get("background_i16") or [65535])[0])
+
+    def prewarm(self, progress=None):
+        """Decode the whole library up front. Returns (frames, bytes) held.
+
+        Direct adaptation of TemplateSource.prewarm() -- same
+        refuse-unless-the-cache-can-hold-everything guard (LRU against a
+        cyclic sweep evicts each frame just before it comes round again, so
+        pre-warming a too-small cache would spend the decode and throw the
+        result away), same NOT-called-from-__init__ reasoning (a constructor
+        that quietly decoded 360 frames would break any caller measuring cold
+        costs). 2 bytes/px here (16-bit greyscale, "I;16"), not
+        TemplateSource's 4.25 (RGBX-padded 8-bit).
+        """
+        frames = self.manifest.get("frames") or ()
+        if not frames or self._cache_size < len(frames):
+            return 0, 0
+        t0 = time.monotonic()
+        for i, rec in enumerate(frames):
+            self._frame(rec["file"])
+            if progress and (i + 1) % max(1, len(frames) // 4) == 0:
+                progress(f"[xray-templates] pre-warming {i + 1}/{len(frames)}")
+        held = sum(im.size[0] * im.size[1] * 2 for im in self._cache.values())
+        if progress:
+            progress(f"[xray-templates] pre-warmed {len(self._cache)} frames "
+                     f"({held / 2**20:.1f} MB) in {time.monotonic() - t0:.1f}s")
+        return len(self._cache), held
 
     def _frame(self, name):
         from PIL import Image
@@ -673,6 +712,36 @@ class XrayTemplateSource:
         buf = io.BytesIO()
         Image.fromarray(img8, mode="L").save(buf, format="PNG")
         return buf.getvalue()
+
+
+def _load_xray_templates(scene_path, xray_library_root, cache_size=8):
+    """XrayTemplateSource for one scene, or None if no usable library exists.
+
+    Shared by both consumers so they can never silently disagree about what
+    counts as a usable library: _get_xray_templates's lazy per-scene_gen memo
+    (cache_size=8, the plain /xray snapshot fallback) and the PREWARMED source
+    CameraServer builds at boot and on every scene switch (cache_size="all",
+    read by the /xray-stream producer).
+
+    Accepts a `current` OR `stale` library (only `missing` is refused) -- same
+    convention the optical side already established (RUNBOOK "Frame
+    libraries": "A stale library is served as-is, never rebuilt behind your
+    back"). No build-parameter grading: unlike the optical side there is no
+    --xray-supersample/--xray-step flag for an operator to have asked
+    something specific with, so there is nothing to grade "stale" against.
+    Never builds -- a missing library just means the caller falls back to
+    live rendering, exactly as /xray always has.
+    """
+    if scene_path is None:
+        return None
+    from ..library.xray_library import library_dir, load_manifest, xray_library_status
+    lib_dir = library_dir(scene_path, xray_library_root)
+    if xray_library_status(scene_path, lib_dir) == "missing":
+        return None
+    man = load_manifest(lib_dir)
+    if man is None:
+        return None
+    return XrayTemplateSource(man, lib_dir, cache_size=cache_size)
 
 
 # ---------------------------------------------------------------------------
@@ -834,7 +903,8 @@ def recenter_target(col, row, state, geometry, camera_cfg):
 
 _SceneBundle = namedtuple("_SceneBundle",
                           "scene_path scene goniometer templates tscene "
-                          "want_templates library_kwargs serving_from warning")
+                          "want_templates library_kwargs serving_from warning "
+                          "xray_templates")
 _SceneBundle.__doc__ = """Everything a scene contributes to the server, as one value.
 
 Built entirely off-lock by `_build_bundle` and consumed by `_install_bundle`.
@@ -921,6 +991,22 @@ def _switch_idle():
 
 class _Handler(BaseHTTPRequestHandler):
 
+    # HTTP/1.1 so the underlying TCP connection is reused across requests
+    # (the stdlib default is 1.0, which sends "Connection: close" and pays a
+    # fresh handshake every single request). Safe because every short-lived
+    # response on this server already goes through _send_json or sets its own
+    # Content-Length explicitly (_handle_xray, _handle_beam, _handle_snapshot,
+    # _handle_index) -- the one response that never terminates, the MJPEG
+    # stream, already holds its own connection open for its whole lifetime
+    # regardless of protocol_version, so this changes nothing about it.
+    # Without this a WSL2 client pays the localhost-relay's per-connection
+    # setup cost on every poll -- ~1.5s observed on /xray and /beam, which a
+    # render taking single-digit-to-tens of ms cannot explain on its own.
+    # `timeout` bounds how long an idle keep-alive connection can pin a
+    # thread if a client goes away without closing cleanly.
+    protocol_version = "HTTP/1.1"
+    timeout = 30
+
     def log_message(self, fmt, *args):
         pass   # suppress default stdout logging
 
@@ -947,6 +1033,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._handle_beam()
         elif path == "/xray":
             self._handle_xray()
+        elif path == "/xray-stream":
+            self._handle_xray_stream()
         elif path == "/scenes":
             self._send_json(self.server._scenes_json())
         elif path == "/scene":
@@ -968,6 +1056,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._handle_motor(params)
         elif parsed.path == "/move":
             self._handle_move(params)
+        elif parsed.path == "/stream-mode":
+            self._handle_stream_mode(params)
         else:
             self.send_error(404)
 
@@ -1059,6 +1149,78 @@ class _Handler(BaseHTTPRequestHandler):
                 last_send = time.monotonic()
         except (BrokenPipeError, ConnectionResetError):
             pass
+
+    def _handle_xray_stream(self):
+        """Pure consumer of the X-ray producer's published frames -- a
+        near-verbatim mirror of _handle_mjpeg reading _xray_frame_cv /
+        _xray_jpeg_cache / _xray_frame_gen instead, PNG per part rather than
+        JPEG. multipart/x-mixed-replace doesn't care what each part's own
+        Content-Type says, so _MJPEG_BOUNDARY and srv._frame_interval are
+        reused unchanged.
+
+        Does NOT start the producer -- connecting here before a
+        POST /stream-mode?mode=radiograph just waits (silently, same as an
+        MJPEG client connecting before the first frame renders) until one
+        starts publishing. Starting the producer is _set_stream_mode's job
+        alone, so there is exactly one place that ever spawns
+        _xray_bg_render_loop.
+        """
+        srv = self.server
+        self.send_response(200)
+        self.send_header(
+            "Content-Type",
+            "multipart/x-mixed-replace; boundary=myboundary"
+        )
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        keepalive = 1.0
+        self.wfile.write(_MJPEG_BOUNDARY + b"\r\n")
+        flush_delay = srv._frame_interval
+        last_gen  = 0
+        last_send = 0.0
+        fresh     = False
+        try:
+            while True:
+                with srv._xray_frame_cv:
+                    deadline = time.monotonic() + (
+                        flush_delay if fresh else keepalive)
+                    while srv._xray_frame_gen == last_gen:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0.0:
+                            break
+                        srv._xray_frame_cv.wait(remaining)
+                delay = last_send + srv._frame_interval - time.monotonic()
+                if delay > 0.0:
+                    time.sleep(delay)
+                with srv._xray_frame_cv:
+                    png = srv._xray_jpeg_cache
+                    gen = srv._xray_frame_gen
+                if png is None:
+                    continue
+                frame = (
+                    b"Content-Type: image/png\r\n"
+                    + f"Content-Length: {len(png)}\r\n".encode()
+                    + b"\r\n"
+                    + png
+                    + b"\r\n"
+                    + _MJPEG_BOUNDARY + b"\r\n"
+                )
+                self.wfile.write(frame)
+                self.wfile.flush()
+                fresh     = gen != last_gen
+                last_gen  = gen
+                last_send = time.monotonic()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def _handle_stream_mode(self, params):
+        mode = params.get("mode", "")
+        try:
+            self.server._set_stream_mode(mode)
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=400)
+            return
+        self._send_json({"active_stream": mode})
 
     def _send_json(self, obj, status=200):
         # Errors from the scene endpoints go out as JSON, not via send_error:
@@ -1246,16 +1408,20 @@ class CameraServer(ThreadingHTTPServer):
             self._library_kwargs.get("root", _LIB_DEFAULT_ROOT))
         self._preview_root   = os.path.abspath(preview_root or _LIB_PREVIEW_ROOT)
         self._scene_dir      = os.path.abspath(scene_dir or _SCENE_DIR_DEFAULT)
-        # X-ray library: a READ-ONLY lookup, not part of the scene-switch
-        # machinery above (_build_bundle/_install_bundle never touch it) --
-        # /xray never needs to change atomically with anything a switch
-        # swaps, so it is deliberately independent, opportunistic state,
-        # looked up lazily in _get_xray_templates and cached per scene_gen.
-        # Never builds; a missing/stale library just means /xray keeps
-        # rendering live, exactly as before this existed.
+        # X-ray library: a READ-ONLY lookup -- never builds; a missing/stale
+        # library just means /xray (and the stream, below) keep rendering
+        # live. Two consumers share one lookup (_load_xray_templates):
+        # _get_xray_templates's lazy per-scene_gen memo (cache_size=8, the
+        # plain /xray snapshot path) and the PREWARMED source built at boot
+        # and on every scene switch (cache_size="all", see the prewarm block
+        # below and _build_bundle/_install_bundle) that the /xray-stream
+        # producer reads. _xray_templates_cache is still keyed on scene_gen
+        # and read the same way for both -- see _get_xray_templates.
         self._xray_library_root = os.path.abspath(xray_library_root or
                                                    _XRAY_LIB_DEFAULT_ROOT)
+        self._xray_templates = None   # the PREWARMED source; None if none exists
         self._xray_templates_cache = None   # (scene_gen, XrayTemplateSource|None)
+        self._xray_status_cache = {}   # scene_path -> status string, see _scenes_json
         self._serving_from   = None    # "full" | "preview" | None
         self._scene_warning  = None    # set when a stale library is served
         # Single-slot memo for /beam and /xray, keyed on (scene_gen, pose_phase).
@@ -1316,6 +1482,30 @@ class CameraServer(ThreadingHTTPServer):
         self._render_count   = 0     # diagnostics: total _render_now calls
         self._frame_cv       = threading.Condition()
         self._bg_thread      = None
+
+        # X-ray stream frame slot -- structurally identical to the optical one
+        # above, deliberately NOT sharing any of its state (see the 2026-07-06
+        # _active_compiled incident in docs/DECISIONS.md: a shared, unlocked
+        # mutable flag read/written cross-thread caused a real data race; the
+        # fix there, and the discipline followed here, is to keep every piece
+        # of cross-thread state under its own lock rather than share it).
+        # _frame_cv is a LEAF (see the lock-order comment above); _xray_frame_cv
+        # is a SECOND, independent leaf -- never held while acquiring anything,
+        # never acquired while holding anything, including _frame_cv itself.
+        # Unlike the optical producer (started once in start(), never stopped),
+        # the X-ray producer has an explicit start/stop lifecycle driven by the
+        # client's Microscope/Radiograph toggle -- see _set_stream_mode. The
+        # optical producer is NEVER stopped: other consumers (a second browser
+        # tab, an AXIS-protocol poller such as MxCuBE/EPICS) have no notion of
+        # this UI's mode toggle, and freezing their view because someone else
+        # switched to Radiograph would be a real regression, not a savings.
+        self._xray_jpeg_cache   = None
+        self._xray_cache_dirty  = False
+        self._xray_frame_gen    = 0
+        self._xray_frame_cv     = threading.Condition()
+        self._xray_bg_thread    = None
+        self._xray_stream_token = 0   # cooperative-stop generation, the _anim_gen idiom
+        self._active_stream     = "microscope"   # guarded by _xray_frame_cv
 
         # Animation: a daemon thread linearly interpolates the goniometer toward
         # a target pose so issued moves glide instead of teleporting.  _gonio_lock
@@ -1411,6 +1601,23 @@ class CameraServer(ThreadingHTTPServer):
             if self._prewarm:
                 self._templates.prewarm(progress=print)
 
+        # X-ray: same prewarm-before-socket-binds reasoning as the optical
+        # block above, PREWARMED (cache_size="all") rather than the lazy
+        # cache_size=8 _get_xray_templates itself uses -- the /xray-stream
+        # producer needs every frame already decoded, since a slew visits
+        # every angle once per revolution and an 8-entry LRU would miss on
+        # nearly all of them (same reasoning TemplateSource's own docstring
+        # gives for the optical cache). Costs ~5s measured, on top of the
+        # optical prewarm above -- sequential, not parallel, in this pass.
+        # A missing library is not an error: _load_xray_templates returns
+        # None and /xray-stream falls back to live rendering, same as the
+        # plain /xray endpoint always has.
+        self._xray_templates = _load_xray_templates(
+            scene_path, self._xray_library_root, cache_size="all")
+        if self._xray_templates is not None and self._prewarm:
+            self._xray_templates.prewarm(progress=print)
+        self._xray_templates_cache = (self._scene_gen, self._xray_templates)
+
     # ------------------------------------------------------------------
     # Cache management
     # ------------------------------------------------------------------
@@ -1419,6 +1626,21 @@ class CameraServer(ThreadingHTTPServer):
         with self._frame_cv:
             self._cache_dirty = True
             self._frame_cv.notify_all()   # wake the producer (and any waiters)
+
+    def _invalidate_xray(self):
+        with self._xray_frame_cv:
+            self._xray_cache_dirty = True
+            self._xray_frame_cv.notify_all()
+
+    def _invalidate_all(self):
+        """Both producers. The pose-changing call sites (an instant /motor
+        set, an animator tick, a scene-switch install) don't know or care
+        which view is on screen, so they invalidate both -- cheap when the
+        X-ray producer isn't running (a notify with no waiter under an
+        uncontended lock), and correct when it is.
+        """
+        self._invalidate()
+        self._invalidate_xray()
 
     def _snapshot_gonio(self):
         """A thread-safe, fresh Goniometer at the live pose.
@@ -1584,47 +1806,34 @@ class CameraServer(ThreadingHTTPServer):
         return result
 
     def _get_xray_templates(self, scene_path, scene_gen):
-        """XrayTemplateSource for the current scene, or None if no usable
-        X-ray library exists for it.
+        """XrayTemplateSource for the current scene (cache_size=8, lazy), or
+        None if no usable X-ray library exists for it -- see
+        _load_xray_templates for what "usable" means; this is a thin
+        scene_gen-memoized wrapper around it.
 
-        Accepts a `current` OR `stale` library (only `missing` is refused) --
-        same convention the optical side already established (RUNBOOK "Frame
-        libraries": "A stale library is served as-is, never rebuilt behind
-        your back"). No build-parameter grading here at all, deliberately:
-        unlike the optical side there is no --xray-supersample/--xray-step
-        flag for an operator to have asked something specific with, so there
-        is nothing to grade "stale" against in the first place -- whatever
-        complete, scene-matching library is on disk is the one to serve.
+        This is the LAZY path, used by the plain /xray snapshot fallback when
+        the PREWARMED source (self._xray_templates, built at boot and on every
+        scene switch -- see __init__ and _install_bundle) is unavailable, e.g.
+        `--prewarm off`. The two share one cache slot (_xray_templates_cache)
+        keyed on scene_gen, since a prewarmed and a lazily-loaded source for
+        the same scene_gen are interchangeable -- whichever got there first
+        is cached and reused.
 
-        READ-ONLY lookup, cached per scene_gen so a naturally-invalidating
-        cache needs no explicit reset on a scene switch (a stale cache
-        entry's scene_gen just stops matching). Never builds -- a missing
-        library only means _render_xray_png keeps rendering live, exactly as
-        it did before this existed; building can cost hours (docs/RUNBOOK.md
-        "Frame libraries") and nothing here may ever start one implicitly,
-        the same rule the optical launch path learned the hard way.
-
-        No lock: this is independent of the scene-switch machinery
-        (_build_bundle/_install_bundle never touch it) because /xray never
-        needs to change atomically with anything a switch swaps. A benign
-        race between two request threads both missing the cache just builds
-        the lookup twice; both answers agree, so it costs a redundant
-        manifest read, never a wrong one.
+        Cached per scene_gen so a naturally-invalidating cache needs no
+        explicit reset on a scene switch (a stale cache entry's scene_gen
+        just stops matching) -- unlike the frame-slot caches, this cache slot
+        IS written by _install_bundle now (with the freshly prewarmed source,
+        paired with the post-increment scene_gen inside the same critical
+        section that bumps it -- see _install_bundle), so a lookup here after
+        a switch almost always hits without recomputing. A benign race
+        between two request threads both missing the cache just builds the
+        lookup twice; both answers agree, so it costs a redundant manifest
+        read, never a wrong one.
         """
         cached = self._xray_templates_cache
         if cached is not None and cached[0] == scene_gen:
             return cached[1]
-        if scene_path is None:
-            self._xray_templates_cache = (scene_gen, None)
-            return None
-        from ..library.xray_library import (library_dir, load_manifest,
-                                            xray_library_status)
-        lib_dir = library_dir(scene_path, self._xray_library_root)
-        templates = None
-        if xray_library_status(scene_path, lib_dir) != "missing":
-            man = load_manifest(lib_dir)
-            if man is not None:
-                templates = XrayTemplateSource(man, lib_dir)
+        templates = _load_xray_templates(scene_path, self._xray_library_root)
         self._xray_templates_cache = (scene_gen, templates)
         return templates
 
@@ -1709,6 +1918,103 @@ class CameraServer(ThreadingHTTPServer):
                         self._frame_cv.wait(remaining)
 
     # ------------------------------------------------------------------
+    # X-ray stream: a second, independent single-flight producer, started
+    # and stopped explicitly by _set_stream_mode rather than running for the
+    # server's whole lifetime like _bg_render_loop above. See the state
+    # block in __init__ for why this stays fully separate from the optical
+    # producer's state rather than sharing any of it.
+    # ------------------------------------------------------------------
+
+    def _xray_render_now(self):
+        """Render the current pose and publish it as the next X-ray frame
+        generation. Structural mirror of _render_now, calling the SAME
+        _render_xray_png() the plain /xray snapshot endpoint uses -- one
+        memoized computation, not two divergent copies (see _render_xray_png's
+        own docstring for why its unlocked single-slot memo is safe to call
+        from a second thread).
+        """
+        with self._xray_frame_cv:
+            self._xray_cache_dirty = False
+        png = self._render_xray_png()   # takes _scene_lock internally; _xray_frame_cv stays a leaf
+        with self._xray_frame_cv:
+            self._xray_jpeg_cache = png
+            self._xray_frame_gen += 1
+            self._xray_frame_cv.notify_all()   # wake /xray-stream consumers
+        return png
+
+    def _xray_bg_render_loop(self, token):
+        """Single-flight X-ray producer. Simpler than _bg_render_loop: no
+        settle-forcing second phase, because the X-ray tracer has no
+        n_cond/preview distinction to converge from (a collimated-beam
+        transmission map is already exact at every pose, moving or not) --
+        every render here is already the one true frame.
+
+        Exits as soon as `token` is superseded, checked right after waking --
+        cooperative, not a hard cancel: a render already in flight when
+        _set_stream_mode stops this token always finishes and publishes
+        (harmless -- a generation bump nobody may be watching any more), and
+        the loop notices the mismatch and returns on its NEXT wake, not
+        mid-render.
+        """
+        while True:
+            with self._xray_frame_cv:
+                while (self._xray_stream_token == token
+                       and not self._xray_cache_dirty):
+                    self._xray_frame_cv.wait()
+                if self._xray_stream_token != token:
+                    return
+            self._xray_render_now()
+
+    def _set_stream_mode(self, mode):
+        """Start the X-ray producer for 'radiograph', stop it for
+        'microscope'. The ONE function that starts/stops the X-ray
+        producer thread, and everything it touches
+        (_active_stream/_xray_stream_token/_xray_bg_thread) lives under
+        _xray_frame_cv -- guarded, not the unlocked-shared-flag pattern the
+        2026-07-06 _active_compiled incident was (docs/DECISIONS.md).
+
+        The optical producer (_bg_render_loop) is never touched here: it
+        started once in start() and runs for the server's whole lifetime,
+        serving other consumers (a second browser tab, an AXIS-protocol
+        poller) that have no notion of this UI's mode toggle.
+
+        Idempotent (same mode twice is a no-op) and race-free under rapid
+        double-toggling: two callers serialize on _xray_frame_cv, whichever
+        runs second is authoritative, and the token bump guarantees a thread
+        from a superseded generation notices and exits regardless of how the
+        calls interleave.
+
+        Thread.start() happens AFTER releasing _xray_frame_cv, not inside the
+        `with` -- not a deadlock risk here (Thread.start() doesn't touch this
+        lock), but _frame_cv's own leaf discipline never starts a thread under
+        itself either (see start()), and _xray_frame_cv stays a leaf in the
+        same strict sense _acquired_within checks statically: never held
+        while anything else -- including spawning a thread whose target will
+        later acquire other locks -- happens. The dirty flag is set and the
+        thread object assigned to self._xray_bg_thread before release, so a
+        concurrent reader never sees a "started" thread that isn't in
+        self._xray_bg_thread yet.
+        """
+        if mode not in ("microscope", "radiograph"):
+            raise ValueError(f"mode must be 'microscope' or 'radiograph', got {mode!r}")
+        t = None
+        with self._xray_frame_cv:
+            if mode == self._active_stream:
+                return
+            self._active_stream = mode
+            self._xray_stream_token += 1   # stops any running producer on its next wake
+            if mode == "radiograph":
+                self._xray_cache_dirty = True   # force an immediate first render
+                t = threading.Thread(target=self._xray_bg_render_loop,
+                                     args=(self._xray_stream_token,), daemon=True)
+                self._xray_bg_thread = t
+            else:
+                self._xray_bg_thread = None
+            self._xray_frame_cv.notify_all()   # wake a stopped producer so it exits promptly
+        if t is not None:
+            t.start()
+
+    # ------------------------------------------------------------------
     # Static files
     # ------------------------------------------------------------------
 
@@ -1771,7 +2077,7 @@ class CameraServer(ThreadingHTTPServer):
                     self._target_pose = self._goniometer.get()
         self._anim_active = False
         self._last_pose_change = time.monotonic()
-        self._invalidate()
+        self._invalidate_all()
 
     def _command_move(self, params, speed):
         """Resolve a /move against the running target and animate toward it."""
@@ -1908,7 +2214,7 @@ class CameraServer(ThreadingHTTPServer):
                     return                    # preempted → touch nothing else
                 with self._gonio_lock:
                     self._goniometer.set(**pose)
-            self._invalidate()
+            self._invalidate_all()
             if frac >= 1.0:
                 break
             time.sleep(ANIM_DT)
@@ -1924,7 +2230,7 @@ class CameraServer(ThreadingHTTPServer):
             self._anim_u, self._anim_delta = 0.0, None   # arrived: at rest
             with self._gonio_lock:
                 self._goniometer.set(**target)
-        self._invalidate()
+        self._invalidate_all()
 
     # ------------------------------------------------------------------
     # Runtime scene switching
@@ -2154,6 +2460,17 @@ class CameraServer(ThreadingHTTPServer):
                    else torch.device("cpu"))
             tscene = TorchScene(scene, dev, torch.float64)
 
+        # X-ray: PREWARMED (cache_size="all"), same reasoning as the boot-time
+        # block in __init__ -- the /xray-stream producer needs every frame
+        # already decoded. Off-lock and writes nothing to self, exactly like
+        # the optical templates.prewarm() above it; a missing library is not
+        # an error, _load_xray_templates just returns None and the stream
+        # falls back to live rendering, same as the plain /xray endpoint.
+        xray_templates = _load_xray_templates(scene_path, self._xray_library_root,
+                                              cache_size="all")
+        if xray_templates is not None and self._prewarm:
+            xray_templates.prewarm(progress=progress)
+
         # Fresh goniometer, at home, bound to the NEW axes.  Rebuilding is not
         # optional: Goniometer captures scene.geometry BY REFERENCE, so a reused
         # one keeps transforming on the old axes forever -- silent, and visible
@@ -2166,7 +2483,8 @@ class CameraServer(ThreadingHTTPServer):
                             templates=templates, tscene=tscene,
                             want_templates=want_templates,
                             library_kwargs=lib_kwargs,
-                            serving_from=serving_from, warning=warning)
+                            serving_from=serving_from, warning=warning,
+                            xray_templates=xray_templates)
 
     def _install_bundle(self, bundle):
         """Swap the live scene in.  Writes only; provably cannot raise.
@@ -2213,6 +2531,17 @@ class CameraServer(ThreadingHTTPServer):
                 self._scene_warning  = bundle.warning
                 self._scene_gen     += 1
 
+                # Pair the freshly prewarmed X-ray source with the just-bumped
+                # scene_gen, inside the SAME critical section that bumps it --
+                # no separate lock needed, because _switch_lock already
+                # serialises build+install as one unit (see switch_scene), so
+                # no other switch can land between this bundle's build and its
+                # install. _get_xray_templates's lazy path reads this same
+                # slot, so a lookup after a switch hits the prewarmed source
+                # rather than recomputing it.
+                self._xray_templates       = bundle.xray_templates
+                self._xray_templates_cache = (self._scene_gen, bundle.xray_templates)
+
                 # The compiled preview trace was traced against the OLD
                 # TorchScene's tensors.  Back to eager: leaving it set means the
                 # first preview frame either recompiles inside a worker thread
@@ -2234,12 +2563,14 @@ class CameraServer(ThreadingHTTPServer):
                 self._last_render_preview = False
 
         del outgoing        # unlocked: CUDA frees, mesh teardown
-        # Outside every lock.  _frame_cv is a leaf, and the producer this wakes
-        # immediately wants _scene_lock.  Deliberately NOT a _frame_gen bump:
-        # MJPEG consumers hold no scene state, and _jpeg_cache still holds the
-        # OLD scene's frame at this instant, so bumping would push every client
-        # one duplicate stale part for no new information.
-        self._invalidate()
+        # Outside every lock.  _frame_cv and _xray_frame_cv are both leaves,
+        # and the producer(s) this wakes immediately want _scene_lock.
+        # Deliberately NOT a _frame_gen/_xray_frame_gen bump: MJPEG consumers
+        # hold no scene state, and the jpeg caches still hold the OLD scene's
+        # frame at this instant, so bumping would push every client one
+        # duplicate stale part for no new information. If the X-ray producer
+        # is running, this wakes it onto the new, already-prewarmed source.
+        self._invalidate_all()
 
     def switch_scene(self, scene_path, build=None, progress=print):
         """Serve a different scene, without restarting.  Synchronous.
@@ -2406,8 +2737,20 @@ class CameraServer(ThreadingHTTPServer):
             # answer in single-digit ms or fall through to a live render that can
             # take tens of seconds to minutes on a mesh scene (docs/DECISIONS.md
             # 2026-08-18). Purely informational -- never builds, never locks.
-            xray_lib_dir = xray_library_dir(path, self._xray_library_root)
-            xray_status = xray_library_status(path, xray_lib_dir)
+            #
+            # Cached per scene_path, not recomputed every call: a COMPLETE library's
+            # status check walks every frame file (_xray_frames_complete), and on a
+            # DrvFs-mounted repo that is ~1.9s/scene of pure stat() latency crossing
+            # the WSL2-Windows boundary -- 5.7s for three built scenes, measured,
+            # every single /scenes call (boot, and after every switch). Same
+            # per-process-lifetime tradeoff _xray_templates_cache already makes: a
+            # library built by a separate `python -m loop_sim.library` process while
+            # this server is running won't be picked up until restart.
+            xray_status = self._xray_status_cache.get(path)
+            if xray_status is None:
+                xray_lib_dir = xray_library_dir(path, self._xray_library_root)
+                xray_status = xray_library_status(path, xray_lib_dir)
+                self._xray_status_cache[path] = xray_status
             out.append({
                 "path": path,
                 "name": os.path.splitext(os.path.basename(path))[0],
@@ -2531,6 +2874,14 @@ class CameraServer(ThreadingHTTPServer):
             print(f"[templates] roty/rotz are NOT served from templates "
                   f"(one sweep covers one axis) -- use --templates off for those")
 
+        if self._xray_templates is not None:
+            n = len(self._xray_templates.manifest.get("frames") or ())
+            print(f"[xray-templates] prewarmed {n} frames for /xray-stream "
+                  f"and the plain /xray fallback")
+        else:
+            print(f"[xray-templates] no X-ray library for this scene -- "
+                  f"/xray and /xray-stream fall back to live rendering")
+
         # Single-threaded first compilation of the preview path (if enabled)
         # BEFORE any thread is spawned — concurrent first-compile crashes dynamo.
         self._warmup_compiled_preview()
@@ -2556,6 +2907,8 @@ class CameraServer(ThreadingHTTPServer):
         print(f"  Move  : http://{host}:{port}/move?drotx=90&speed=1  (animated)")
         print(f"  Beam  : http://{host}:{port}/beam")
         print(f"  Xray  : http://{host}:{port}/xray")
+        print(f"  XrayStream : http://{host}:{port}/xray-stream  "
+             f"(POST /stream-mode?mode=radiograph to start it)")
 
         if background:
             st = threading.Thread(target=self.serve_forever, daemon=True)
@@ -2642,7 +2995,10 @@ def main(argv=None):
                          "10-30 s on voltron, longer off a cold pool) and "
                          "nothing after. Skipped automatically when the cache "
                          "cannot hold a whole revolution, since a partial warm "
-                         "is evicted before it is used. off: fill lazily")
+                         "is evicted before it is used. Also covers the X-ray "
+                         "radiograph library when one exists for the scene "
+                         "(~5 s measured, always the whole sweep -- /xray-stream "
+                         "needs it fully decoded). off: fill both lazily")
     ap.add_argument("--template-cache", default="auto",
                     help="how many decoded templates to hold in RAM. "
                          "auto (default): as much of the library as half the "

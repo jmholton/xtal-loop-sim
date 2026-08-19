@@ -29,7 +29,7 @@ if REPO_ROOT not in sys.path:
 
 from loop_sim.library.xray_library import build_xray_library   # noqa: E402
 from loop_sim.scene.scene import load                            # noqa: E402
-from loop_sim.server.camera_server import CameraServer           # noqa: E402
+from loop_sim.server.camera_server import CameraServer, XrayTemplateSource  # noqa: E402
 
 SCENE = os.path.join(REPO_ROOT, "scene_files", "hampton_300um.yaml")
 
@@ -217,3 +217,47 @@ def test_never_builds(tiny_xray_root, monkeypatch):
         assert templates is None
     finally:
         srv.server_close()
+
+
+# ---------------------------------------------------------------------------
+# XrayTemplateSource.prewarm() -- CPU-only, a hand-built manifest + tiny PNGs
+# rather than a real build, since this is testing prewarm()'s OWN refuse/fill
+# logic (mirrors TemplateSource.prewarm(), see camera_server.py), not the
+# build pipeline test_library_serve_matches_live_render already covers.
+# ---------------------------------------------------------------------------
+
+def _tiny_xray_manifest(lib_dir, n_frames=4, size=(4, 4)):
+    from PIL import Image
+    os.makedirs(lib_dir, exist_ok=True)
+    frames = []
+    for i in range(n_frames):
+        name = f"rot_{i:04d}.png"
+        arr = np.full((size[1], size[0]), i * 1000, dtype=np.uint16)
+        Image.fromarray(arr).save(os.path.join(lib_dir, name))
+        frames.append({"index": i, "angle_deg": i * 90.0, "file": name,
+                       "content_origin_px": [0, 0],
+                       "content_size_px": list(size)})
+    return {"frames": frames, "background_i16": [65535],
+           "rendered": {"width": size[0], "height": size[1]}}
+
+
+def test_prewarm_refuses_when_cache_too_small(tmp_path):
+    lib_dir = str(tmp_path / "lib")
+    man = _tiny_xray_manifest(lib_dir, n_frames=4)
+    src = XrayTemplateSource(man, lib_dir, cache_size=2)   # < 4 frames
+    n, held = src.prewarm()
+    assert n == 0 and held == 0
+    assert len(src._cache) == 0, "a too-small cache must not be partially filled"
+
+
+def test_prewarm_all_fills_every_frame(tmp_path):
+    lib_dir = str(tmp_path / "lib")
+    man = _tiny_xray_manifest(lib_dir, n_frames=4, size=(4, 4))
+    src = XrayTemplateSource(man, lib_dir, cache_size="all")
+    assert src._cache_size == 4
+    n, held = src.prewarm()
+    assert n == 4
+    assert held == 4 * 4 * 4 * 2   # n_frames * w * h * 2 bytes/px (16-bit)
+    assert len(src._cache) == 4
+    for f in man["frames"]:
+        assert f["file"] in src._cache

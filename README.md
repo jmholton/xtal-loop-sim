@@ -264,7 +264,9 @@ moves like a real stage rather than snapping between poses.
 | `GET /move?drotx=90&speed=2` | **Animated** move; returns target JSON state |
 | `GET /recenter?px=400&py=300` | Animated move bringing a pixel to the centre |
 | `GET /beam` | X-ray illuminated volumes + Beer-Lambert attenuation (JSON) |
-| `GET /xray` | X-ray transmission map / radiograph (grayscale PNG) |
+| `GET /xray` | X-ray transmission map / radiograph, single-shot (grayscale PNG) |
+| `GET /xray-stream` | X-ray radiograph MJPEG-style push stream (~28 fps in motion) — only publishes while a producer is running; start one with `POST /stream-mode` |
+| `POST /stream-mode?mode=microscope\|radiograph` | Start the X-ray stream producer (`radiograph`) or stop it (`microscope`); the optical MJPEG stream is unaffected either way |
 | `GET /scenes` | Switchable scenes and the state of each one's frame library (JSON) |
 | `GET /scene` | The scene being served, plus progress/errors of any switch in flight |
 | `POST /scene?path=<scene>&build=preview\|full` | Switch scenes at runtime (see below) |

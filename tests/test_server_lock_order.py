@@ -2,7 +2,12 @@
 The camera server's lock order, checked statically.
 
     _anim_cv (3)  >  _scene_lock (2, RLock)  >  _gonio_lock (1)
-    _frame_cv (0) is a LEAF
+    _frame_cv (0) and _xray_frame_cv (0) are each a LEAF -- two independent
+    leaves, sharing a rank on purpose: the same-rank-non-reentrant check below
+    then automatically catches either one accidentally nesting inside the
+    other, with no extra test code (see docs/DECISIONS.md, the X-ray stream
+    entry, and the 2026-07-06 _active_compiled incident this discipline
+    exists to not repeat).
 
 Inside `with self._L:`, nothing -- directly, or through any CameraServer method
 it calls -- may acquire a lock of rank >= rank(L).  Re-acquiring _scene_lock is
@@ -34,8 +39,10 @@ if REPO_ROOT not in sys.path:
 
 SRC = os.path.join(REPO_ROOT, "loop_sim", "server", "camera_server.py")
 
-RANK = {"_anim_cv": 3, "_scene_lock": 2, "_gonio_lock": 1, "_frame_cv": 0}
+RANK = {"_anim_cv": 3, "_scene_lock": 2, "_gonio_lock": 1,
+        "_frame_cv": 0, "_xray_frame_cv": 0}
 REENTRANT = {"_scene_lock"}
+LEAF_LOCKS = {"_frame_cv", "_xray_frame_cv"}
 
 
 def _lock_name(item):
@@ -96,12 +103,15 @@ def test_lock_order_is_never_inverted():
 
 
 def test_frame_cv_is_a_leaf():
-    """_frame_cv must never be held while any other lock is taken.
+    """Every lock in LEAF_LOCKS must never be held while any other lock is
+    taken.
 
-    It is the one lock a request thread grabs on every streamed frame, so
-    anything nested under it would put stream latency behind scene or
-    goniometer contention -- and _get_jpeg deliberately calls _render_now
-    OUTSIDE its `with` for exactly that reason.
+    _frame_cv is the one lock a request thread grabs on every streamed
+    optical frame, so anything nested under it would put stream latency
+    behind scene or goniometer contention -- and _get_jpeg deliberately calls
+    _render_now OUTSIDE its `with` for exactly that reason. _xray_frame_cv is
+    the same guarantee for the X-ray stream (_xray_render_now calls
+    _render_xray_png OUTSIDE its `with`, mirroring _get_jpeg/_render_now).
     """
     with open(SRC) as fh:
         tree = ast.parse(fh.read())
@@ -111,12 +121,14 @@ def test_frame_cv_is_a_leaf():
     for holder in ast.walk(tree):
         if not isinstance(holder, ast.With):
             continue
-        if not any(_lock_name(i) == "_frame_cv" for i in holder.items):
+        leaf = next((_lock_name(i) for i in holder.items
+                    if _lock_name(i) in LEAF_LOCKS), None)
+        if leaf is None:
             continue
         for stmt in holder.body:
             for inner in _acquired_within(stmt, methods, set()):
-                bad.append(f"line {holder.lineno}: _frame_cv -> {inner}")
-    assert not bad, ("_frame_cv is not a leaf:\n  " + "\n  ".join(sorted(set(bad))))
+                bad.append(f"line {holder.lineno}: {leaf} -> {inner}")
+    assert not bad, ("a leaf lock is not a leaf:\n  " + "\n  ".join(sorted(set(bad))))
 
 
 def test_the_ranked_locks_all_exist():

@@ -8,6 +8,102 @@
 
 ## Decisions
 
+### 2026-08-19 (later still) — Radiograph becomes a real push stream, reversing the "still, not a stream" call
+
+The 2026-08-19 entry below this one shipped Radiograph as client-side polling of
+`/xray?t=...`, deliberately not a second MJPEG-style stream — reasoning that a second
+stream needs its own single-flight machinery, risking the class of bug the 2026-07-06
+`_active_compiled` incident was (an unlocked shared mutable flag, read/written
+cross-thread). That reasoning was sound and the decision stands as a record of why the
+polling design was chosen; it is reversed here, not because the risk wasn't real, but
+because it can be addressed directly instead of avoided: two producers are safe to run
+if neither shares state with the other, and the operator's proposal — Microscope XOR
+Radiograph, only one producer active at a time, switched explicitly rather than inferred
+— gives a clean way to guarantee that.
+
+**The mechanism is a structural mirror of the existing optical producer/consumer
+pattern (`_bg_render_loop`/`_frame_cv`/`_invalidate`/`_handle_mjpeg`), with its own,
+entirely separate state** (`_xray_jpeg_cache`/`_xray_cache_dirty`/`_xray_frame_gen`/
+`_xray_frame_cv`) — never shared with the optical producer's, which is the actual
+discipline the 2026-07-06 fix established (thread state explicitly *or* lock it; this
+locks it, the same way `_cache_dirty`/`_frame_gen` already are). `_xray_frame_cv` is
+registered in `tests/test_server_lock_order.py`'s `RANK` at the same rank as `_frame_cv`
+(0, a leaf) — deliberately sharing a rank rather than getting its own, so the existing
+same-rank-non-reentrant check automatically catches either one nesting inside the other,
+with no new test logic. `test_frame_cv_is_a_leaf` was generalized to loop over
+`LEAF_LOCKS = {"_frame_cv", "_xray_frame_cv"}`.
+
+`POST /stream-mode?mode=microscope|radiograph` → `CameraServer._set_stream_mode` is the
+one function that starts/stops the X-ray producer thread; everything it touches
+(`_active_stream`/`_xray_stream_token`/`_xray_bg_thread`) lives under `_xray_frame_cv`.
+**The optical producer is never stopped** — it started once in `start()` and keeps
+running for the server's whole lifetime regardless of this UI's mode toggle, because it
+has other consumers with no notion of that toggle at all (a second browser tab, an
+AXIS-protocol poller such as MxCuBE/EPICS) — stopping it on someone else's Radiograph
+click would silently freeze their view, a real regression the operator's XOR framing
+didn't originally account for. This ships as a **single-active-radiograph-viewer**
+model, not connection-refcounted: a second tab watching Radiograph when the first
+switches away will freeze on its last frame (MJPEG keepalive). Deliberately not built —
+matches the operator's own framing ("the viewer," singular) and nobody has asked for
+multi-tab radiograph viewing; a connection-refcounted upgrade (start on 0→1 connections,
+stop on 1→0) is a bounded, isolated follow-up if that changes.
+
+**A real false positive found by the lock-order checker, and what it revealed.**
+`_set_stream_mode` originally called `t.start()` (spawning the producer thread) from
+inside `with self._xray_frame_cv:`. The static checker flagged `_xray_frame_cv ->
+_scene_lock` and `_xray_frame_cv -> _gonio_lock` — which looked like a real inversion,
+but wasn't: `tests/test_server_lock_order.py`'s `_methods()` maps method names to
+`FunctionDef`s **by name only, not by class**, so `t.start()` (a `threading.Thread`
+method) was being resolved as a call to `CameraServer.start()` — the top-level server
+`start()` method, which does take `_scene_lock`. Coincidental name collision, not a real
+bug. Fixed anyway, and for a real reason independent of the checker: `Thread.start()`
+now happens *after* releasing `_xray_frame_cv`, not inside it — the thread object and
+every piece of `_active_stream`/`_xray_stream_token`/`_xray_bg_thread` state are still
+set atomically under the lock first, so a concurrent reader never observes a "started"
+thread that isn't yet in `self._xray_bg_thread`. Verified the checker generalization is
+real, not passing by omission: temporarily reintroduced the nested `t.start()`, confirmed
+`test_lock_order_is_never_inverted`/`test_frame_cv_is_a_leaf` both fail, reverted.
+
+**Prewarming both, at scene-load time.** `XrayTemplateSource` gains `cache_size="all"`
+and a `prewarm()` (direct adaptation of `TemplateSource.prewarm()`, 2 bytes/px for
+16-bit greyscale instead of 4.25 for RGBX-padded 8-bit) — no RAM-fraction-aware `"auto"`
+sizing, since a full X-ray sweep is small enough (measured 256 MB–1.2 GB per scene) that
+a budget isn't worth building, per the operator's own "100+GB free" framing. Wired into
+the existing build/install split — `_build_bundle` loads+prewarms off-lock, `_install_bundle`
+pairs the result with the just-bumped `scene_gen` inside the same critical section that
+bumps it, so no new lock is needed (`_switch_lock` already serialises build+install as
+one unit). `_get_xray_templates`'s lazy `cache_size=8` path shares the same cache slot,
+so after boot or a switch it hits the prewarmed source rather than recomputing — the
+plain `/xray` snapshot endpoint benefits from the prewarm too, for free.
+
+**Measured, on the flagship mesh scene (`hampton_300um_realistic`) at boot:**
+
+| | frames | size | time |
+|---|---|---|---|
+| optical prewarm | 360 | 2.32 GiB | 5.2 s |
+| X-ray prewarm | 360 | 1106.7 MB | 3.6 s |
+
+8.8 s combined, sequential (not run in parallel threads this pass — a plausible follow-up,
+not required for correctness). Streaming throughput while actively moving the stage:
+**~28 fps** — close to the microscope's own rate, and the actual answer to "why can't
+Radiograph be as fast as Microscope": it now can, once it stopped being a polled
+snapshot and became a real push stream over one held-open connection, same as the
+optical view always was. Idle (no pose change), the stream correctly falls back to the
+existing ~1 Hz MJPEG keepalive resend — no new frame to publish, so nothing new is sent,
+matching the optical stream's own idle behaviour exactly.
+
+**Test suite: 262 passed** (was 252; +10 — `tests/test_xray_stream.py` new, 7 tests
+covering single-flight coalescing, start/stop lifecycle, idempotence, rapid
+start/stop/start leaving exactly one live thread, survival across a scene switch with
+the next frame reflecting the new scene, live-render fallback with no library, and proof
+the optical producer is never touched by an X-ray mode switch; `tests/test_xray_serve.py`
++2 for `XrayTemplateSource.prewarm()`; `tests/test_scene_switch.py` +1 asserting
+`_build_bundle`'s bundle carries `xray_templates` and `_install_bundle` pairs it with the
+post-increment `scene_gen`, not the one before it).
+
+**Not committed at the time of writing** — same convention as every entry above; Jacob
+commits.
+
 ### 2026-08-19 (later) — the three real X-ray radiograph libraries are built
 
 All three shipped scenes now have a current `xray_library/` — the 2026-08-18 entry below

@@ -444,6 +444,35 @@ def test_install_dirties_the_cache_without_bumping_frame_gen(tmp_path):
         srv.server_close()
 
 
+def test_bundle_carries_xray_templates_paired_with_post_increment_gen(tmp_path):
+    """_build_bundle's returned bundle carries an xray_templates field
+    (matching _load_xray_templates for the same scene/root -- here None,
+    since these synthetic scene stems have no real xray_library/ subdir, but
+    the WIRING is what this checks, not a real library's presence), and
+    _install_bundle pairs it with the scene_gen it just bumped TO, not the
+    one before -- a torn pairing here would mean a lookup right after a
+    switch reads the wrong (or a stale) X-ray source for its own scene_gen.
+    """
+    a = _write_scene(tmp_path / "a.yaml")
+    b = _write_scene(tmp_path / "b.yaml")
+    srv = _empty_server(scene_path=a, scene_dir=str(tmp_path))
+    try:
+        gen_before = srv._scene_gen
+        bundle = srv._build_bundle(b)
+        assert hasattr(bundle, "xray_templates")
+        expected = cs._load_xray_templates(b, srv._xray_library_root)
+        assert bundle.xray_templates == expected   # both None here -- same lookup
+
+        srv._install_bundle(bundle)
+        assert srv._scene_gen == gen_before + 1
+        cached_gen, cached_src = srv._xray_templates_cache
+        assert cached_gen == srv._scene_gen        # paired with the NEW gen, not the old
+        assert cached_src is bundle.xray_templates
+        assert srv._xray_templates is bundle.xray_templates
+    finally:
+        srv.server_close()
+
+
 def test_switch_clears_compiled_ok(tmp_path):
     """The compiled trace was traced against the OLD TorchScene."""
     a = _write_scene(tmp_path / "a.yaml")

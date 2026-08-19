@@ -493,7 +493,7 @@ server, whose `/motor` endpoint takes all seven axes.
 | `--scene-dir` | repo `scene_files/` | which `*.yaml` are offered for runtime switching on `/scenes` |
 | `--library-root` | repo `frame_library/` | frame-library root to serve from and report on |
 | `--preview-root` | repo `frame_library_preview/` | where on-demand **preview** libraries are written. Separate from `--library-root` deliberately — building into the live root overwrites frames the serving `TemplateSource` is caching by filename |
-| `--xray-library-root` | repo `xray_library/` | X-ray radiograph library root `/xray` serves from. **Read-only** — unlike `--library-root`, a missing or stale library here is never built implicitly; `/xray` just keeps rendering live (see "X-ray radiograph library" below) |
+| `--xray-library-root` | repo `xray_library/` | X-ray radiograph library root `/xray` and `/xray-stream` both serve from (and prewarm from at boot/switch). **Read-only** — unlike `--library-root`, a missing or stale library here is never built implicitly; both endpoints just keep rendering live (see "X-ray radiograph library" below) |
 
 ### `python -m loop_sim.library` — build a frame library
 
