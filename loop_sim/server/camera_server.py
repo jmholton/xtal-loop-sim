@@ -277,6 +277,104 @@ def plan_template_cache(manifest, fraction=_CACHE_RAM_FRACTION, avail=None):
     return max(1, min(n_frames, affordable))
 
 
+def _cached_frame(source, name, convert=None):
+    """One template frame, decoded through `source`'s LRU cache.
+
+    Shared by TemplateSource and XrayTemplateSource, which hold the same
+    `_lock` / `_cache` / `_order` / `_cache_size` / `lib_dir` set.  `convert`
+    is the PIL mode to decode into, or None to keep the file's own.
+    """
+    from PIL import Image
+    with source._lock:
+        img = source._cache.get(name)
+        if img is not None:
+            source._order.remove(name)
+            source._order.append(name)
+            return img
+    img = Image.open(os.path.join(source.lib_dir, name))
+    if convert:
+        img = img.convert(convert)
+    img.load()
+    with source._lock:
+        # Re-check: two threads can miss on the same frame and both decode.
+        # Inserting twice would leave the name in _order twice while _cache
+        # holds it once, so the eviction loop would over-evict for good.
+        cached = source._cache.get(name)
+        if cached is not None:
+            return cached
+        source._cache[name] = img
+        source._order.append(name)
+        while len(source._order) > source._cache_size:
+            source._cache.pop(source._order.pop(0), None)
+    return img
+
+
+def _compose_from_content(src, rec, box, out_size, rendered, mode, background):
+    """The pose's crop, drawn from a template that stores only its content.
+
+    `box` is in VIRTUAL template coordinates -- `manifest["rendered"]` is
+    still the full window, so `pose_crop` produced exactly the box it always
+    did.  The stored image is a sub-rectangle of that window at
+    `content_origin_px`, and everything outside it is background, exactly
+    (templates hold raw transmittance; rays are born at 1.0).
+
+    The construction, and why each step is what it is:
+
+      `scale = box_width / W` is template px per output px, so output pixel
+      i samples the virtual template at `box.left + (i + 0.5) * scale`.
+
+      The output sub-rect is the columns and rows whose sample lands inside
+      the stored crop, rounded INWARD.  Outward would need source pixels
+      that were never stored, and PIL refuses a negative box offset -- so
+      inward, and the build's margin (`crop_margin_px`) is sized to make the
+      discarded pixel land in background rather than on the sample.
+
+      The sub-box spans exactly `(i1 - i0) * scale`, which preserves
+      magnification and aspect EXACTLY.  Clamping the box while keeping the
+      output pixel count would rescale the image instead -- silently, and by
+      enough to be obvious only in motion.
+
+      The paste offset is integral in OUTPUT space, so the half-source-pixel
+      registration `pose_crop` sets up survives untouched.  Nothing here
+      rounds the box itself.
+
+    A library built before the crop existed carries no `content_origin_px`,
+    which resolves to the full window and this reduces to the single
+    `resize` it replaced.
+
+    `mode` and `background` are the canvas's: RGB for the optical library,
+    16-bit greyscale ("I;16") for the X-ray one.  Everything else -- the
+    half-pixel registration above -- is identical for both.
+    """
+    from PIL import Image
+
+    ox, oy = rec.get("content_origin_px", (0, 0))
+    cw, ch = rec.get("content_size_px",
+                     (int(rendered["width"]), int(rendered["height"])))
+    left, upper, right, lower = box
+    W, H = out_size
+    sx = (right - left) / float(W)
+    sy = (lower - upper) / float(H)
+
+    i0 = max(0, int(math.ceil((ox - left) / sx)))
+    i1 = min(W, int(math.floor((ox + cw - left) / sx)))
+    j0 = max(0, int(math.ceil((oy - upper) / sy)))
+    j1 = min(H, int(math.floor((oy + ch - upper) / sy)))
+    if i0 == 0 and j0 == 0 and i1 == W and j1 == H and (ox, oy) == (0, 0) \
+            and (cw, ch) == (int(rendered["width"]), int(rendered["height"])):
+        return src.resize(out_size, Image.BILINEAR, box=box)
+
+    canvas = Image.new(mode, out_size, background)
+    if i1 > i0 and j1 > j0:
+        sub = (max(0.0, left + i0 * sx - ox),
+               max(0.0, upper + j0 * sy - oy),
+               min(float(cw), left + i1 * sx - ox),
+               min(float(ch), upper + j1 * sy - oy))
+        canvas.paste(src.resize((i1 - i0, j1 - j0), Image.BILINEAR, box=sub),
+                     (i0, j0))
+    return canvas
+
+
 class TemplateSource:
     """Serves frames from a pre-rendered spindle sweep.
 
@@ -387,90 +485,12 @@ class TemplateSource:
         return len(self._cache), held
 
     def _frame(self, name):
-        from PIL import Image
-        with self._lock:
-            img = self._cache.get(name)
-            if img is not None:
-                self._order.remove(name)
-                self._order.append(name)
-                return img
-        img = Image.open(os.path.join(self.lib_dir, name)).convert("RGB")
-        img.load()
-        with self._lock:
-            # Re-check: two threads can miss on the same frame and both decode.
-            # Inserting twice would leave the name in _order twice while _cache
-            # holds it once, so the eviction loop would over-evict for good.
-            cached = self._cache.get(name)
-            if cached is not None:
-                return cached
-            self._cache[name] = img
-            self._order.append(name)
-            while len(self._order) > self._cache_size:
-                self._cache.pop(self._order.pop(0), None)
-        return img
+        return _cached_frame(self, name, "RGB")
 
     def _compose(self, rec, box, out_size):
-        """The pose's crop, drawn from a template that stores only its content.
-
-        `box` is in VIRTUAL template coordinates -- `manifest["rendered"]` is
-        still the full window, so `pose_crop` produced exactly the box it always
-        did.  The stored image is a sub-rectangle of that window at
-        `content_origin_px`, and everything outside it is background, exactly
-        (templates hold raw transmittance; rays are born at 1.0).
-
-        The construction, and why each step is what it is:
-
-          `scale = box_width / W` is template px per output px, so output pixel
-          i samples the virtual template at `box.left + (i + 0.5) * scale`.
-
-          The output sub-rect is the columns and rows whose sample lands inside
-          the stored crop, rounded INWARD.  Outward would need source pixels
-          that were never stored, and PIL refuses a negative box offset -- so
-          inward, and the build's margin (`crop_margin_px`) is sized to make the
-          discarded pixel land in background rather than on the sample.
-
-          The sub-box spans exactly `(i1 - i0) * scale`, which preserves
-          magnification and aspect EXACTLY.  Clamping the box while keeping the
-          output pixel count would rescale the image instead -- silently, and by
-          enough to be obvious only in motion.
-
-          The paste offset is integral in OUTPUT space, so the half-source-pixel
-          registration `pose_crop` sets up survives untouched.  Nothing here
-          rounds the box itself.
-
-        A library built before the crop existed carries no `content_origin_px`,
-        which resolves to the full window and this reduces to the single
-        `resize` it replaced.
-        """
-        from PIL import Image
-
-        src = self._frame(rec["file"])
-        rnd = self.manifest["rendered"]
-        ox, oy = rec.get("content_origin_px", (0, 0))
-        cw, ch = rec.get("content_size_px",
-                         (int(rnd["width"]), int(rnd["height"])))
-        left, upper, right, lower = box
-        W, H = out_size
-        sx = (right - left) / float(W)
-        sy = (lower - upper) / float(H)
-
-        i0 = max(0, int(math.ceil((ox - left) / sx)))
-        i1 = min(W, int(math.floor((ox + cw - left) / sx)))
-        j0 = max(0, int(math.ceil((oy - upper) / sy)))
-        j1 = min(H, int(math.floor((oy + ch - upper) / sy)))
-        if i0 == 0 and j0 == 0 and i1 == W and j1 == H and (ox, oy) == (0, 0) \
-                and (cw, ch) == (int(rnd["width"]), int(rnd["height"])):
-            return src.resize(out_size, Image.BILINEAR, box=box)
-
-        canvas = Image.new("RGB", out_size, self.background)
-        if i1 > i0 and j1 > j0:
-            sub = (max(0.0, left + i0 * sx - ox),
-                   max(0.0, upper + j0 * sy - oy),
-                   min(float(cw), left + i1 * sx - ox),
-                   min(float(ch), upper + j1 * sy - oy))
-            canvas.paste(src.resize((i1 - i0, j1 - j0), Image.BILINEAR, box=sub),
-                         (i0, j0))
-        return canvas
+        return _compose_from_content(self._frame(rec["file"]), rec, box,
+                                     out_size, self.manifest["rendered"],
+                                     "RGB", self.background)
 
     def _sensor_stretch(self, img):
         """Resample onto the camera's non-square raster, in PIL rather than numpy.
@@ -633,59 +653,12 @@ class XrayTemplateSource:
         return len(self._cache), held
 
     def _frame(self, name):
-        from PIL import Image
-        with self._lock:
-            img = self._cache.get(name)
-            if img is not None:
-                self._order.remove(name)
-                self._order.append(name)
-                return img
-        img = Image.open(os.path.join(self.lib_dir, name))
-        img.load()
-        with self._lock:
-            cached = self._cache.get(name)
-            if cached is not None:
-                return cached
-            self._cache[name] = img
-            self._order.append(name)
-            while len(self._order) > self._cache_size:
-                self._cache.pop(self._order.pop(0), None)
-        return img
+        return _cached_frame(self, name)
 
     def _compose(self, rec, box, out_size):
-        """Mirrors TemplateSource._compose exactly -- see its docstring for
-        the half-pixel registration reasoning, unchanged here -- with the
-        mode/background parameterised for 16-bit greyscale instead of RGB.
-        """
-        from PIL import Image
-
-        src = self._frame(rec["file"])
-        rnd = self.manifest["rendered"]
-        ox, oy = rec.get("content_origin_px", (0, 0))
-        cw, ch = rec.get("content_size_px",
-                         (int(rnd["width"]), int(rnd["height"])))
-        left, upper, right, lower = box
-        W, H = out_size
-        sx = (right - left) / float(W)
-        sy = (lower - upper) / float(H)
-
-        i0 = max(0, int(math.ceil((ox - left) / sx)))
-        i1 = min(W, int(math.floor((ox + cw - left) / sx)))
-        j0 = max(0, int(math.ceil((oy - upper) / sy)))
-        j1 = min(H, int(math.floor((oy + ch - upper) / sy)))
-        if i0 == 0 and j0 == 0 and i1 == W and j1 == H and (ox, oy) == (0, 0) \
-                and (cw, ch) == (int(rnd["width"]), int(rnd["height"])):
-            return src.resize(out_size, Image.BILINEAR, box=box)
-
-        canvas = Image.new("I;16", out_size, self._background)
-        if i1 > i0 and j1 > j0:
-            sub = (max(0.0, left + i0 * sx - ox),
-                   max(0.0, upper + j0 * sy - oy),
-                   min(float(cw), left + i1 * sx - ox),
-                   min(float(ch), upper + j1 * sy - oy))
-            canvas.paste(src.resize((i1 - i0, j1 - j0), Image.BILINEAR, box=sub),
-                         (i0, j0))
-        return canvas
+        return _compose_from_content(self._frame(rec["file"]), rec, box,
+                                     out_size, self.manifest["rendered"],
+                                     "I;16", self._background)
 
     def render_png(self, pose):
         """8-bit grayscale PNG bytes for a motor pose dict -- the SAME wire

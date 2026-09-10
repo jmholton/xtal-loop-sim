@@ -30,6 +30,7 @@ from typing import Optional
 import numpy as np
 
 from .crystal_shapes import make_crystal
+from .hampton_loops  import DEFAULT_GEOMETRY, DEFAULT_BEAM
 from .pin_geometry   import make_pin
 
 
@@ -138,29 +139,12 @@ for _ap in [100, 200, 400, 600, 800, 1000]:
 # Default scene parameters (shared with hampton_loops)
 # ---------------------------------------------------------------------------
 
-DEFAULT_GEOMETRY = {
-    "beam_axis":    [0, 0, 1],
-    "optical_axis": [0, 0, -1],
-    "camera_fast":  [1, 0, 0],
-    "camera_slow":  [0, 1, 0],
-    "rotx_axis":    [1, 0, 0],
-    "roty_axis":    [0, 1, 0],
-    "rotz_axis":    [0, 0, 1],
-}
-
 DEFAULT_CAMERA = {
     "width":        640,
     "height":       480,
     "pixel_size":   0.005,
     "na_objective": 0.10,
     "na_condenser": 0.07,
-}
-
-DEFAULT_BEAM = {
-    "spacing": 0.001,
-    "profile": "gaussian",
-    "fwhm_x":  0.05,
-    "fwhm_y":  0.03,
 }
 
 DEFAULT_MATERIALS = {
