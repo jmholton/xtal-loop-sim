@@ -2,22 +2,19 @@
 """
 Warm-frame benchmark harness for the GPU-resident engine (engine_torch).
 
-Times render_torch across a scripted pose set at n_cond=1 and 7, and reports:
-  * median / p10 / p90 wall ms per frame (torch.cuda.synchronize-bracketed)
-  * the server-side encode tail (uint8 conversion + D2H + PIL JPEG q85)
-  * torch op-invocation count for one frame (CPU profiler; CUPTI kernel
-    timings are unavailable under WSL2, so op count is the dispatch proxy)
-  * GPU utilisation sampled via nvidia-smi during the timed loop
-  * peak CUDA memory (watch the WSL2 ~15.5 GB spill cliff at high zoom)
-
-Every run writes a JSON record to bench_results/ so phases can be compared:
+Times render_torch across a scripted pose set at n_cond=1 and 7, and reports
+median/p10/p90 wall ms per frame, the server-side encode tail (uint8 + D2H +
+PIL JPEG), torch op-invocation count (CPU profiler; CUPTI kernel timings are
+unavailable under WSL2, so op count is the dispatch proxy), GPU utilisation
+via nvidia-smi, and peak CUDA memory (watch the WSL2 ~15.5 GB spill cliff at
+high zoom).  Every run writes a JSON record to bench_results/.
 
     ~/miniconda3/envs/loopsim/bin/python bench_frame.py --label baseline
     ~/miniconda3/envs/loopsim/bin/python bench_frame.py --quick
 
---modality xray times render_xray_torch (GPU) and render_xray_numpy (CPU --
-the path --templates on actually serves from, see docs/DECISIONS.md
-2026-08-18) instead. No n_cond/PSF/compiled sweep -- the X-ray tracer has
+--modality xray times render_xray_torch (GPU) and render_xray_numpy (CPU,
+the path --templates on actually serves from; see docs/DECISIONS.md
+2026-08-18) instead, with no n_cond/PSF/compiled sweep: the X-ray tracer has
 none of those.
 
     ~/miniconda3/envs/loopsim/bin/python bench_frame.py --modality xray --quick
@@ -110,10 +107,10 @@ def op_count_one_frame(tscene, gono, n_cond, compiled=False):
 
 
 def bench_xray_config(tscene, scene, pose, frames, warmup, include_numpy):
-    """Time render_xray_torch (GPU, if present) and render_xray_numpy (CPU --
-    the path the DEPLOYED server actually takes under --templates on, since
+    """Time render_xray_torch (GPU, if present) and render_xray_numpy (CPU:
+    the path the server actually takes under --templates on, since
     _want_torch_engine() returns False whenever templates are on; see
-    docs/DECISIONS.md 2026-08-18). No n_cond/PSF/compiled knobs to sweep --
+    docs/DECISIONS.md 2026-08-18). No n_cond/PSF/compiled knobs to sweep:
     the X-ray tracer has none of those.
     """
     from loop_sim.renderer.beam import render_xray_numpy
@@ -142,9 +139,9 @@ def bench_xray_config(tscene, scene, pose, frames, warmup, include_numpy):
         result["gpu_median_ms"] = result["gpu_fps"] = result["gpu_peak_alloc_mb"] = None
 
     if include_numpy:
-        # Deliberately slow -- this IS the deployed path. One frame is
-        # already tens of seconds on a mesh scene at 640x480; --frames
-        # defaults small for xray for exactly this reason.
+        # Deliberately slow: this is the path --templates on serves from.
+        # One frame is already tens of seconds on a mesh scene at 640x480;
+        # --frames defaults small for xray for exactly this reason.
         times = []
         for _ in range(frames):
             t0 = time.perf_counter()

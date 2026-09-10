@@ -1,28 +1,27 @@
 #!/usr/bin/env python
 """
-acceptance_voltron.py -- self-contained performance acceptance test for loop-sim
-on its deployment GPU (e.g. a free voltron TITAN V).
+acceptance_voltron.py -- self-contained performance acceptance test for
+loop-sim on its deployment GPU (e.g. a free voltron TITAN V).
 
-It exists because the 10 fps interactive target was only ever measured on a
-developer RTX 4080 SUPER, never on the beamline's TITAN V.  Run this ON the
-deployment machine to get the real answer; no Nsight, no extra installs, no dev
-access -- it drives the repo's own engine.
+The 10 fps interactive target was only ever measured on a developer RTX 4080
+SUPER, never on the beamline's TITAN V; run this ON the deployment machine
+to get the real answer.  No Nsight, no extra installs, no dev access: it
+drives the repo's own engine.
 
 WHAT IT ANSWERS
   1. Does the 10 fps target hold on THIS machine's GPU + CPU?  (the frame is
      CPU-dispatch-bound, so the host CPU matters as much as the GPU.)
-  2. Does torch.compile actually ENGAGE -- the whole basis of 10 fps -- or does
-     it silently fall back to eager (~6-7 fps)?               [deploy Risk B]
+  2. Does torch.compile actually ENGAGE, or does it silently fall back to
+     eager (~6-7 fps)?                                         [deploy Risk B]
   3. Does the mesh scene (mitegen_200um) fit in VRAM, or OOM?  [deploy Risk A]
   4. A full environment fingerprint (GPU, driver, CUDA, torch, CPU) so a run
-     here is directly comparable to a run on the dev box.
+     here is comparable to a run on the dev box.
 
 HOW TO RUN
     /programs/pytorch/envs/pt/bin/python acceptance_voltron.py
-  On a shared multi-GPU box it auto-selects the GPU with the most free memory
-  (voltron has 8 TITAN Vs and is usually busy -- pin explicitly with --gpu N or
-  CUDA_VISIBLE_DEVICES if you prefer).  Writes acceptance_report.json and prints
-  a GO / NO-GO verdict.  Mail the JSON back for comparison with the prediction.
+  On a shared multi-GPU box it auto-selects the freest GPU (pin explicitly
+  with --gpu N or CUDA_VISIBLE_DEVICES).  Writes acceptance_report.json and
+  prints a GO / NO-GO verdict.
 
 EXIT CODE   0 = GO (>= 10 fps)   1 = NO-GO (< 10 fps)   3 = could not run (no CUDA)
 """
@@ -219,7 +218,8 @@ def main():
     # --- 3. settle frame (exact n_cond=7 eager -- the still-image quality path) ---
     settle_med, _, _ = time_path(ham, False, 7, max(4, args.frames // 5), 3)
 
-    # deployed motion path = compiled if it truly engaged+helped, else the eager floor
+    # the motion frame rate an operator gets: compiled if it truly engaged
+    # and helped, else the eager floor
     deployed_ms = comp_med if compiled_ok else eager_med
     deployed_fps = 1000.0 / deployed_ms
 

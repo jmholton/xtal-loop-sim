@@ -1,76 +1,33 @@
 """Camera emulation: sensor raster, illumination field, black floor, tone.
 
-The ray tracer computes TRANSMITTANCE.  Every ray is born carrying radiance
-exactly 1.0 (`microscope.py`, `engine_torch.py`) and a ray that hits nothing is
-never multiplied by anything, so an empty field of view comes out at exactly
-1.0 and an opaque object at exactly 0.0.  That is correct physics for what the
-tracer models, and it is not a photograph.  Measured on the delivered hampton
-frame: **84.6% of pixels exactly 255, 14.4% exactly 0, 1.1% anything else**.
-Real BL831 sample-camera frames carry **19-27% genuinely intermediate tone**
-(`real_images/C07` 27.4%, `D03` 19.0%) with an empty field at ~0.65 of full
-scale and an opaque pin at ~0.18 -- neither rail is ever reached.  So the
-render is a binary silhouette where the photograph is continuous-tone, and that
--- not the background pattern -- is the largest single difference between them.
-
-This module supplies the two terms the transport does not model:
+The ray tracer outputs transmittance T (1.0 = empty field of view, 0.0 =
+opaque); this module adds what a camera actually records:
 
     observed = (E(x,y) - B) * T(x,y) + B
 
-`E` is the incident illumination field (what the camera sees at T=1) and `B` is
+`E` is the incident illumination field (what the camera sees at T=1); `B` is
 the black floor (what it sees at T=0: veiling glare in the objective plus the
-sensor pedestal).  It is a lerp between the only two anchors that were actually
-measured, which makes both rails unreachable BY CONSTRUCTION -- the real
-frames' "40-226, nothing clipped" comes out for free, with no clamp and no tone
-curve.  Nothing here is fitted to the space between those anchors, because
-nothing was measured there.
+sensor pedestal).  See docs/DECISIONS.md 2026-08-10 renders became
+photographs.
 
-It also supplies the sensor's RASTER (`to_sensor`, `SENSOR_WH`).  The tracer
-renders square pixels; the BL831 camera's are 1.110 non-square and it emits
-704x480.  That is a resample, not a rescale -- the field of view is the same
-either way, to under 1% -- and the constant above says why 640 was right all
-along and what the resample buys.
+Runs at serve time only, downstream of both tracers, and must never move into
+either or into a template.  The illumination defect is fixed in camera space,
+so a template baking it in would pan with the sample instead of staying
+still.  `frame_library.content_window`'s sample/background split would read
+it as content everywhere and refuse to build.  And templates store raw
+transmittance, so moving it here would force a rebuild of every shipped
+library for a change that never touches them.
 
-WHY THIS IS NOT INSIDE EITHER TRACER, AND MUST NOT BE MOVED THERE.  Three
-independent reasons, any one sufficient:
+Everything here is a pure function of (shape, parameters): no RNG, no clock,
+no per-call state.  `tests/test_server_settle_parity.py` and
+`tests/test_torch_render_parity.py` compare JPEG bytes across a fresh render
+vs. the live server, and across engines; a future term needing grain must
+derive from pixel coordinates or a stored tile, never `np.random` without a
+seed threaded through the call.
 
-  * The illumination defect is fixed in CAMERA space.  Correlating the
-    low-frequency background across one session -- four spindle angles and a
-    sample translation -- gives r = 0.93-1.00: the sample moves, the pattern
-    does not.  Applied after `pose_crop`, this stage is structurally incapable
-    of panning with the sample.  Baked into a template it would rotate with it.
-  * `frame_library.content_window` separates sample from background with
-    |img - bg| > 2/255.  Any field upstream of it reads as content everywhere,
-    the scout window widens to the 64x cap and the build guard refuses.
-  * Templates keep storing raw transmittance, so the shipped frame libraries
-    stay valid and nothing rebuilds for a change that never enters them.
-
-DETERMINISM IS LOAD-BEARING.  `tests/test_server_settle_parity.py` compares
-JPEG BYTES between the live server and a fresh render, and
-`tests/test_torch_render_parity.py` asserts the two engines agree byte-exactly.
-Everything here is a pure function of (shape, parameters) -- no RNG, no clock,
-no per-call state.  If a future term needs grain (a rough pin scatters light
-unevenly), derive it from pixel coordinates or a stored tile, never from
-`np.random` without a fixed seed threaded through the call.
-
-CALIBRATION PROVENANCE.  `E0`, the vignette shape and `B` were fitted to an
-empty field reconstructed from 300 frames sampled across
-`sfd/loop_centering_stuff/run4` (3,024 frames of one session, 2020-01-29), by
-taking the per-pixel 80th percentile -- not the median, because the mount
-occupies the left of frame in more than half the frames there and would
-contaminate it.  The quadratic explains **83.5%** of the field's variance
-(residual sd 6.63/255, 4.4% of level).
-
-A CAVEAT WORTH READING BEFORE TRUSTING THE DEFAULT AMPLITUDE.  There is no
-single true field.  The 2020 pattern correlates r = 0.99-1.00 with its own
-session but only 0.11 / -0.31 / -0.18 / +0.35 with the 2005 / 2021 / 2025 /
-2026 epochs, and its amplitude (sd/median 0.090) is 5-7x LARGER than every
-other epoch measured (0.013-0.023) -- including the two most recent production
-frames.  The shipped default reproduces the reference the work was judged
-against; it is a plausible field, not a universal one.  `amplitude` is a
-scalar for exactly this reason, and a future caller that wants per-frame
-variation (a model trained on a background fixed in camera space can learn to
-localise by it instead of by the loop) should vary the coefficients rather than
-add noise here.
+`E0`, the vignette shape and `B` were fitted to an empty field reconstructed
+from 300 frames of one 2020-01-29 session, by the per-pixel 80th percentile;
+the quadratic explains 83.5% of the field's variance.
 """
 import numpy as np
 
@@ -96,42 +53,28 @@ B = 0.1765
 # which is why a gradient model looks like it fails.
 VIGNETTE = (1.09472, -0.02534, +0.05636, +0.02100, -0.00112, -0.30397)
 
-# What the quadratic LEAVES BEHIND, put back.  The bowl above explains 83.5% of
-# the field; the rest is the soft blotchiness every real frame has, and fitting
-# the smooth part while discarding the remainder is why the first version of
-# this stage read as a flat grey card next to a photograph.
+# What the quadratic vignette above leaves behind: the soft blotchiness every
+# real frame has.  Fitting only the smooth bowl and discarding this residual
+# is why an earlier version of this stage read as a flat grey card next to a
+# photograph.  Deterministic and fixed in camera space like the bowl, since
+# this is an illumination defect too (the sample moves under it); that is the
+# opposite of the pin's grain, which belongs to the pin and re-rolls with the
+# pose -- the two look similar in code and are physically unrelated.
 #
-# Deterministic, and FIXED IN CAMERA SPACE like the bowl it corrects: this is an
-# illumination defect, so the sample moves under it.  That is the opposite of
-# the pin's grain, which belongs to the pin and re-rolls with the pose -- the
-# two look similar in the code and are physically unrelated.
+# Six octaves, not the usual one or two, because real background energy is
+# roughly flat across scale rather than concentrated at one; gain 0.90 (not
+# the textbook 0.5) for the same reason.  Total amplitude is 3.6% of level,
+# from a background mask that dilates the dark body rather than thresholding
+# by percentile.  See docs/DECISIONS.md 2026-08-11 the glint met an operator.
 #
-# SIX OCTAVES, because one scale cannot look like cloud.  Splitting the real
-# residual by successive box-blurs shows energy at every scale, not one:
-#
-#   features surviving a blur of   16px   32px   64px  128px  256px
-#     C07                          3.19%  3.03%  3.79%  5.71%  4.59%
-#     A01                          3.24%  3.05%  3.44%  5.17%  7.01%
-#     F04                          3.71%  3.45%  3.15%  2.99%  3.06%
-#
-# so the base octave is set at 0.8 u-units (280 px at the 704-wide raster) and
-# halved five times to ~9 px, which brackets that range.  A single 200 px
-# cell -- the first version -- read as a smooth wash and the owner could not
-# see it at all.
-#
-# The TOTAL is 3.6% of level, from re-measuring the real frames with a proper
-# background mask.  The first measurement said 2.6-2.9% because it took
-# "background" to mean brighter than the 60th percentile, which clips the dark
-# half of every cloud and biases the spread down; the mask now dilates the dark
-# body instead and reads 3.38 / 3.48 / 3.92%.
+# The shipped default matches the 2020 session it was fit to, not a universal
+# field (docs/DECISIONS.md 2026-08-10 renders became photographs).  A future
+# caller wanting per-frame variation should vary these coefficients, not add
+# noise -- a background fixed in camera space is exactly what a model could
+# learn to localise by instead of the loop.
 MOTTLE = 0.0435        # raw fBm amplitude, solved so 0.036 survives a quadratic re-fit
 MOTTLE_UV = 0.80        # coarsest octave, in u-units (u spans 2.0 across w)
-MOTTLE_OCTAVES = 6
-# 0.90, not the textbook 0.5.  Real background energy is nearly FLAT across
-# scale (3.0-3.8% at 16-64 px against 4.6-7.0% at 128-256), so a fast roll-off
-# puts everything in the coarse octaves and the frame reads as a smooth wash:
-# at gain 0.62 the sub-33 px detail was 0.39% of level against the real ~3.2%,
-# and six octaves at 0.90 lift it to 1.61% for the same 3.6% total.
+MOTTLE_OCTAVES = 6      # six, because one scale reads as a smooth wash, not cloud
 MOTTLE_GAIN = 0.90      # amplitude ratio between successive octaves
 MOTTLE_SEED = 0x30771E
 
@@ -182,7 +125,8 @@ def vignette(h, w, coeffs=VIGNETTE, amplitude=1.0, mottle=MOTTLE):
     important because templates are built at one resolution and served at
     another.  `amplitude` scales the departure from flat: 0.0 is a uniform
     field, 1.0 is the measured 2020 session, and values below 1 match the
-    flatter recent epochs (see the module docstring).
+    flatter recent epochs (see docs/DECISIONS.md 2026-08-10 renders became
+    photographs).
 
     Note this indexes OUTPUT pixels and is not rescaled by zoom, which asserts
     the defect sits downstream of the zoom optics.  That is an assumption, not
@@ -278,58 +222,35 @@ def to_sensor(img, size=SENSOR_WH):
 # ---------------------------------------------------------------------------
 # The pin's specular streak
 # ---------------------------------------------------------------------------
-# A 0.7 mm mounting pin is machined steel, and the tracer models it as a purely
-# opaque body: every ray that meets it dies, so it renders as a flat silhouette
-# at the black floor.  Real ones carry a bright, broken glint running the whole
-# length of the shank -- the specular return off a rough cylinder -- and it is
-# the largest remaining structural difference between a rendered pin and a
-# photographed one.  Modelling it properly means a BRDF and a specular bounce
-# in the tracer; this is the cosmetic stand-in, and it is deliberately in
-# camera space so it costs no library rebuild.
+# A 0.7 mm mounting pin is machined steel; the tracer models it as a purely
+# opaque body, so it renders as a flat silhouette at the black floor.  Real
+# ones carry a bright, broken specular glint along the shank -- the largest
+# remaining structural difference between a rendered pin and a photographed
+# one.  Modelling it properly needs a BRDF and a specular bounce in the
+# tracer; this is the cosmetic stand-in, deliberately in camera space so it
+# costs no library rebuild.  The grain applies multiplicatively to the ridge,
+# not to the diffuse floor: surface slope modulates what is reflected, not
+# what is absorbed, and keeping it on the ridge alone stops it touching the
+# pin body.
 #
-# MEASURED on the two reference frames that show a pin clearly, both at the mid
-# stop (`real_images/A01_nylonloop_pinleft_mid.jpg` and
-# `E02_digitize_source_mid.jpg`), by taking the pin's edges per column and
-# resampling each column onto a normalised cross-section:
+# Constants were measured off two reference frames at the mid zoom stop
+# (`real_images/A01_nylonloop_pinleft_mid.jpg`,
+# `E02_digitize_source_mid.jpg`); see docs/DECISIONS.md 2026-08-11 the glint
+# met an operator.  `gain` sits deliberately near the quiet end of the
+# measured range: a blown-out glint on an otherwise flat pin reads worse than
+# no glint at all.  Not modelled: a bright rim at the pin's far edge (edge
+# diffraction plus the cylinder's grazing return) -- a second term, and much
+# less visible than the streak.
 #
-#                              A01        E02
-#   pin width                85 px      100 px
-#   floor / background     46 / 167   60 / 254
-#   ridge centre           f = 0.738  f = 0.288     <- opposite sides
-#     as half-widths off    +0.48      -0.42            of the pin's axis
-#   ridge FWHM             0.150 w    0.112 w
-#   peak above the floor   0.82 x bg  0.15 x bg     <- the one wide spread
-#   grain sd ON the ridge  6.6 lv     10.0 lv
-#   grain sd on the body   0.50 lv    1.30 lv       <- ~10x quieter
-#   grain correlation      2 px       2 px
-#
-# Three things that spread are recorded rather than averaged away.  (1) The
-# ridge sits ~0.24 half-widths OFF the axis, but on opposite sides in the two
-# frames -- which side is an illumination-geometry property, not a pin
-# property, so `offset` is signed and the default follows E02 (the frame this
-# repo's own loop geometry was digitized from).  (2) The peak spans 0.15-0.82
-# of background; a duller pin and a brighter field give the low end.  The
-# default is deliberately nearer the quiet end, because a blown-out glint on an
-# otherwise flat pin reads worse than no glint at all.  (3) The grain lives on
-# the SPECULAR term, not on the diffuse floor -- surface slope modulates what
-# is reflected, not what is absorbed -- so it is applied multiplicatively to
-# the ridge, which also keeps it from touching the pin body.
-#
-# NOT MODELLED: the bright rim both frames show at the pin's far edge (f ~ 0.95,
-# A01 and E02 alike).  That is edge diffraction plus the cylinder's grazing
-# return, it needs a second term, and it is much less visible than the streak.
-# WHERE the pin is no longer lives here.  `min_width`, `min_aspect`,
-# `axis_gate` and `max_width` were the knobs of a silhouette fit that inferred
-# the pin from the picture; that fit had no notion of a body at all and drew the
-# glint across the DROPLET whenever the pin left the frame.  The geometry now
-# arrives as `pin`, projected from the scene by
-# `loop_sim/renderer/pin_projection.py`.  What is left below is only the
-# APPEARANCE of the ridge, which is what was measured off A01 and E02.
+# Geometry (`pin`, below) comes from the scene via
+# `pin_projection.project_pin`, not from the image; see docs/DECISIONS.md
+# 2026-08-12 the glint is projected from the scene.
 STREAK = {
     "opaque":     0.04,   # transmittance at or below which a pixel is opaque
-    "offset":    -0.45,   # ridge centre, in HALF-widths from the pin's axis
-                          # (A01 sits at +0.48, E02 at -0.42; sign is the
-                          # illumination's, so the default follows E02)
+    "offset":    -0.45,   # ridge centre, in half-widths from the pin's axis;
+                          # sign follows the illumination geometry, not the
+                          # pin (default follows E02, this repo's digitized
+                          # frame)
     "width":      0.13,   # ridge FWHM, as a fraction of the pin's full width
     "gain":       0.35,   # peak above the floor, x the local illumination
     "grain":      0.15,   # grain sd, x the local ridge amplitude
@@ -450,16 +371,10 @@ def _streak_patch(t, pin, params=None, defocus=0.0):
     drawn** -- that is the answer for a pose that has panned or zoomed past it,
     for a mount seen end-on, and for a scene with no shiny body.
 
-    THIS USED TO BE INFERRED FROM THE PICTURE, and that was the bug.  The old
-    path thresholded every dark pixel, eroded anything under 13 px and fitted a
-    bar to what survived, with no connected-component step anywhere -- so it
-    fitted whatever dark thing was in frame.  On `hampton_300um_realistic` past
-    ~2.5x zoom the pin is off-frame and the loop-plus-droplet survived the
-    erosion, so the glint was painted across the DROPLET at full strength at
-    every spindle angle; at zoom 1.0 it already leaked 6-9% onto it at
-    phi = 15/30/45/150, where the global fit merged the two into one body.  No
-    image-only rule separates them -- aspect, bar-likeness and solidity were all
-    measured and all fail (`pin_projection` has the numbers).
+    Geometry comes from the scene, not the image: fitting a bar to whatever
+    dark pixels survived erosion painted the glint onto the droplet once the
+    pin left frame, and no image-only rule separates the two bodies.  See
+    docs/DECISIONS.md 2026-08-12 the glint is projected from the scene.
     """
     if pin is None:
         return None
@@ -540,16 +455,11 @@ def _streak_patch(t, pin, params=None, defocus=0.0):
     if not clip_lo:
         e = np.minimum(e, np.clip((half_l + u) / tail, 0.0, 1.0))
     ridge *= e * e * (3.0 - 2.0 * e)
-    # SCINTILLATION, not a texture glued to the pin.  The grain used to be
-    # hashed on the pin's own frame so it would ride with it -- which is right
-    # for a static surface pattern and WRONG for what this actually is.  A
-    # machined shank is rough at the scale of the wavelength, so as it turns,
-    # different micro-facets come into the specular condition and the glint
-    # twinkles rather than translating rigidly.  Anchoring it also made the
-    # pattern slide against the pin whenever the visible portion changed, which
-    # read as parallax and gave the whole thing away as painted on.
+    # A machined shank is rough at the scale of the wavelength: as it turns,
+    # different micro-facets enter the specular condition, so the glint
+    # scintillates rather than translating like a texture glued to the pin.
     #
-    # `phase` re-rolls the pattern; the server derives it from the POSE, so it
+    # `phase` re-rolls the pattern; the server derives it from the pose, so it
     # is still a pure function of what is being rendered -- a frame re-rendered
     # at the same pose is byte-identical, which `test_server_settle_parity`
     # requires, and a held pose does not shimmer.
@@ -620,15 +530,11 @@ def to_luma(img):
     the absorption moved into `mu_optical`, which is a scene change and costs a
     library rebuild.
 
-    OFF BY DEFAULT since 2026-08-14, ahead of that repair: the simulator is a
-    colour instrument and scenes are allowed to be coloured, so defaulting to a
-    delivery-stage flatten meant no coloured scene could ever be seen, and hid
-    the scene bug rather than paying it down.  Measured on the shipped
-    libraries the difference is small -- at most 20/21/46 levels on
-    0.003-0.42% of pixels for realistic/hampton/mitegen -- so what it exposes is
-    a tint on loop and droplet edges, not a wash.  The option stays for anyone
-    who wants the old frames back, and for the day someone compares against a
-    monochrome camera.
+    Off by default: the simulator is a colour instrument, and a delivery-stage
+    flatten hid the scene bug instead of exposing it.  On the shipped libraries
+    the difference is at most 20/21/46 levels on 0.003-0.42% of pixels
+    (realistic/hampton/mitegen), a tint on loop and droplet edges.  The option
+    stays for comparisons against a monochrome camera.
     """
     return np.repeat((img @ _LUMA)[..., None], 3, axis=2)
 

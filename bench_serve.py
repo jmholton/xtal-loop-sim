@@ -1,76 +1,21 @@
 #!/usr/bin/env python
 """bench_serve.py -- how fast can THIS HOST serve frames, with no GPU at all?
 
-The camera server replays pre-rendered templates: it decodes a PNG, crops and
-scales it to the pose, blurs it by the defocus, and runs the camera model.  No
-ray tracing, no CUDA.  So the frame rate an operator sees is a property of the
-HOST CPU, and it is a different question from "how fast does this box render",
-which `bench_frame.py` and `acceptance_voltron.py` already answer.
+The camera server replays pre-rendered templates (decode, crop/scale, camera
+model, JPEG encode); this measures that CPU-only path, a different question
+from how fast the box renders (`bench_frame.py`, `acceptance_voltron.py`).
+No CUDA and no socket: `TemplateSource.render(pose)` is the whole serve path
+below HTTP, so this runs headless on a login shell.
 
-It matters because the two can point in opposite directions.  A machine with a
-strong GPU and an old CPU -- voltron is 8x TITAN V in front of a 2016 Xeon
-E5-2650 v4 -- may build libraries faster than the dev box and still serve them
-slower.  Nothing in the repo measured that until this file.
+Three regimes: `slew` (spindle turning, a fresh decode every frame, the
+worst case), `pan` (fixed angle, decode cached, only crop/scale/camera
+remain), `hold` (repeated pose, the floor).  The verdict grades `slew_warm`
+(a second pass, decode cache warm) when the cache can hold a full
+revolution, since the server pre-warms at boot; otherwise it grades cold
+`slew`.  See docs/DECISIONS.md 2026-08-14 for the crop/cache measurements
+behind these numbers.
 
-WHAT IT REPORTS, AND WHY THE SPLIT IS THE POINT
-
-  slew   the spindle turning: every frame is a different template, so every
-         frame pays a full PNG decode.  This is the worst case and the one
-         that sets the frame rate an operator perceives while rotating.
-  pan    translating at a fixed angle: the decoded template is reused from
-         `TemplateSource`'s cache, so the decode disappears and only the
-         crop/scale/camera stages remain.  Measured on the dev box this is
-         ~5x cheaper than a slew, so reporting one number for "serving" would
-         hide the entire effect.
-  hold   the same pose repeatedly.  The live server would answer this from its
-         own JPEG cache without re-rendering at all; it is here as the floor,
-         to separate fixed overhead from real work.
-
-Then a stage split -- decode / crop+scale / camera model / JPEG encode --
-because the remedy differs per stage, and every one of them has now been the
-lever at some point: the decode was cut ~7x by storing only a template's
-content (2026-08-14), the camera stage ~2x by moving the sensor resample into
-PIL, and the prefetch pool that used to be the identified remedy was closed
-without being built.
-
-DELIBERATELY NO SOCKET.  `TemplateSource.render(pose)` is the whole serve path
-below HTTP and returns the JPEG bytes, so this runs headless on a login shell
-with no port to bind and no browser -- which is the only way to benchmark a
-shared beamline node.
-
-WHAT IT COMPARES AGAINST.  A bare frame rate on a login shell is hard to read,
-so the report prints the recorded pre-2026-08-14 numbers for the same scene
-beside the measured ones, and a verdict against the 10 fps goal.  The baselines
-are labelled with the configuration they were taken in; they are history, not a
-target, and `--no-baseline` drops them.
-
-WHICH REGIME THE VERDICT GRADES, AND WHY IT IS NOT `slew`.  The server pre-warms
-the whole library at boot, so by the time anyone drives it a spindle slew never
-touches disk -- `slew_warm` is what an operator gets and what the verdict grades
-whenever the cache can hold a revolution.  `slew` is this benchmark decoding
-from scratch; the server pays that once at startup instead.  It is also the
-noisy one: first-touch I/O off a shared pool moved it 94.3 -> 71.4 ms between two
-voltron runs while `slew_warm` held to 0.1% (37.73 vs 37.69).  One run is enough.
-Where the cache CANNOT hold a revolution, pre-warm is skipped, every rotating
-frame really does decode, and the verdict grades `slew` instead.
-
-THE CACHE.  `TemplateSource` sizes its decode cache from available RAM
-(`plan_template_cache`), and since a template stores only its content that is
-~1.8 GiB rather than 14.4, so the server defaults to `auto` and this mirrors it.
-The benchmark still drops the cache between regimes and warms the slew on angles
-the timed run never revisits, so `slew` is the COLD cost however big the cache
-is; `slew_warm` is the second lap over the same angles.  Use
-`--template-cache off` for the old 8-entry behaviour.
-
-USAGE
     python bench_serve.py --scene scene_files/hampton_300um_realistic.yaml
-    python bench_serve.py --scene ... --frames 60 --json serve_report.json
-
-On voltron, with the STOCK interpreter -- not the torch 2.6 deployment venv:
-    /programs/pytorch/envs/pt/bin/python bench_serve.py --json serve.json
-This path imports torch not at all, so it needs nothing the GPU render path
-needs: no venv to assemble, no CC/CXX, no devtoolset.  It is also why it is safe
-to run while someone else holds all eight cards.
 """
 import argparse
 import io
@@ -148,12 +93,10 @@ def _time_regime(src, poses, warmup_poses):
     """Wall-clock per `render()` call over `poses`, after warming on others.
 
     `warmup_poses` must be DISJOINT from `poses` in the slew regime, and may
-    overlap in pan/hold.  Warming on the timed poses themselves was the first
-    version of this function and it silently lied: the decode cache holds 8
-    templates, so the first frames of the timed run were served warm and the
-    slew median came out 78 ms with a p10 of 25.8 -- the p10 being, exactly,
-    the pan number.  Warmup exists to settle PIL and numpy, not to pre-decode
-    the thing being measured.
+    overlap in pan/hold.  Warming on the timed poses would pre-decode them
+    into the 8-template cache and serve the "cold" slew warm, silently
+    reading as the pan number instead.  Warmup exists to settle PIL and
+    numpy, not to pre-decode the thing being measured.
     """
     for p in warmup_poses:
         src.render(p)
@@ -186,11 +129,8 @@ def _stage_split(src, angles):  # noqa: C901
     pool or a cheaper camera stage is the lever worth pulling.
 
     Every stage is driven through `TemplateSource`'s OWN methods rather than
-    reproduced here.  The inline version drifted from the server twice: once by
-    passing `pin=None`, which silently dropped the glint and under-counted the
-    camera stage, and again when templates became tight crops, which made a bare
-    `im.resize(box=...)` sample the wrong region of the file entirely.  A split
-    that measures a pipeline nobody runs is worse than no split at all.
+    reproduced here: a split that measures a pipeline nobody runs is worse
+    than no split at all.
     """
     man = src.manifest
     decode, crop, cam_stage, encode = [], [], [], []
@@ -215,7 +155,7 @@ def _stage_split(src, angles):  # noqa: C901
         pin = src._pin(float(ang), box, delivered, sensor=None)
 
         # The sensor stretch is charged to the CAMERA stage, because that is
-        # where `field.to_sensor` used to do the same work inside encode_frame.
+        # where `field.to_sensor` does the same work inside encode_frame.
         t0 = time.perf_counter()
         img = (src._sensor_stretch(crop_im) if src.sensor
                else np.asarray(crop_im, dtype=np.float64) / 255.0)
@@ -318,10 +258,10 @@ def main():
     slew_warm = [{axis: (180.0 + i * step) % 360.0} for i in range(args.warmup)]
     _drop_cache(src)
     report["slew"] = _stats(_time_regime(src, slew, slew_warm))
-    # Second pass over the SAME angles, cache left warm: what production looks
+    # Second pass over the SAME angles, cache left warm: what a running server looks
     # like once a revolution has been walked once.  Reported separately because
     # it is only reachable when the cache can hold the sweep -- see the
-    # thrash warning below, which is the honest caveat on this number.
+    # thrash warning below for the caveat on this number.
     report["slew_warm"] = _stats(_time_regime(src, slew, []))
     _drop_cache(src)
     report["pan"] = _stats(_time_regime(src, pan, pan[:args.warmup]))
@@ -377,15 +317,14 @@ def main():
           f"crop+scale {s['crop_scale_ms']}  camera {s['camera_model_ms']}  "
           f"jpeg {s['jpeg_encode_ms']}")
     print(f"  -> a slew pays all four; a pan skips the decode.")
-    # The split is measured stage-by-stage on a handful of angles, so each stage
-    # reads data the previous stage just left in cache.  A real slew does not:
-    # it streams a DIFFERENT ~5 MB template through the pipeline every frame,
-    # from DRAM rather than L3.  Measured on the dev box, holding one template
-    # resident costs 10.3 ms a frame and holding four costs 14.1 -- the step is
-    # the L3 boundary, and it is the whole reason `pan` beats `slew_warm` when
-    # neither decodes.  On a memory-bound host the split can therefore
-    # under-report a slew badly, so say by how much rather than let it read as
-    # measurement error.
+    # The split is measured stage-by-stage on a handful of angles, so each
+    # stage reads data the previous stage just left in cache.  A real slew
+    # does not: it streams a DIFFERENT ~5 MB template through the pipeline
+    # every frame, from DRAM rather than L3 (see docs/DECISIONS.md 2026-08-14,
+    # voltron measured: crop lands, remaining gap is memory, for the
+    # per-template-resident timings and the L3 boundary).  On a memory-bound
+    # host the split can therefore under-report a slew badly, so say by how
+    # much rather than let it read as measurement error.
     gap = report["unattributed_ms"]
     if gap > 0.15 * stage_sum:
         print(f"  -> the four stages sum to {stage_sum:.1f} ms but a slew "
@@ -429,15 +368,15 @@ def main():
     # THE VERDICT IS GRADED ON THE REGIME THE VIEWER ACTUALLY SERVES.
     #
     # That is `slew_warm` whenever the cache holds a whole revolution, because
-    # the server pre-warms the library at boot (`--prewarm`, default on): by the
-    # time anyone drives it, every template is decoded and a spindle slew never
-    # touches disk.  Grading the COLD slew there measures a state the viewer
-    # only ever occupies during its own startup, and it is also the noisy one --
-    # first-touch I/O off a shared pool moved it 94.3 -> 71.4 ms between two
-    # voltron runs while `slew_warm` held to 0.1% (37.73 vs 37.69).
+    # the server pre-warms the library at boot (`--prewarm`, default on): by
+    # the time anyone drives it, every template is decoded and a spindle slew
+    # never touches disk.  Grading the COLD slew there measures a state the
+    # viewer only occupies during its own startup, and it is also the noisy
+    # one (first-touch I/O off a shared pool; see docs/DECISIONS.md
+    # 2026-08-14, voltron measured: crop lands, remaining gap is memory).
     #
     # When the cache CANNOT hold a revolution, pre-warm is skipped and every
-    # rotating frame really does decode, so cold is the honest grade.
+    # rotating frame really does decode, so cold is the grade.
     warm_reachable = src._cache_size >= report["library"]["frames"]
     graded_key = "slew_warm" if warm_reachable else "slew"
     graded = report[graded_key]["fps"]

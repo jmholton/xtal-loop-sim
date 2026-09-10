@@ -62,9 +62,9 @@ def make_beam_image(fwhm_h, fwhm_v, pinhole_mm, pixel_size_mm):
 
     Parameters
     ----------
-    fwhm_h, fwhm_v : float — horizontal / vertical FWHM in mm
-    pinhole_mm      : float — pinhole diameter in mm (0 = no mask)
-    pixel_size_mm   : float — mm per pixel
+    fwhm_h, fwhm_v : float -- horizontal / vertical FWHM in mm
+    pinhole_mm      : float -- pinhole diameter in mm (0 = no mask)
+    pixel_size_mm   : float -- mm per pixel
 
     Returns
     -------

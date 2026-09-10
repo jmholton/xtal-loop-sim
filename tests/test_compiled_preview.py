@@ -3,7 +3,7 @@ Flag-gated compiled preview path (the 10 fps lever).
 
 The PREVIEW hot trace may run through torch.compile for a fusion win. The
 exact-path invariants (settle frames, /xray, offline render, every existing
-byte-exact gate) stay bitwise-identical eager — proven by the pre-existing
+byte-exact gate) stay bitwise-identical eager -- proven by the pre-existing
 settle-parity suite. Compiled PREVIEW frames MAY flip a handful of boundary
 pixels; this suite bounds that divergence and proves the gating is real.
 
@@ -103,7 +103,7 @@ def test_compile_off_preview_is_eager_bytes():
 
 
 # ---------------------------------------------------------------------------
-# (c) server wiring: preview uses compiled, settle does not (cheap — spied)
+# (c) server wiring: preview uses compiled, settle does not (cheap -- spied)
 # ---------------------------------------------------------------------------
 @cuda_only
 def test_server_routes_preview_compiled_settle_eager(monkeypatch):
@@ -116,7 +116,7 @@ def test_server_routes_preview_compiled_settle_eager(monkeypatch):
 
     def spy(tscene, gono, n_cond=1, tile_size=250_000, compiled=False):
         seen.append(compiled)
-        # Never actually compile — delegate to the eager path (cheap).
+        # Never actually compile -- delegate to the eager path (cheap).
         return real(tscene, gono, n_cond=n_cond, tile_size=tile_size, compiled=False)
 
     # _render_frame + warmup both import render_torch from this module by name.

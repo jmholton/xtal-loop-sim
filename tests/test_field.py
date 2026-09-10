@@ -62,7 +62,7 @@ def test_neither_rail_is_reachable_for_any_transmittance():
     assert q.min() > 0 and q.max() < 255
 
 
-# --- determinism: load-bearing for the byte comparisons --------------------
+# --- determinism: test_server_settle_parity needs exact bytes here ---------
 
 def test_repeated_calls_are_bit_identical():
     t = np.linspace(0.0, 1.0, H * W * 3).reshape(H, W, 3)
@@ -178,8 +178,8 @@ def test_sensor_resample_is_the_identity_at_the_target_size():
 
 
 def test_sensor_resample_is_bit_identical_across_calls():
-    """Load-bearing for `test_server_settle_parity`, which compares JPEG
-    bytes between the live server and a fresh render."""
+    """`test_server_settle_parity` compares JPEG bytes between the live
+    server and a fresh render, so this must be bit-identical."""
     t = np.linspace(0.0, 1.0, 480 * 640 * 3).reshape(480, 640, 3)
     assert np.array_equal(F.to_sensor(t), F.to_sensor(t.copy()))
 
@@ -256,13 +256,10 @@ def test_streak_is_absent_when_there_is_no_pin():
 
 
 def test_streak_is_absent_when_the_only_dark_body_is_not_the_pin():
-    """THE DROPLET BUG, in miniature and without a library.
-
-    The old stage thresholded every dark pixel, eroded anything under 13 px and
-    fitted a bar to what survived -- with no connected-component step anywhere,
-    so it fitted whatever dark thing was in frame.  A big dark blob that is not
-    the pin therefore got a glint.  Now the geometry comes from the scene, so a
-    frame whose pin is out of view gets nothing no matter what else is dark.
+    """The glint's geometry comes from the scene, not from thresholding
+    dark pixels, so a frame whose pin is out of view gets nothing no
+    matter how large or well-isolated a dark region is.  See
+    docs/DECISIONS.md 2026-08-12 (glint projected from scene).
     """
     blob = np.ones((PIN_H, PIN_W, 3))
     blob[150:330, 240:480] = 0.0                         # 240 x 180, well eroded
@@ -278,15 +275,10 @@ def test_streak_stays_inside_the_pin():
 
 
 def test_streak_stays_off_a_second_dark_body():
-    """THE SECOND HALF OF THE DROPLET BUG.
-
-    The ridge used to be masked by the frame-wide opaque mask over the bounding
-    box of everything dark, so it ran the width of the frame and landed on any
-    dark pixel it crossed -- which is how the loop fiber and the droplet's rim
-    picked up a glint that the fit had specifically excluded.  Measured on the
-    shipped library before the fix: 43% of the streak's pixels were off the pin
-    at 2x zoom.  The band is now bounded by the projected shank as well, so a
-    second body on the ridge's own line gets nothing.
+    """A second dark body on the ridge's own line must get no glint: the
+    band is bounded by the projected shank, not a frame-wide mask over
+    everything dark.  See docs/DECISIONS.md 2026-08-12 (glint projected
+    from scene).
     """
     t, bar, pin = _pin_frame()
     intruder = np.zeros_like(bar)
@@ -319,9 +311,9 @@ def test_streak_matches_the_measured_cross_section():
 
 
 def test_streak_grain_is_deterministic():
-    """Load-bearing.  `test_server_settle_parity` compares JPEG bytes between
-    the live server and a fresh render; an RNG here would break that guard
-    instead of this one."""
+    """`test_server_settle_parity` compares JPEG bytes between the live
+    server and a fresh render; an RNG here would break that guard instead
+    of this one."""
     t, _, pin = _pin_frame()
     assert np.array_equal(F.specular_streak(t, pin),
                           F.specular_streak(t.copy(), pin))
@@ -432,18 +424,16 @@ def test_streak_refuses_mitegen_at_every_angle():
 
 
 def test_streak_never_lands_on_the_droplet():
-    """THE REGRESSION THIS FIX EXISTS FOR, on the real library.
+    """The regression this test guards, on the real library.
 
-    On `hampton_300um_realistic` the pin's metal starts at lab x = 1.000 mm and
-    the loop, stem and droplet all live below x = 0.9.  Before 2026-08-12 the
-    glint was drawn on the loop-plus-droplet whenever the pin left the frame:
-    100% of the streak at zoom >= 2.5 at EVERY spindle angle, and already 6-9%
-    of it at zoom 1.0 at phi = 15/30/45/150, where the global silhouette fit
-    merged the two bodies into one.  Not one streak pixel may fall there.
+    On `hampton_300um_realistic` the pin's metal starts at lab x = 1.000 mm
+    and the loop, stem and droplet all live below x = 0.9; not one streak
+    pixel may fall there.  See docs/DECISIONS.md 2026-08-12 (glint
+    projected from scene).
 
-    Driven through the real delivery chain -- `pose_crop`, `to_sensor`,
-    `project_pin`, `_streak_patch` -- because every defect this glint has had
-    was found by driving it and none by a synthetic frame.
+    Driven through the real delivery chain (`pose_crop`, `to_sensor`,
+    `project_pin`, `_streak_patch`): every defect this glint has had was
+    found by driving it, none by a synthetic frame.
     """
     import json
     from PIL import Image, ImageFilter

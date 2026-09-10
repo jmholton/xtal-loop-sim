@@ -5,12 +5,12 @@ Each primitive implements:
     ray_intersect(origins, dirs) -> (t_enter, t_exit, n_enter, n_exit)
 
 where:
-    origins  : (N, 3) float64 — ray origins
-    dirs     : (N, 3) float64 — unit direction vectors
-    t_enter  : (N,)  float64 — entry parameter (np.inf if no hit)
-    t_exit   : (N,)  float64 — exit parameter  (np.inf if no hit)
-    n_enter  : (N, 3) float64 — outward normal at entry point
-    n_exit   : (N, 3) float64 — outward normal at exit point
+    origins  : (N, 3) float64 -- ray origins
+    dirs     : (N, 3) float64 -- unit direction vectors
+    t_enter  : (N,)  float64 -- entry parameter (np.inf if no hit)
+    t_exit   : (N,)  float64 -- exit parameter  (np.inf if no hit)
+    n_enter  : (N, 3) float64 -- outward normal at entry point
+    n_exit   : (N, 3) float64 -- outward normal at exit point
 
 The outward normal always points away from the primitive interior.
 At entry the normal faces the incident ray; at exit it faces away.
@@ -135,13 +135,13 @@ class HalfSpace:
 
 # ---------------------------------------------------------------------------
 # Cylinder  (infinite along local Z, then capped by two HalfSpaces externally
-#            via CSG — or just the infinite barrel here)
+#            via CSG -- or just the infinite barrel here)
 # ---------------------------------------------------------------------------
 
 class InfiniteCylinder:
     """
     Infinite cylinder aligned with `axis`, passing through `centre`,
-    with the given `radius`.  No end caps — combine with HalfSpaces via CSG.
+    with the given `radius`.  No end caps -- combine with HalfSpaces via CSG.
     """
 
     def __init__(self, centre=(0., 0., 0.), axis=(0., 1., 0.), radius=1.0):

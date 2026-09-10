@@ -1,8 +1,8 @@
 """
 Mesh-back validation of generated scenes.
 
-Measures the geometry actually EMITTED into a scene dict/YAML — never the
-inputs that produced it — and fails loudly when it does not match what was
+Measures the geometry actually EMITTED into a scene dict/YAML, never the
+inputs that produced it, and fails loudly when it does not match what was
 asked for.  Born of the silent-hemisphere episode (docs/DECISIONS.md
 2026-08-07): the droplet solver failed for ordinary inputs and shipped a
 plausible-looking fallback through a fidelity audit, precisely because
@@ -17,7 +17,7 @@ Checks (droplet scenes):
     fiber diameter of the loop path
   - the droplet straddles the loop plane (bulges on both sides)
   - the crystal is centred in the aperture, and is listed before the
-    solvent (priority order — a crystal behind the droplet is invisible)
+    solvent (priority order: a crystal behind the droplet is invisible)
 
 Failures raise SceneValidationError naming every failed check.  Soft
 concerns (e.g. the crystal poking out of a thin droplet, which a real
@@ -247,11 +247,12 @@ def validate_scene(scene, requested_volume_mm3=None, expect_droplet=True,
                 f"vs rim radius {r_mean * 1e3:.1f} um) — visibly flat; it will "
                 "show no bulge edge-on at the shipped pixel size")
 
-        # Rim-ray deflection vs the objective's acceptance cone.  This is the
-        # check DECISIONS.md:128 was reaching for, with the sign the reference
-        # photographs support: a drop fat enough to LOOK like a drop throws its
-        # rim ray outside the cone and goes dark at the rim, and real ones do
-        # exactly that.  Reporting the number beats arguing about the aesthetic.
+        # Rim-ray deflection vs the objective's acceptance cone (see
+        # docs/DECISIONS.md 2026-08-07, the black droplet was two scene-side
+        # mechanisms), with the sign the reference photographs support: a drop
+        # fat enough to LOOK like a drop throws its rim ray outside the cone
+        # and goes dark at the rim, and real ones do exactly that.  Reporting
+        # the number beats arguing about the aesthetic.
         n_sol = float(scene.get("materials", {})
                       .get("solvent", {}).get("n", 1.333))
         rho = (r_mean ** 2 + h_mean ** 2) / (2.0 * h_mean)

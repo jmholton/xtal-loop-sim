@@ -6,8 +6,8 @@ MJPEG/snapshot handlers are pure consumers of the published (generation-
 stamped) frame slot, so N streaming clients cost one render per dirty state
 instead of N+1, and the wire rate is no longer hard-capped at 5 fps.
 
-The render+encode step (_render_frame) is replaced by a timed fake — real
-frames with engine='numpy' take minutes — so these tests are CPU-fast and
+The render+encode step (_render_frame) is replaced by a timed fake -- real
+frames with engine='numpy' take minutes -- so these tests are CPU-fast and
 deterministic.  The single-flight bookkeeping in _render_now (dirty claim,
 generation bump, notify) stays real.
 

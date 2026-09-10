@@ -2,42 +2,34 @@
 Solvent droplet surface builder: closed-form spherical-cap (biconvex lens).
 
 For cryo-crystallography loop sizes (~0.1-1.0 mm diameter) and water-like
-solvents, the Bond number Bo = rho*g*L^2/gamma ~ 0.003, so gravity is
-negligible.  The zero-gravity Young-Laplace solution for an axisymmetric
-droplet pinned on a circular rim is *exactly* a spherical cap — the only
-axisymmetric constant-mean-curvature surface.  A droplet wetting a loop
-bulges symmetrically on both sides of the loop plane: two identical caps
-sharing the rim circle, each holding half the volume.  The dome height h
-follows analytically from the target volume:
+solvents, Bo = rho*g*L^2/gamma ~ 0.003 (gravity negligible), so the
+zero-gravity Young-Laplace solution for an axisymmetric droplet pinned on a
+circular rim is *exactly* a spherical cap, the only axisymmetric
+constant-mean-curvature surface.  A droplet wetting a loop bulges
+symmetrically on both sides of the loop plane: two identical caps sharing
+the rim circle, each holding half the volume.  The dome height h follows
+analytically from the target volume:
 
     V/2 = pi * h * (3*R_loop^2 + h^2) / 6      (monotone in h, h in (0, R_loop])
 
 With the contact line pinned at the loop rim, the contact angle is an
-OUTPUT of (volume, rim radius), not an input — it cannot be prescribed
-independently.
+OUTPUT of (volume, rim radius), not an input: it cannot be prescribed
+independently.  Replaces an earlier Bashforth-Adams ODE solve (see
+docs/DECISIONS.md 2026-08-07, black droplet); there is no fallback path,
+and impossible inputs raise.
 
-History: until 2026-08-07 this module integrated the Bashforth-Adams ODE
-instead.  Its azimuthal-curvature term used the wrong angle convention
-(sin(psi)/r under a psi-from-vertical convention that requires cos(psi)/r),
-so the profile could never reach the loop radius, and three silent guards
-substituted a hemisphere — ignoring the requested volume and contact angle.
-The closed form replaces it (see docs/DECISIONS.md 2026-08-07); there is no
-fallback path, and impossible inputs raise.
+Two public builders:
 
-Usage
------
-    from crystal_harvester.droplet import droplet_in_loop
+biconvex_lens_profile(R_loop, volume, n_z) -> r_profile, z_profile, h_opt, rho
+    Meridional profile of the symmetric lens for a given rim radius and
+    target volume.
 
-    vertices, faces, info = droplet_in_loop(
-        loop_pts        = pts,     # (N, 3) fiber-axis waypoints, z ~ 0 plane
-        fiber_diameter_mm = 0.020,
-        volume_mm3      = 0.002,
-        n_z   = 30,
-        n_phi = 48,
-    )
-    # vertices: (N, 3) float array, centred on the loop aperture, rim
-    #           pinned at the inner fiber edge, straddling the loop plane
-    # faces:    (M, 3) int array — watertight, no degenerate triangles
+droplet_in_loop(loop_pts, fiber_diameter_mm, volume_mm3, n_z, n_phi) ->
+vertices, faces, info
+    Full biconvex mesh pinned inside a loop's fiber waypoints: rim at the
+    inner fiber edge, translated to the aperture centroid, straddling the
+    loop plane.  info carries the measured h_mm/rho_mm/R_mean_mm/centroid/
+    volume_centroid/volume_mm3.
 """
 
 import sys

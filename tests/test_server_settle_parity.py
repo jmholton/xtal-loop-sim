@@ -1,23 +1,17 @@
-"""
-Converge-on-idle gate: what the camera server SERVES at idle must be byte-equal
-to the exact f64 reference render, encoded the same way.
+"""Converge-on-idle gate: what the camera server serves at idle must be
+byte-equal to the exact f64 reference render, encoded the same way.
 
-This is the guard for all preview-mode work: approximations may run while a
-move animates, but the settled (idle) frame the server publishes must remain
-the exact engine output. Runs the real server render path (_render_now) — no
-HTTP, no threads.
+Guards all preview-mode work: approximations may run while a move
+animates, but the settled (idle) frame the server publishes must remain
+the exact engine output.  Runs the real server render path (_render_now),
+no HTTP, no threads.
 
-NOT WEAKENED BY CAMERA EMULATION (2026-08-10).  The server now maps
-transmittance through the camera model in `loop_sim/renderer/field.py` before
-encoding, so "the exact engine output" is no longer the same bytes as raw
-transmittance.  The reference below therefore routes through the SAME shared
-`encode_frame` the server uses, and the assertion still means exactly what it
-did: the served frame is the exact f64 engine output carried through the
-documented, deterministic delivery chain, with nothing approximated and
-nothing stochastic in it.  If a future delivery stage is added and this test
-is not updated with it, the test fails — which is the point.  Keep the
-reference routed through the server's own helper rather than reimplementing
-the chain here; a second implementation is what this guard exists to catch.
+The reference routes through the server's own shared `encode_frame`
+helper rather than reimplementing the encode chain (see
+docs/DECISIONS.md 2026-08-10, camera emulation) -- a second
+implementation is exactly what this guard exists to catch.  If a future
+delivery stage is added and this test is not updated with it, the test
+fails, which is the point.
 """
 import os
 import sys
@@ -42,20 +36,18 @@ cuda_only = pytest.mark.skipif(not torch.cuda.is_available(),
 
 
 def _reference_jpeg(server, pose, n_cond, quality=85):
-    """The exact f64 engine output, delivered exactly as the server delivers it.
+    """The exact f64 engine output, delivered exactly as the server
+    delivers it: everything downstream of the trace (`_camera`, `_sensor`,
+    `_live_pin`) is taken from the server, so the reference and the
+    server share one delivery implementation rather than two that happen
+    to agree today.  `_live_pin` depends on the pose (see
+    docs/DECISIONS.md 2026-08-12, glint projected from scene); skipping
+    it here would be a second implementation, which is what this guard
+    exists to catch.
 
-    Everything downstream of the trace is taken FROM THE SERVER -- `_camera`,
-    `_sensor` and `_live_pin` -- so the reference and the server share one
-    delivery implementation rather than two that agree today.  `_live_pin`
-    joined that list on 2026-08-12, when the specular glint stopped inferring
-    the pin from the silhouette and started projecting it from the scene: it is
-    a delivery stage that depends on the pose, so a reference that skipped it
-    would be a second implementation, which is what this guard exists to catch.
-
-    The grain phase is taken from the GONIOMETER, not from the `pose` dict, for
-    the same reason: the server reads `gono.get()`, which resolves every motor
-    including `zoom` to 1.0, while a partial dict would default it to 0.0 and
-    silently re-roll the grain. Same source, same bytes.
+    The grain phase is taken from the goniometer, not the `pose` dict:
+    `gono.get()` resolves every motor including `zoom` to 1.0, while a
+    partial dict would default it to 0.0 and silently re-roll the grain.
     """
     scene = server._scene
     ts = TorchScene(scene, torch.device("cuda"), torch.float64)

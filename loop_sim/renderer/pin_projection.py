@@ -1,41 +1,22 @@
-"""Where the pin is on the delivered frame, taken from the SCENE.
+"""Where the pin is on the delivered frame, projected from the scene.
 
-`field.py` draws a cosmetic specular glint along the mounting pin.  Until
-2026-08-12 it worked out where the pin was by looking at the picture: threshold
-every dark pixel, erode anything under 13 px, fit a bar to what survived.  That
-has no notion of a BODY -- there was no connected-component step anywhere in it
--- so it fitted whatever dark thing was in frame.  On `hampton_300um_realistic`
-past ~2.5x zoom the pin is off-frame entirely and the loop-plus-droplet survives
-the erosion, so the glint was drawn across the DROPLET at full strength, at
-every spindle angle.  Measured before the fix: 100% of the streak off the pin at
-zoom >= 2.5, and already 6-9% of it at zoom 1.0 at phi = 15/30/45/150, where the
-global fit merged pin and drop into one body.
+`field.py` draws a cosmetic specular glint along the mounting pin; this
+module supplies its geometry so the glint tracks the scene instead of being
+inferred from the rendered picture (see docs/DECISIONS.md 2026-08-12 the
+glint is projected from the scene).
 
-No image-only rule separates the two.  Aspect and bar-likeness were measured and
-rejected in 2026-08-11 (the zoomed pin is the LESS bar-like of the two), and
-solidity fails in the wrong direction: a pin view contaminated by the drop reads
-0.508 against a pure droplet's 0.582, so the gate kills correct glints first.
-The answer is not a better inference, it is to stop inferring -- the server knows
-the scene and the pose, and the camera is orthographic, so the pin's silhouette
-is a closed form.
-
-WHAT THIS MODULE MAY NOT DO, because both would cost hours of rebuild:
-
-  * It must not live in `loop_sim/scene/` and must not edit
-    `motors/goniometer.py`.  `frame_library._RENDER_SOURCES` hashes
-    `scene/*.py` as a GLOB and `motors/goniometer.py` by name, so a new module
-    there invalidates all three frame libraries.  `renderer/` is enumerated
-    file by file, which is why this file is safe here -- the same reason
-    `field.py` is.
-  * It must not add anything to a scene YAML.  `scene_sha256` is a build key,
-    so a `specular:` flag on the pin object would invalidate every library for
-    a change that never enters a template.  Hence `SHINY` below is code.
-
-The camera is ORTHOGRAPHIC (`microscope.py` builds a parallel grid along
-`optical_axis`), so a point maps to the image plane by two dot products and a
+`pin_segment(scene)` returns the visible shank's `(A, B, radius)` in scene
+mm.  `project_pin(scene, gonio, to_px, frame_wh)` returns
+`(x0, y0, ax, ay, half_w, half_l, clip_lo, clip_hi)` in delivered pixels --
+the shank's centre, unit axis, half-width, half-length, and which ends the
+frame cut -- or None if there is no pin to draw (past the frame, end-on, or
+wider than `MAX_WIDTH` of the frame).  The camera is orthographic, so a
 cylinder's silhouette half-width is its radius at any tilt short of end-on.
-That is the whole of the geometry here; the fiddly part is the two different
-pixel grids, which is what the two mapper factories are for.
+
+Must live in `renderer/`, not `scene/*.py` or `motors/goniometer.py`, and must
+never read a flag from scene YAML: both are hashed into `render_sha` /
+`scene_sha256` as build keys, and a change here must not invalidate a shipped
+frame library.  `SHINY` below is the code-level declaration this forces.
 """
 import numpy as np
 
@@ -178,11 +159,8 @@ def project_pin(scene, gonio, to_px, frame_wh):
     `camera_mapper` and `template_mapper`.  Keeping it a callable is what lets
     the live path and the template path share every line of the geometry.
 
-    Verified against the silhouette fit it replaces, on the shipped
-    `hampton_300um_realistic` library: row agrees to <= 0.4 px and half-width to
-    <= 1.7 px at zoom 1 / 1.5 / 2 / 4, and the start column is short by 6.4-6.9
-    px, which is exactly the (k-1)/2 = 6 px the old erosion took off.  The
-    projection is the accurate one.
+    Verified against the silhouette fit it replaces; see docs/DECISIONS.md
+    2026-08-12 the glint is projected from the scene.
     """
     seg = pin_segment(scene)
     if seg is None:

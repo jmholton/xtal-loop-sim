@@ -63,13 +63,11 @@ def test_render_parity_cpu_f64_mitegen_thinshell():
     assert int(np.abs(a - b).max()) == 0
 
 
-# The mesh path at PRODUCTION scale.  Until 2026-08-11 the only mesh coverage
-# here was mitegen's 234-face ThinShell; `hampton_300um_realistic` -- 5472 faces,
-# a real SurfaceMesh, and the scene whose library build dominates every timing
-# in the docs -- appeared in no render-parity test at all.  That is the scene
-# whose intersection path gets optimised, so it is the one that has to be
-# pinned.  rotx=45 puts the droplet, the loop fiber and the pin CSG all in frame
-# at once.
+# The mesh path at full scale: `hampton_300um_realistic` (5472 faces, a
+# real SurfaceMesh, the scene whose library build dominates every timing
+# in the docs) must be pinned here, not just mitegen's 234-face ThinShell.
+# rotx=45 puts the droplet, the loop fiber and the pin CSG all in frame at
+# once.
 @pytest.mark.parametrize("pose", [{}, {"rotx": 45}])
 def test_render_parity_cpu_f64_realistic_droplet_mesh(pose):
     a, b = _render_pair(REALISTIC, CPU, pose, res=(96, 72))
@@ -99,18 +97,10 @@ def test_render_parity_cuda_fullres_hampton(pose):
 
 # ---------------------------------------------------------------------------
 # With the PSF: agreement is +/-1 grey level, and that is not a regression.
-#
-# The two float64 traces were NEVER bit-identical -- measured, they differ by up
-# to ~3e-8 on ~0.7% of values, from summation order and library differences
-# between numpy and torch.  That was invisible while the image was essentially
-# binary (0.0 or 1.0 quantise the same either way).  The PSF redistributes those
-# values into intermediate greys, where a 3e-8 difference can land either side
-# of a rounding boundary.  So the bound below is a quantisation artefact of a
-# pre-existing float difference, not new divergence, which is why it is exactly
-# 1 and never more: measured max 1 at 96x72 and at full res, on CPU and CUDA.
-#
-# Keep BOTH families of test.  The exact one above still guards the trace; if
-# this one ever exceeds 1, something structural has broken.
+# The two f64 traces differ by ~3e-8 on ~0.7% of values; the PSF makes that
+# visible at the quantisation boundary; exceeding 1 means something
+# structural broke.  Keep both families of test: the exact one above still
+# guards the trace.
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("pose", [{}, {"rotx": 45}, {"roty": 30, "tx": 0.05}])

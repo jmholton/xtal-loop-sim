@@ -1,35 +1,24 @@
-"""
-The X-ray radiograph MJPEG-style stream (/xray-stream) and its explicit
-start/stop lifecycle (_set_stream_mode).
+"""The X-ray radiograph MJPEG-style stream (/xray-stream) and its
+explicit start/stop lifecycle (_set_stream_mode).
 
-Mirrors tests/test_server_singleflight.py's pattern for the optical stream:
-the render step (_render_xray_png) is replaced by a timed fake, so these
-tests are CPU-fast and need no CUDA/library. The single-flight bookkeeping in
-_xray_render_now (dirty claim, generation bump, notify) and the start/stop
-lifecycle in _set_stream_mode stay real.
+Mirrors test_server_singleflight.py's pattern for the optical stream:
+render is replaced by a timed fake, so these tests are CPU-fast and need
+no CUDA/library.  The single-flight and start/stop bookkeeping stay real.
 
-The load-bearing claims, and the test that guards each:
+The claims here, and the test that guards each:
 
-  * single-flight: N invalidations while a render is in flight coalesce into
-    one re-render, not a queue -> test_xray_singleflight_burst_not_multiplied
-  * _set_stream_mode starts a producer thread that actually publishes, and
-    stopping it joins cleanly (cooperative, via the token, not a hard
-    interrupt) -> test_start_stop_lifecycle
+  * single-flight: N invalidations while a render is in flight coalesce
+    into one re-render, not a queue -> test_xray_singleflight_burst_not_multiplied
+  * a producer thread starts and stops cleanly (cooperative, via the
+    token, not a hard interrupt) -> test_start_stop_lifecycle
   * calling the same mode twice is a no-op, not a second thread ->
     test_idempotent_same_mode_twice
-  * rapid start/stop/start leaves exactly ONE live producer, never two ->
+  * rapid start/stop/start leaves exactly one live producer ->
     test_rapid_toggle_leaves_one_thread
-  * a scene switch while streaming keeps the SAME producer thread alive and
-    its next frame reflects the NEW scene -- the concrete regression test
-    for _install_bundle's xray_templates_cache wiring ->
-    test_stream_survives_scene_switch
-  * switching to a scene with no X-ray library while streaming falls back to
-    the live-render path without crashing -> test_stream_falls_back_with_no_library
-  * the optical producer is NEVER touched by _set_stream_mode -- it keeps
-    running (and other consumers keep being served) regardless of the X-ray
-    stream's state -> test_optical_producer_unaffected_by_xray_stream_mode
-
-Run:  pytest tests/test_xray_stream.py -v
+  * a scene switch keeps the producer alive -> test_stream_survives_scene_switch
+  * no X-ray library falls back to live render -> test_stream_falls_back_with_no_library
+  * the optical producer is never touched by _set_stream_mode ->
+    test_optical_producer_unaffected_by_xray_stream_mode
 """
 import os
 import socket
@@ -78,7 +67,7 @@ class _FakeXrayServer(CameraServer):
     _render_xray_png is overridden rather than the lower-level trace
     functions, mirroring how _FakeRenderServer overrides _render_frame: it is
     the one seam every real caller (the plain /xray endpoint, _xray_render_now)
-    goes through, so faking it exercises the same call shape production code
+    goes through, so faking it exercises the same call shape the real code
     does. Each fake frame embeds the scene path and an ordinal so a test can
     tell a fresh frame from a stale one, and tell which scene it came from.
     """

@@ -149,7 +149,7 @@ DEFAULT_CAMERA = {
 
 DEFAULT_MATERIALS = {
     # color is an ABSORPTION spectrum in the renderer (mu_per_ch = mu_optical
-    # + 30*(1-color) per mm, microscope.py) — NOT a display tint.  The crystal
+    # + 30*(1-color) per mm, microscope.py): not a display tint.  The crystal
     # is neutral for the reason given in hampton_loops.py; kept in step so the
     # two generators cannot drift.
     "crystal": {"n": 1.52, "mu_optical": 4.09, "mu_xray": 2.1,   "color": [1.0, 1.0, 1.0]},
@@ -187,17 +187,17 @@ def build_mitegen_scene(
 
     Parameters
     ----------
-    model           : str  — MiTeGen model number, e.g. 'M2-L18SP-200'
-    crystal_preset  : str  — crystal habit preset (or None to omit crystal)
-    crystal_dims_mm : list — half-widths for the chosen preset
-    lattice_abc     : dict — XDS real-space unit cell vectors in Angstroms
+    model           : str  -- MiTeGen model number, e.g. 'M2-L18SP-200'
+    crystal_preset  : str  -- crystal habit preset (or None to omit crystal)
+    crystal_dims_mm : list -- half-widths for the chosen preset
+    lattice_abc     : dict -- XDS real-space unit cell vectors in Angstroms
     pin_diameter_mm : float
     pin_length_mm   : float
     pin_bevel_deg   : float
 
     Returns
     -------
-    dict — YAML-serialisable scene dict
+    dict -- YAML-serialisable scene dict
     """
     if model not in _MODELS:
         available = list_models()

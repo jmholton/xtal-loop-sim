@@ -35,6 +35,25 @@ GET/POST /move
 GET /recenter?px=COL&py=ROW
     Animated move that brings the clicked pixel to the image centre.
 
+GET /xray-stream
+    Push stream of X-ray radiograph frames (multipart/x-mixed-replace,
+    PNG per part).  Idle until started by POST /stream-mode.
+
+POST /stream-mode
+    Start or stop the X-ray radiograph push stream.  Parameter: mode
+    ("radiograph" to start, "microscope" to stop).
+
+GET /scenes
+    Every switchable scene plus the build state of its frame libraries,
+    as JSON.
+
+GET /scene
+    The scene currently served, plus the state of any switch in flight.
+
+POST /scene
+    Switch the served scene.  Parameters: path, build ("preview"|"full").
+    Returns 202 accepted (poll GET /scene for progress) or a JSON refusal.
+
 Usage
 -----
 Command line (preferred):
@@ -127,8 +146,8 @@ def encode_frame(img, jpeg_quality, camera=None, sensor=None, phase=0,
 
     This sits in CAMERA space, downstream of `pose_crop`, so the illumination
     field cannot pan or rotate with the sample and templates keep storing raw
-    transmittance.  See `loop_sim/renderer/field.py` for why that placement is
-    load-bearing rather than incidental.
+    transmittance.  See `loop_sim/renderer/field.py` for the full placement
+    rationale.
 
     `camera` is the kwargs dict for `field.apply_camera`, or None for the raw
     transmittance the tracer produced.  `sensor` is the (W, H) raster to
@@ -190,17 +209,12 @@ def encode_frame(img, jpeg_quality, camera=None, sensor=None, phase=0,
 # rather than the card's total.
 _CACHE_RAM_FRACTION = 0.5
 
-# Bytes a decoded pixel actually costs, which is NOT 3.  PIL stores an RGB
-# image as 4-byte-aligned RGBX internally, so the pixel buffer is w*h*4, and
-# Python object overhead adds a little on top: measured 4.22 B/px holding 40
-# real 3940x414 templates (275.2 MB against the 195.7 MB w*h*3 predicts).
-#
-# This matters twice.  It is the difference between reporting 1.64 GiB and 2.31
-# GiB for a 360-frame sweep -- and, worse, `plan_template_cache` sizes the cache
-# from it, so using 3 made it promise 41% more frames than the RAM it budgeted
-# could hold.  That inverts the one guarantee that function's docstring makes
-# (it is meant to UNDER-promise).  Rounded up so the error stays in the safe
-# direction.
+# Bytes a decoded pixel actually costs, which is NOT 3: PIL stores an RGB
+# image as 4-byte-aligned RGBX, plus object overhead (measured 4.22 B/px).
+# `plan_template_cache` sizes its cache from this constant, so an under-count
+# here over-promises how many frames fit; rounded up to keep that error in the
+# safe (under-promising) direction. See docs/DECISIONS.md 2026-08-14 viewer
+# prewarms; decoded-template byte figures corrected.
 _DECODED_BYTES_PER_PX = 4.25
 
 
@@ -230,24 +244,12 @@ def _available_ram_bytes():
 def plan_template_cache(manifest, fraction=_CACHE_RAM_FRACTION, avail=None):
     """How many decoded templates to hold resident.  Never raises.
 
-    THE POINT OF CACHING THE WHOLE LIBRARY.  A decoded template is
-    width*height*3 bytes -- 41 MiB for the droplet scene's 5578x2570 sweep --
-    and a spindle slew visits every angle exactly once per revolution, so the
-    old 8-entry cache missed on every frame of a rotation by construction.
-    Measured 2026-08-13: a slew costs 288.3 ms on voltron against 69.1 ms for a
-    pan, and the whole 205 ms difference is one PNG decode.  Hold the library
-    resident and a slew becomes a pan -- 14.5 fps there, past the 10 fps goal,
-    with no threads, no prefetch and no prediction.
-
-    Direction-agnostic, which is why this beats a prefetch pool for the AXIS
-    consumer: `/motor` is instant and absolute, so a pool would have to infer a
-    slew's direction from observed deltas and would be wrong across every
-    commanded jump.  A resident library does not care how the pose moves.
-
-    Sized against AVAILABLE RAM because the whole library is not always
-    affordable: 360 x 41 MiB is 14.4 GiB, nothing on voltron's 251 GB and a
-    great deal on a laptop.  The result is clamped to the library's own frame
-    count -- there is never a reason to hold more.
+    A spindle slew visits every angle exactly once per revolution, so a small
+    LRU cache misses on every frame of a rotation by construction; holding the
+    whole library resident turns a slew into a pan.  Sized against AVAILABLE
+    RAM, not the library's full size, since the whole library is not always
+    affordable, and clamped to the library's own frame count.  See
+    docs/DECISIONS.md 2026-08-13 voltron measured on both halves.
     """
     try:
         rnd = manifest["rendered"]
@@ -382,15 +384,10 @@ class TemplateSource:
     window the pose asks for, scaling it to the camera resolution, and blurring
     by the defocus the depth component implies.  No raytracing, no GPU.
 
-    Decoded templates are cached, and since 2026-08-13 the cache is sized to
-    hold the WHOLE library when the host can afford it (`plan_template_cache`).
-    It used to hold 8, on the reasoning that templates are large and decoding is
-    cheap -- the second half of which was wrong at supersample 4: a 5578x2570
-    PNG costs 66 ms to decode on the dev box and 205 ms on voltron, and a
-    spindle slew visits every angle once per revolution, so an 8-entry cache
-    missed on every rotating frame by construction. Holding the library
-    resident turns a slew into a pan (288 -> 69 ms on voltron) for the price of
-    41 MiB per frame.
+    Decoded templates are cached; since 2026-08-13 the cache is sized to hold
+    the whole library when the host can afford it (`plan_template_cache`),
+    turning a cyclic slew into a pan.  See docs/DECISIONS.md 2026-08-13
+    voltron measured on both halves.
     """
 
     def __init__(self, manifest, lib_dir, jpeg_quality=85, cache_size=8,
@@ -409,24 +406,11 @@ class TemplateSource:
         # replayed without touching the scene otherwise, and that stays true --
         # nothing here loads geometry, traces a ray or reads a material.
         self.scene = scene
-        # `cache_size=None` is 8, the long-standing conservative behaviour and
-        # the constructor's own default; `"auto"` sizes from available RAM; an
-        # int is honoured verbatim.
-        #
-        # `auto` is now the SERVER's default, which it could not be while a
-        # template was the whole 5578x2570 window at 41 MiB (14.4 GiB for the
-        # sweep -- nothing to voltron, a great deal to a workstation).  Cropped
-        # templates store their content, ~4.7 MiB, so the sweep is ~1.8 GiB and
-        # claiming it needs no ceremony.
-        #
-        # ALL OR NOTHING.  A cache that cannot hold one revolution is worth
-        # exactly zero on the case it exists for: a spindle slew visits every
-        # angle once per turn, so LRU evicts each frame just before it comes
-        # round again and every rotating frame still decodes.  Taking gigabytes
-        # to achieve that is strictly worse than not taking them, so `auto`
-        # declines instead -- and says so, because silently serving at a third
-        # of the expected rate reads as sluggish hardware rather than a host
-        # that could not afford the flag.
+        # `cache_size=None` is 8 (the constructor's default); `"auto"` sizes
+        # from available RAM via `plan_template_cache` and falls back to 8 if
+        # that can't cover one full revolution -- a partial cache buys nothing
+        # against a cyclic slew (LRU evicts each frame just before it recurs).
+        # See docs/DECISIONS.md 2026-08-13 voltron measured on both halves.
         if cache_size is None:
             cache_size = 8
         elif isinstance(cache_size, str):
@@ -718,23 +702,23 @@ def _load_xray_templates(scene_path, xray_library_root, cache_size=8):
 
 
 # ---------------------------------------------------------------------------
-# Move resolution + animation geometry (pure functions — unit-tested directly)
+# Move resolution + animation geometry (pure functions -- unit-tested directly)
 # ---------------------------------------------------------------------------
 
 def resolve_target(current, params, W, H, pixel_size, geometry=None):
     """Resolve a /move request into a full absolute target motor dict.
 
     Supports three param styles, applied in order:
-      * absolute    — tx, ty, tz, rotx, roty, rotz, zoom
-      * relative    — d<key> (dtx, drotx, dzoom, ...) added to the running base
-      * screen pan  — panx/pany (fraction of the field of view) → mm, in IMAGE
+      * absolute    -- tx, ty, tz, rotx, roty, rotz, zoom
+      * relative    -- d<key> (dtx, drotx, dzoom, ...) added to the running base
+      * screen pan  -- panx/pany (fraction of the field of view) → mm, in IMAGE
         axes: the pad moves the sample the way it looks on screen at any
         spindle angle.  The XYZ stage rides on the spindle, so screen-vertical
         is ty at phi=0 but tz at phi=90; the pan is therefore built in lab
         space and mapped into motor space by Rᵀ, exactly as recenter_target
         does.  `geometry` supplies the camera axes.  Without it the pan is
         applied to tx/ty directly, which only matches the image at zero
-        rotation — the server always passes geometry.
+        rotation -- the server always passes geometry.
 
     `current` is the running command target (not the in-flight pose), so rapid
     button clicks accumulate (four 0.25-screen pans = one full screen).
@@ -781,9 +765,8 @@ def move_duration(start, target, speed, W, pixel_size,
     because `velocity_step` ramps in and out of it.  It is the input to that
     stepper, not the wall-clock duration.
 
-    Rates were halved on 2026-08-06: the previous values (2 s screen crossing,
-    360 deg/s) were about twice as fast as the real goniometer looks, so what
-    used to need the speed dial at 0.5x is now 1.0x.
+    Rates halved 2026-08-06 to match the real goniometer's look; see
+    docs/DECISIONS.md 2026-08-06 motion is a velocity profile.
     """
     zoom0 = max(start.get("zoom", 1.0), 1e-6)
     eff_px = pixel_size / zoom0
@@ -822,9 +805,10 @@ def velocity_step(pos, u, dt, linear_duration, ramp=DEFAULT_RAMP_S):
     Velocity is STATE rather than a function of elapsed time, and that is the
     point: when a move is preempted -- the common case being a burst of jog
     clicks -- the replacement starts from the speed the stage is actually
-    doing.  Recomputing a position curve from t=0 would silently decelerate to
-    a stop at every click, which is exactly the per-click stutter this whole
-    path exists to avoid.
+    doing, provided the heading continues; a reversal starts from rest, since
+    it needs the braking anyway.  Recomputing a position curve from t=0 would
+    silently decelerate to a stop at every click, which is exactly the
+    per-click stutter this whole path exists to avoid.
     """
     D = linear_duration
     if D <= 0.0 or pos >= 1.0:
@@ -964,19 +948,12 @@ def _switch_idle():
 
 class _Handler(BaseHTTPRequestHandler):
 
-    # HTTP/1.1 so the underlying TCP connection is reused across requests
-    # (the stdlib default is 1.0, which sends "Connection: close" and pays a
-    # fresh handshake every single request). Safe because every short-lived
-    # response on this server already goes through _send_json or sets its own
-    # Content-Length explicitly (_handle_xray, _handle_beam, _handle_snapshot,
-    # _handle_index) -- the one response that never terminates, the MJPEG
-    # stream, already holds its own connection open for its whole lifetime
-    # regardless of protocol_version, so this changes nothing about it.
-    # Without this a WSL2 client pays the localhost-relay's per-connection
-    # setup cost on every poll -- ~1.5s observed on /xray and /beam, which a
-    # render taking single-digit-to-tens of ms cannot explain on its own.
-    # `timeout` bounds how long an idle keep-alive connection can pin a
-    # thread if a client goes away without closing cleanly.
+    # HTTP/1.1 keeps the TCP connection alive across requests -- on WSL2 a
+    # fresh connection pays the localhost relay's setup cost every poll
+    # (~1.5s observed on /xray and /beam). Safe: every short response sets
+    # its own Content-Length, and the one that never ends (MJPEG) already
+    # holds its connection open regardless of protocol_version. `timeout`
+    # bounds how long an idle keep-alive connection can pin a thread.
     protocol_version = "HTTP/1.1"
     timeout = 30
 
@@ -1051,7 +1028,7 @@ class _Handler(BaseHTTPRequestHandler):
         """Pure consumer of the background producer's published frames.
 
         Waits on _frame_cv for a frame generation newer than the last one
-        sent (newest-only — never a backlog), clamps to the fps_limit
+        sent (newest-only -- never a backlog), clamps to the fps_limit
         ceiling, and resends the cached frame after ~1 s idle so browsers /
         AXIS clients don't time out.  Socket writes happen outside the lock,
         so a slow client never blocks the producer or other clients.
@@ -1065,23 +1042,14 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         keepalive = 1.0     # idle resend period (s)
-        # Each part is TERMINATED as it is written: payload, then the boundary
-        # that closes it.  The obvious framing (boundary first, then payload)
-        # leaves the last frame of a motion unterminated until the next send,
-        # so a client that renders on the boundary rather than on
-        # Content-Length holds the second-to-last frame until the keepalive
-        # fires -- the pose appears to stall just short of target and then
-        # teleport.  Closing every part immediately removes that class of
-        # stutter entirely instead of shortening it.
+        # Each part is terminated as written (payload then boundary), so a
+        # client that finalizes on the boundary doesn't hold the
+        # second-to-last frame of a motion until the keepalive fires.
         self.wfile.write(_MJPEG_BOUNDARY + b"\r\n")
-        # Closing the part is still not enough for the strictest consumers,
-        # which only finalise a part once the NEXT part's headers arrive -- and
-        # those cannot be sent early, because Content-Length is not known until
-        # the next frame exists.  So the last frame of a motion is followed by
-        # one prompt duplicate, which costs a single extra frame per motion and
-        # bounds every consumer's wait at the normal cadence instead of a
-        # keepalive.  Measured on one move: length-driven and boundary-driven
-        # clients both saw 35 ms, a next-headers-driven client saw 1002 ms.
+        # A client that finalizes on the NEXT part's headers instead needs one
+        # prompt duplicate frame after new content, since Content-Length isn't
+        # known until that next frame exists. See docs/DECISIONS.md 2026-08-06
+        # the interactive path.
         flush_delay = srv._frame_interval
         last_gen  = 0
         last_send = 0.0
@@ -1209,7 +1177,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _handle_motor(self, params):
-        """Instant (non-animated) absolute set — kept for AXIS/back-compat."""
+        """Instant (non-animated) absolute set -- kept for AXIS/back-compat."""
         srv = self.server
         updates = {k: float(v) for k, v in params.items() if k in _MOTOR_KEYS}
         if updates:
@@ -1230,7 +1198,7 @@ class _Handler(BaseHTTPRequestHandler):
     def _handle_recenter(self, params):
         """Recentre on a clicked point.
 
-        Preferred: fx/fy — the click as a fraction (0..1) of the *displayed*
+        Preferred: fx/fy -- the click as a fraction (0..1) of the *displayed*
         image; the server scales them by the true camera resolution, so the
         client need not know native dimensions (robust to CSS scaling / the
         unreliable MJPEG <img>.naturalWidth).  px/py also work, and are pixels
@@ -1330,12 +1298,12 @@ class CameraServer(ThreadingHTTPServer):
     scene      : Scene
     host       : str
     port       : int
-    n_cond     : int — condenser rays per pixel (1=fast preview, 7=smooth)
-    fps_limit  : float — max frame rate for MJPEG stream
-    scene_path : str | None — YAML the scene was loaded from. Required to serve
+    n_cond     : int -- condenser rays per pixel (1=fast preview, 7=smooth)
+    fps_limit  : float -- max frame rate for MJPEG stream
+    scene_path : str | None -- YAML the scene was loaded from. Required to serve
                  from a pre-computed frame library; without it every frame is a
                  live render.
-    templates  : bool — serve from the frame library (building it first if it is
+    templates  : bool -- serve from the frame library (building it first if it is
                  absent or stale). This is the low-latency path and needs no GPU
                  at runtime.
     """
@@ -1456,22 +1424,16 @@ class CameraServer(ThreadingHTTPServer):
         self._frame_cv       = threading.Condition()
         self._bg_thread      = None
 
-        # X-ray stream frame slot -- structurally identical to the optical one
-        # above, deliberately NOT sharing any of its state (see the 2026-07-06
-        # _active_compiled incident in docs/DECISIONS.md: a shared, unlocked
-        # mutable flag read/written cross-thread caused a real data race; the
-        # fix there, and the discipline followed here, is to keep every piece
-        # of cross-thread state under its own lock rather than share it).
-        # _frame_cv is a LEAF (see the lock-order comment above); _xray_frame_cv
-        # is a SECOND, independent leaf -- never held while acquiring anything,
-        # never acquired while holding anything, including _frame_cv itself.
-        # Unlike the optical producer (started once in start(), never stopped),
-        # the X-ray producer has an explicit start/stop lifecycle driven by the
-        # client's Microscope/Radiograph toggle -- see _set_stream_mode. The
-        # optical producer is NEVER stopped: other consumers (a second browser
-        # tab, an AXIS-protocol poller such as MxCuBE/EPICS) have no notion of
-        # this UI's mode toggle, and freezing their view because someone else
-        # switched to Radiograph would be a real regression, not a savings.
+        # X-ray stream frame slot, structurally identical to the optical one
+        # above but with entirely separate state -- see docs/DECISIONS.md
+        # 2026-07-06 10 fps interactive via torch.compile (a shared unlocked
+        # flag caused a real cross-thread data race). _xray_frame_cv is a
+        # second, independent LEAF like _frame_cv. Unlike the optical producer
+        # (started once, never stopped), the X-ray producer has an explicit
+        # start/stop lifecycle driven by the Microscope/Radiograph toggle
+        # (_set_stream_mode) -- the optical producer keeps running regardless,
+        # since other consumers (a second tab, an AXIS poller) have no notion
+        # of this UI's toggle.
         self._xray_jpeg_cache   = None
         self._xray_cache_dirty  = False
         self._xray_frame_gen    = 0
@@ -1480,32 +1442,32 @@ class CameraServer(ThreadingHTTPServer):
         self._xray_stream_token = 0   # cooperative-stop generation, the _anim_gen idiom
         self._active_stream     = "microscope"   # guarded by _xray_frame_cv
 
-        # Animation: a daemon thread linearly interpolates the goniometer toward
-        # a target pose so issued moves glide instead of teleporting.  _gonio_lock
-        # guards the (otherwise unsynchronised) live goniometer; _anim_cv guards
-        # the target/generation/running-target-pose handshake.
+        # Animation: a daemon thread linearly interpolates the goniometer
+        # toward a target pose so moves glide instead of teleporting.
+        # _gonio_lock guards the live goniometer; _anim_cv guards the
+        # target/generation/running-target-pose handshake.
         #
-        # LOCK ORDER -- the whole server obeys this, and inverting it hangs:
+        # LOCK ORDER -- acquire only left-to-right, and inverting it hangs:
         #
         #     _anim_cv  >  _scene_lock  >  _gonio_lock          _frame_cv: LEAF
         #
-        # Acquire only left-to-right.  _frame_cv is a leaf in the strict sense:
-        # never held while acquiring anything, never acquired while holding
-        # anything (note _get_jpeg calls _render_now OUTSIDE its `with`, and
-        # _run_animation calls _invalidate OUTSIDE its `with` -- both deliberate).
+        # _frame_cv is a leaf: never held while acquiring anything, never
+        # acquired while holding anything (_get_jpeg calls _render_now, and
+        # _run_animation calls _invalidate, both OUTSIDE their `with` block,
+        # deliberately).
         #
-        # The order is not arbitrary.  _anim_cv must be outermost because
-        # _command_move/_command_recenter/_animator_loop pair a read of
-        # self._scene (camera_cfg AND geometry) with _target_pose, and a scene
-        # swap has to make both new in the same instant -- hampton is 0.0074
-        # mm/px against mitegen's 0.001, so a torn read is a 7.4x error in every
-        # pan, silently clamped, with no exception and no log line.
-        # _gonio_lock must be innermost because _render_now holds _scene_lock
-        # across _snapshot_gonio; taking _scene_lock from under _gonio_lock (as
-        # a self-locking _servable would have) deadlocks against the renderer.
-        # tests/test_server_lock_order.py checks this statically -- it has to be
-        # static, because threading.Condition wraps an RLock, so an accidental
-        # re-entrant _anim_cv would silently succeed at runtime rather than hang.
+        # _anim_cv is outermost because _command_move/_command_recenter/
+        # _animator_loop pair a read of self._scene (camera_cfg AND geometry)
+        # with _target_pose, and a scene swap must make both new in the same
+        # instant: hampton is 0.0074 mm/px against mitegen's 0.001, so a torn
+        # read is a silent 7.4x error in every pan.  _gonio_lock is innermost
+        # because _render_now holds _scene_lock across _snapshot_gonio, so a
+        # self-locking _servable (taking _scene_lock from under _gonio_lock)
+        # would deadlock against the renderer.
+        #
+        # tests/test_server_lock_order.py checks this statically, because
+        # threading.Condition wraps an RLock: an accidental re-entrant
+        # _anim_cv would silently succeed at runtime rather than hang.
         self._gonio_lock  = threading.Lock()
         self._anim_cv     = threading.Condition()
         # Guards every scene-derived attribute: _scene, _scene_path, _templates,
@@ -1574,17 +1536,10 @@ class CameraServer(ThreadingHTTPServer):
             if self._prewarm:
                 self._templates.prewarm(progress=print)
 
-        # X-ray: same prewarm-before-socket-binds reasoning as the optical
-        # block above, PREWARMED (cache_size="all") rather than the lazy
-        # cache_size=8 _get_xray_templates itself uses -- the /xray-stream
-        # producer needs every frame already decoded, since a slew visits
-        # every angle once per revolution and an 8-entry LRU would miss on
-        # nearly all of them (same reasoning TemplateSource's own docstring
-        # gives for the optical cache). Costs ~5s measured, on top of the
-        # optical prewarm above -- sequential, not parallel, in this pass.
-        # A missing library is not an error: _load_xray_templates returns
-        # None and /xray-stream falls back to live rendering, same as the
-        # plain /xray endpoint always has.
+        # X-ray: prewarmed (cache_size="all") like the optical block above,
+        # for the same reason (XrayTemplateSource docstring); a missing
+        # library falls back to live rendering, same as /xray always has.
+        # See docs/DECISIONS.md 2026-08-19 radiograph ships as a push stream.
         self._xray_templates = _load_xray_templates(
             scene_path, self._xray_library_root, cache_size="all")
         if self._xray_templates is not None and self._prewarm:
@@ -1705,7 +1660,7 @@ class CameraServer(ThreadingHTTPServer):
 
         The dirty flag is claimed (cleared) BEFORE the pose snapshot, so an
         invalidation that lands mid-render leaves it set again and the
-        producer loop re-renders the newest pose — a burst of invalidations
+        producer loop re-renders the newest pose -- a burst of invalidations
         coalesces into at most one extra render, never a queue.
         """
         with self._frame_cv:
@@ -1732,7 +1687,7 @@ class CameraServer(ThreadingHTTPServer):
 
         Consumers never render while the background producer runs.  Before
         start() there is no producer thread, so (and only then) render
-        synchronously — tests drive the server that way.
+        synchronously -- tests drive the server that way.
         """
         with self._frame_cv:
             if not self._cache_dirty and self._jpeg_cache is not None:
@@ -1818,7 +1773,7 @@ class CameraServer(ThreadingHTTPServer):
         (single-digit ms, no GPU); otherwise the GPU-resident engine when
         present, else the numpy reference (slow at full resolution --
         --templates on never builds a _tscene, see _want_torch_engine, so the
-        deployed server always takes the numpy branch absent a library).
+        template-serving server always takes the numpy branch absent a library).
 
         Snapshots (scene, tscene, pose) under one _scene_lock hold, then
         renders OFF-lock -- see _beam_json for why holding the lock across a
@@ -1867,7 +1822,7 @@ class CameraServer(ThreadingHTTPServer):
     def _bg_render_loop(self):
         """Single-flight producer: wait for an invalidation, render, publish.
 
-        Sole caller of _render_now while serving — MJPEG/snapshot handlers
+        Sole caller of _render_now while serving -- MJPEG/snapshot handlers
         only consume published frames, so N clients cost one GPU render per
         dirty state instead of N+1.
         """
@@ -2079,7 +2034,7 @@ class CameraServer(ThreadingHTTPServer):
         geometry and the camera config all come from one scene.
 
         Resolved against the LIVE displayed pose (what the user clicked on),
-        not the running command target — so a click maps to the frame on screen.
+        not the running command target -- so a click maps to the frame on screen.
         """
         with self._anim_cv:
             with self._scene_lock:
@@ -2464,8 +2419,9 @@ class CameraServer(ThreadingHTTPServer):
 
         Owns its own locking, so a switch is one call and the discipline cannot
         be forgotten at the call site.  Lock order is the server-wide
-        _anim_cv > _scene_lock > _gonio_lock, and _anim_cv is held for the WHOLE
-        swap: /move, /recenter and the animator all read the camera and the
+        _anim_cv > _scene_lock > _gonio_lock (_frame_cv is a separate leaf;
+        _scene_lock is an RLock), and _anim_cv is held for the WHOLE swap:
+        /move, /recenter and the animator all read the camera and the
         geometry under _anim_cv, so anything less lets a target be resolved
         against one scene's pixel size and another's axes.
 
@@ -2704,21 +2660,16 @@ class CameraServer(ThreadingHTTPServer):
             _, source, status, diff = self._pick_library(path)
             can_serve = source is not None or not self._want_templates
             warning = describe_differences(diff) if status == "stale" else None
-            # Read-only, same no-params convention _get_xray_templates uses (never
-            # "stale" -- there is no --xray-supersample flag to grade against, see
-            # its docstring): tells the viewer's Radiograph tab whether /xray will
-            # answer in single-digit ms or fall through to a live render that can
-            # take tens of seconds to minutes on a mesh scene (docs/DECISIONS.md
-            # 2026-08-18). Purely informational -- never builds, never locks.
+            # Read-only: never builds, never grades "stale" (no build-param
+            # flag to compare against, see XrayTemplateSource's docstring).
+            # Tells the Radiograph tab whether /xray answers in single-digit
+            # ms or falls back to a live render (docs/DECISIONS.md 2026-08-18).
             #
-            # Cached per scene_path, not recomputed every call: a COMPLETE library's
-            # status check walks every frame file (_xray_frames_complete), and on a
-            # DrvFs-mounted repo that is ~1.9s/scene of pure stat() latency crossing
-            # the WSL2-Windows boundary -- 5.7s for three built scenes, measured,
-            # every single /scenes call (boot, and after every switch). Same
-            # per-process-lifetime tradeoff _xray_templates_cache already makes: a
-            # library built by a separate `python -m loop_sim.library` process while
-            # this server is running won't be picked up until restart.
+            # Cached per scene_path: a full status check walks every frame
+            # file, ~2s/scene on this DrvFs-mounted repo, which /scenes would
+            # otherwise pay on every call. Stale until restart if a library
+            # is rebuilt by a separate process, same tradeoff as
+            # _xray_templates_cache.
             xray_status = self._xray_status_cache.get(path)
             if xray_status is None:
                 xray_lib_dir = xray_library_dir(path, self._xray_library_root)
@@ -2856,7 +2807,7 @@ class CameraServer(ThreadingHTTPServer):
                   f"/xray and /xray-stream fall back to live rendering")
 
         # Single-threaded first compilation of the preview path (if enabled)
-        # BEFORE any thread is spawned — concurrent first-compile crashes dynamo.
+        # BEFORE any thread is spawned -- concurrent first-compile crashes dynamo.
         self._warmup_compiled_preview()
 
         # Kick off background render + animator threads
@@ -2897,7 +2848,7 @@ class CameraServer(ThreadingHTTPServer):
 def library_kwargs_from_args(args):
     """Map CLI options to frame-library build parameters.
 
-    Only options that genuinely describe the STORED templates belong here. In
+    Only options that describe the STORED templates belong here. In
     particular `--jpeg-quality` does NOT: it is the quality of the JPEG this
     server sends, and forwarding it as the library's `quality` (a different
     default) made every no-flag launch disagree with the shipped library and

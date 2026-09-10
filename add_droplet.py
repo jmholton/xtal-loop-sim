@@ -74,7 +74,7 @@ def parse_args():
 
 # ---------------------------------------------------------------------------
 # Geometry lives in crystal_harvester.droplet (shared with the scene
-# generator — one implementation, two callers).
+# generator: one implementation, two callers).
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
@@ -154,7 +154,7 @@ def main():
     # ------------------------------------------------------------------
     # Serialise to component YAML
     # ------------------------------------------------------------------
-    # Round to 5 decimal places (0.01 µm precision — adequate for mm-scale scene)
+    # Round to 5 decimal places (0.01 µm precision, adequate for mm-scale scene)
     verts_list = [[round(float(v), 5) for v in row] for row in vertices]
     faces_list = [[int(f) for f in row] for row in faces]
 

@@ -1,20 +1,18 @@
-"""
-Tests for serving /xray from a pre-computed X-ray radiograph library
-(XrayTemplateSource / CameraServer._get_xray_templates in camera_server.py) --
-the read-only serve-time half of Phase 2/3 (loop_sim/library/xray_library.py
-builds the library; this is what actually answers a request from it).
+"""Tests for serving /xray from a pre-computed X-ray radiograph library
+(XrayTemplateSource / CameraServer._get_xray_templates in camera_server.py):
+the read-only serve-time half (loop_sim/library/xray_library.py builds the
+library; this answers a request from it).
 
-The load-bearing claims, and the test that guards each:
+The claims here, and the test that guards each:
 
   * a library serve reproduces a live render -> test_library_serve_matches_live_render
-    (same contract as the optical TemplateSource: no raytracing, same picture)
   * no library on disk -> falls back to live render, never blocks or errors
     -> test_falls_back_to_live_when_no_library
-  * a stale/mismatched library is not silently served -> test_stale_library_falls_back
-  * looking this up NEVER builds anything, even when a build would be cheap
-    -> test_never_builds
-
-Run:  pytest tests/test_xray_serve.py -v
+  * a library built for a different scene is not served (a build-parameter
+    mismatch is served as-is, matching the optical convention) ->
+    test_missing_for_a_different_scene_falls_back
+  * looking this up never builds anything, even when a build would be
+    cheap -> test_never_builds
 """
 import os
 import sys
@@ -83,7 +81,7 @@ def test_library_serve_matches_live_render(tiny_xray_root):
         assert served_arr.shape == (480, 640)   # this scene's camera resolution
 
         # Confirm a library was actually used, not a live-render coincidence.
-        # tiny_xray_root was built at step_deg=90 -- a real production library
+        # tiny_xray_root was built at step_deg=90 -- a real full-scale library
         # would use 1.0 (360 frames) -- so finding this one at all also
         # exercises _get_xray_templates accepting a param-mismatched
         # ("stale") library rather than refusing it; see its docstring.
@@ -186,7 +184,7 @@ def test_missing_for_a_different_scene_falls_back(tiny_xray_root):
     srv = _server(SCENE, tiny_xray_root)
     try:
         # tiny_xray_root only has a library for SCENE (hampton_300um) -- ask
-        # for a genuinely different scene against the same root.
+        # for a different scene against the same root.
         other_scene = os.path.join(REPO_ROOT, "scene_files",
                                    "hampton_300um_realistic.yaml")
         srv2 = _server(other_scene, tiny_xray_root)

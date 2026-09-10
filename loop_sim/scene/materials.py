@@ -17,7 +17,7 @@ class Material:
         return f"Material({self.name!r}, n={self.n}, mu_opt={self.mu_optical})"
 
 
-# Default background material — used for any point not inside any scene object.
+# Default background material -- used for any point not inside any scene object.
 AIR = Material(
     name="air",
     n=1.000,
@@ -47,7 +47,7 @@ KAPTON = Material(
     name="kapton",
     n=1.700,
     mu_optical=0.08,
-    mu_xray=0.005,   # Kapton is an X-ray window material — very low absorption
+    mu_xray=0.005,   # Kapton is an X-ray window material -- very low absorption
     color=(0.9, 0.7, 0.2),
 )
 

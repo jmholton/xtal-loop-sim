@@ -1,51 +1,15 @@
-"""
-Pre-computed X-ray radiograph library: a rotation sweep rendered once and
-replayed. The X-ray analogue of frame_library.py.
+"""X-ray radiograph library: the X-ray analogue of frame_library.py -- a
+rotation sweep rendered once and replayed.
 
-Why this is a SEPARATE module, not a parameter on frame_library.py: see
-docs/DECISIONS.md 2026-08-18 and the `_RENDER_SOURCES` comment in
-frame_library.py -- `render_xray_torch`/`trace_xray` used to live inside
-`engine_torch.py` (which `frame_library.py` DOES hash), so an X-ray-only GPU
-edit was silently invalidating every optical library. Splitting the render
-code out (`renderer/xray_torch.py`) and the library-build code out (this
-file) means the two hash scopes -- and the two library trees -- can never
-leak into each other again.
-
-Simpler than the optical case in three ways that shaped this file:
-  * The radiograph needs no `n_cond` condenser loop and no PSF -- the beam is
-    collimated, not a Kohler illumination cone, so there is nothing to
-    soft-edge.
-  * Depth (`tz`) genuinely does not change a collimated Beer-Lambert integral
-    (translating a ray's start point along its own direction cannot change
-    which materials an infinite line crosses), so unlike `pose_crop`'s
-    PSF-derived defocus blur there is nothing to approximate -- storing
-    `na_condenser: 0.0` in the manifest's `camera` block makes `pose_crop`
-    (reused verbatim) compute `sigma_px == 0.0` for every pose, for free,
-    with no reader-side special case.
-  * The content is a continuous-tone transmission map, not a near-binary
-    photograph, so it is stored as 16-bit greyscale rather than 8-bit RGB --
-    the pin transmits at ~1e-31 while the biological signal of interest sits
-    in roughly the top fifth of the range, and 8-bit would quantize that
-    away. Because `AIR.mu_xray == 0.0` exactly, background transmission is
-    exactly 1.0 -> exactly 65535 at 16-bit, so `frame_library.py`'s
-    EXACT-equality `content_bbox`/`crop_to_content` transfer unmodified:
-    this module reshapes the (H, W) transmission array to (H, W, 1) before
-    calling them (both already handle any channel count via
-    `arr.min(axis=2)`), then squeezes it back for the actual PNG save.
-
-Reused from frame_library.py, unmodified: `crop_margin_px`, `content_bbox`,
-`crop_to_content`, `_round_up_to_parity`, `plan_window`, `scene_fingerprint`,
-`_sha_over`, `load_manifest`, `_write_manifest`, `library_dir` (with a
-different root), `cuda_available`, `CPU_BUILD_REFUSAL` -- and, because they
-operate purely on manifest dict fields and never on pixel format,
-`zoom_limits`, `frame_for_angle`, `pose_crop`, `servable_pose`.
-
-Not reused, reimplemented here with the same shape: `build_params` (no
-n_cond/psf/jpeg_quality to resolve), `library_diff`/`library_status`/
-`is_current` (loop over this module's own build keys, not the optical ones),
-`content_window` (scouts `render_xray_torch` instead of `render_torch`, and
-masks a scalar map instead of RGB), `build_library` (calls
-`render_xray_torch`, saves 16-bit greyscale PNG instead of 8-bit RGB).
+A separate module, not a frame_library.py parameter, so its render_sha
+scope (`_XRAY_RENDER_SOURCES`) can never leak into the optical one -- see
+docs/DECISIONS.md 2026-08-18 (xray_torch split out of engine_torch.py).
+Simpler than the optical case: no n_cond/PSF (collimated beam, no condenser
+cone), no depth blur (`na_condenser` stored as 0.0 makes `pose_crop`'s sigma
+zero for free), 16-bit greyscale storage (8-bit would quantize the pin's
+~1e-31 transmission away). Reuses frame_library.py's manifest I/O, crop and
+pose functions unmodified; the `xray_*` build/staleness functions mirror
+them with this module's own shape -- see `__all__` for the public surface.
 """
 import glob
 import math
@@ -83,15 +47,11 @@ BACKGROUND_I16 = (65535,)
 
 # Deliberately NOT disjoint from frame_library._RENDER_SOURCES on
 # engine_torch.py: trace_xray calls tscene.next_interface(), which lives
-# there, so a correctness fix to interface detection changes X-ray output
-# too and must invalidate this library, same as the optical one (this is
-# exactly the coupling docs/DECISIONS.md 2026-08-18 calls out -- the landmine
-# the split fixed was X-RAY-only edits invalidating the OPTICAL library, not
-# this direction, which is correct and intentional). beam.py is the numpy
-# reference -- not called by this GPU build path, but it IS the fallback the
-# server serves from with no GPU, so a change to it should still mark an
-# X-ray library's provenance stale, consistent with how the optical side
-# treats its numpy/torch reference pair as one unit.
+# there, so an interface-detection fix changes X-ray output too and must
+# invalidate this library -- the coupling docs/DECISIONS.md 2026-08-18
+# (xray_torch split out of engine_torch.py) calls out. beam.py is the CPU
+# fallback the server serves from with no GPU, so it stays hashed even
+# though this build path never calls it.
 _XRAY_RENDER_SOURCES = ("renderer/xray_torch.py", "renderer/engine_torch.py",
                         "renderer/beam.py", "scene/*.py", "motors/goniometer.py")
 _xray_render_sha_cache = None

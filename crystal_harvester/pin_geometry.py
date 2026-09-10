@@ -37,16 +37,16 @@ def make_pin(diameter_mm, length_mm, bevel_angle_deg=45.0, bevel_offset_mm=0.3,
 
     Parameters
     ----------
-    diameter_mm     : float      — outer diameter of the pin cylinder
-    length_mm       : float      — total visible length of the pin
-    bevel_angle_deg : float      — tilt of scoring plane from perpendicular (0=flat cut)
-    bevel_offset_mm : float      — axial distance from tip to the score
-    tip_pos         : (3,) array — 3-D position of the pin tip (stem attachment end)
-    axis            : (3,) array — unit vector pointing from tip into pin body
+    diameter_mm     : float      -- outer diameter of the pin cylinder
+    length_mm       : float      -- total visible length of the pin
+    bevel_angle_deg : float      -- tilt of scoring plane from perpendicular (0=flat cut)
+    bevel_offset_mm : float      -- axial distance from tip to the score
+    tip_pos         : (3,) array -- 3-D position of the pin tip (stem attachment end)
+    axis            : (3,) array -- unit vector pointing from tip into pin body
 
     Returns
     -------
-    shape_spec : dict  — YAML-serialisable CSG intersection spec
+    shape_spec : dict  -- YAML-serialisable CSG intersection spec
     """
     tip = np.asarray(tip_pos, dtype=float)
     ax  = np.asarray(axis,    dtype=float)
@@ -67,19 +67,20 @@ def make_pin(diameter_mm, length_mm, bevel_angle_deg=45.0, bevel_offset_mm=0.3,
     # cut and 90 does not cut the tip at all -- it slices the whole cylinder
     # lengthwise and leaves a half-pin staring up-beam.  Everything from ~78.6
     # up also pushes the stem's glue joint outside the metal (the stem is run
-    # deliberately past the tip so it emerges from the score face).  Reachable
-    # only since the `--pin-bevel 0` falsy-zero bug was fixed, hence the guard.
+    # deliberately past the tip so it emerges from the score face); the guard
+    # below rejects that range.
     if not (0.0 <= float(bevel_angle_deg) < _BEVEL_MAX_DEG):
         raise ValueError(
             f"bevel_angle_deg={bevel_angle_deg} is outside [0, {_BEVEL_MAX_DEG}); "
             "0 is a flat cut, and at 90 the half-space stops cutting the tip and "
             "bisects the pin along its length instead")
 
-    # WHICH WAY the bevel faces is a real choice, and it used to be made by
-    # accident: `up` defaulted to +Y and `cross(ax, up)` therefore landed on Z,
-    # which is the camera's depth axis -- so the chisel presented in full
-    # profile at spindle 90/270 and as a blunt taper at 0.  Nothing chose that.
-    # (Note the guard below never fires for an X-aligned pin: dot is exactly 0.)
+    # WHICH WAY the bevel faces is a real choice: without an explicit
+    # `bevel_up`, `up` defaults to +Y and `cross(ax, up)` lands on Z, the
+    # camera's depth axis, so the chisel presents in full profile at spindle
+    # 90/270 and as a blunt taper at 0.  Pass `bevel_up` to choose it
+    # deliberately.  (Note the guard below never fires for an X-aligned pin:
+    # dot is exactly 0.)
     up = np.array([0.0, 1.0, 0.0]) if bevel_up is None \
         else np.asarray(bevel_up, dtype=float)
     if abs(np.dot(ax, up)) > 0.9:

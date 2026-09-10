@@ -109,7 +109,7 @@ DEFAULT_GEOMETRY = {
 DEFAULT_CAMERA = {
     "width":        640,
     "height":       480,
-    "pixel_size":   0.0074,   # 7.4 µm — matches real Hampton loop camera
+    "pixel_size":   0.0074,   # 7.4 µm, matches real Hampton loop camera
     "na_objective": 0.10,
     "na_condenser": 0.07,
 }
@@ -122,26 +122,13 @@ DEFAULT_BEAM = {
 }
 
 DEFAULT_MATERIALS = {
-    # color is an ABSORPTION spectrum in the renderer (mu_per_ch = mu_optical
-    # + 30*(1-color) per mm, microscope.py) — NOT a display tint.  A saturated
-    # color makes the material strongly absorbing; water must be near-white.
-    #
-    # The crystal used to be color [0.7, 0.9, 1.0], which is (9.02, 3.02, 0.02)
-    # per mm: it rendered strongly BLUE (measured R 0.403 / G 0.634 / B 0.808
-    # through the shipped crystal) against reference frames that are neutral.
-    # The absorption is now in mu_optical and the color is white, so the
-    # crystal is grey without needing `--mono` in camera space to hide it.
-    # 4.09 is the value that preserves what the frame already delivered.
-    # Deriving it needs one non-obvious step: the crystal refracts (n = 1.52),
-    # and light bent past the NA 0.10 gate darkens it whether or not anything
-    # absorbs.  The BLUE channel measures that floor directly -- its mu is
-    # 0.02/mm, essentially nothing -- at T = 0.8686.  Dividing it out makes the
-    # red and green channels agree on the path length (0.0809 and 0.0832 mm,
-    # 2.8% apart) where inverting them raw does not, and 4.09/mm over that path
-    # reproduces the measured luma of 0.6207.  Skipping the floor gives 3.56,
-    # which renders the crystal far too dark.  Whether a real protein crystal
-    # should absorb this strongly AT ALL is a separate question, and not one
-    # the reference set can answer yet.
+    # color is an ABSORPTION spectrum in the renderer: mu_per_ch = mu_optical
+    # + 30*(1-color) per mm (microscope.py).  A coloured material is an
+    # absorbing material; keep water-like solvents near-white.  The crystal's
+    # mu_optical = 4.09/mm (color white) reproduces the luma of a neutral
+    # reference frame through refraction (n = 1.52) and the NA 0.10 gate; see
+    # docs/DECISIONS.md 2026-08-10, the scene changes that produced the NA
+    # evidence.
     "crystal": {"n": 1.52, "mu_optical": 4.09, "mu_xray": 2.1,  "color": [1.0, 1.0, 1.0]},
     "solvent": {"n": 1.34, "mu_optical": 0.00, "mu_xray": 0.3,  "color": [0.97, 0.98, 1.0]},
     "nylon":   {"n": 1.53, "mu_optical": 0.10, "mu_xray": 0.1,  "color": [0.9, 0.8, 0.6]},
@@ -201,11 +188,11 @@ def build_hampton_scene(
 
     # `x if x is not None else preset.x`, NOT `x or preset.x`.  Every one of
     # these is a number whose legitimate values include 0, and `or` silently
-    # discards a caller's 0 in favour of the preset.  That made the documented
-    # `--pin-bevel 0` a lie (docs/HANDOFF.md advertises it as giving a flat
-    # cut; it returned a 45-degree chisel), and the same bug was latent on the
-    # five neighbours.  No behaviour changes today, because passing 0 never
-    # worked and so nobody does -- this only makes the flags mean what they say.
+    # discards a caller's 0 in favour of the preset.  That made `--pin-bevel 0`
+    # (a flat cut, per its --help) a lie: it returned a 45-degree chisel, and
+    # the same bug was latent on the five neighbours.  No behaviour changes
+    # today, because passing 0 never worked and so nobody does: this only
+    # makes the flags mean what they say.
     def _or_preset(value, name):
         return getattr(preset, name) if value is None else value
 
@@ -258,7 +245,7 @@ def build_hampton_scene(
     # The stem is glued to the pin's scored break face.  make_pin puts that
     # face bevel_offset past tip_pos (it crosses the stem axis exactly there),
     # so the fibers must run PAST the tip and into the metal to emerge from
-    # the face at every angle — ending them at tip_pos leaves them floating
+    # the face at every angle: ending them at tip_pos leaves them floating
     # 0.3 mm in front of it.  The overrun is swallowed by the opaque pin.
     pin_bevel_offset = 0.3   # passed to make_pin below; keep the two in step
     stem_run = stem_l + pin_bevel_offset + 2 * fd_mm
@@ -282,7 +269,7 @@ def build_hampton_scene(
     # is 2-D, then rotated by the same R_rot as the loop so the droplet stays
     # coplanar with it for any loop_axis.  The rim follows the actual loop
     # outline via a dense elastica polygon (the 30 tube waypoints undershoot
-    # the curved fiber between samples).  An unpinnable volume raises — there
+    # the curved fiber between samples).  An unpinnable volume raises: there
     # is deliberately no fallback shape (contact_angle_deg is ignored: with
     # the rim pinned at the loop, contact angle is an output of volume + rim
     # radius, not an input).

@@ -6,9 +6,6 @@ The mesh represents a closed surface.  Ray intersection returns the entry
 and exit t values (nearest and farthest crossings) and corresponding outward
 normals.
 
-For large meshes (thousands of triangles) an optional uniform-grid spatial
-index reduces the per-ray triangle tests from O(T) to O(T/cell) on average.
-
 GPU acceleration
 ----------------
 Pass ``device='cuda'`` to use PyTorch on the GPU for the hot-path
@@ -29,7 +26,7 @@ class SurfaceMesh:
     Parameters
     ----------
     vertices : array-like, shape (V, 3)
-    faces    : array-like, shape (F, 3) — integer indices into vertices
+    faces    : array-like, shape (F, 3) -- integer indices into vertices
     device : str
         'cpu' (default, numpy) or 'cuda' (PyTorch GPU).
     """
@@ -188,7 +185,7 @@ class SurfaceMesh:
         return t_min, t_max, fi_min, fi_max, t_back, fi_bwd
 
     # ------------------------------------------------------------------
-    # Public ray_intersect — AABB pre-filter + vectorized MT
+    # Public ray_intersect -- AABB pre-filter + vectorized MT
     # ------------------------------------------------------------------
 
     def ray_intersect(self, origins, dirs):

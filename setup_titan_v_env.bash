@@ -1,25 +1,14 @@
 #!/bin/bash
-# setup_titan_v_env.bash — build the torch-2.6 + devtoolset-7 environment the
-# compiled preview path needs on voltron (the beamline's TITAN V).
+# setup_titan_v_env.bash: build the torch-2.6 + devtoolset-7 venv that the compiled
+# preview path needs on voltron (the beamline's TITAN V), then run
+# acceptance_voltron.py. The stock beamline stack (torch 2.0.1, gcc 4.8.5) cannot
+# run torch.compile and silently falls back to eager at about half the frame rate.
 #
-# Packages docs/RUNBOOK.md "Deploy on the TITAN V" into one idempotent script.
-# The beamline's DEFAULT stack (the pt env's torch 2.0.1, system gcc 4.8.5)
-# cannot run torch.compile and silently falls back to eager at ~6.3 fps
-# instead of the measured 11.9 fps compiled (RUNBOOK risk B) — this builds
-# the stack that clears that bar.
-#
-# Run ON voltron. Its login shell is tcsh, which does not parse this script
-# directly — from elsewhere:
+# Run ON voltron (its login shell is tcsh, so invoke through bash):
 #   ssh voltron "cd ~/projects/loop_sim_MINE/xtal-loop-sim ; bash setup_titan_v_env.bash"
-# or, already on voltron in a bash subshell:
-#   bash setup_titan_v_env.bash
-#
-# This script only BUILDS + VERIFIES the environment (acceptance_voltron.py).
-# It does not start the camera server for --templates off / live rendering —
-# that needs a free GPU picked by hand via nvidia-smi first; see
-# docs/RUNBOOK.md "Deploy on the TITAN V" for that launch command. The
-# TEMPLATE-serving path (the default) needs none of this — it imports torch
-# not at all; see the same RUNBOOK section.
+# Builds and verifies only; the launch commands, and the note that the default
+# template-serving path needs none of this, are in docs/RUNBOOK.md "Deploy on the
+# TITAN V".
 
 set -euo pipefail
 

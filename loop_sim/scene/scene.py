@@ -8,8 +8,8 @@ later ones at any point in space.  Typically: crystal > solvent > nylon > air.
 
 next_interface(origins, dirs, t_min)
     For each ray: find the closest interface at t > t_min where the material
-    changes.  Returns (t, normal, material_from, material_to).
-    Used by the Snell's law ray-tracer in microscope.py.
+    changes.  Returns (t, normal, mat_out_oi); see its own docstring for the
+    full contract.  Used by the Snell's law ray-tracer in microscope.py.
 
 path_lengths(origins, dirs)
     For each ray: walk all interfaces and accumulate {material: length}.
@@ -145,14 +145,23 @@ class Scene:
         ----------
         origins : (N, 3)
         dirs    : (N, 3) unit vectors
-        t_min   : float — ignore intersections closer than this
+        t_min   : float -- ignore intersections closer than this
 
         Returns
         -------
-        t          : (N,)    — distance to next interface (inf = no interface)
-        normal     : (N, 3)  — outward surface normal at the interface
-        mat_out_oi : (N,) int — object index of material after crossing
-                                (-1 = background)
+        t          : (N,)    -- distance to next interface (inf = no interface,
+                                ray exits the scene)
+        normal     : (N, 3)  -- outward surface normal at the interface
+        mat_out_oi : (N,) int -- object index of the material after crossing:
+                                -1 = background/air, 0..n_obj-1 = self.objects[oi]
+
+        The material after a crossing is resolved by an interval check, not a
+        probe ray: t_probe = best_t + 1e-4, and mat_out_oi is the first object
+        whose (te, tx) interval contains t_probe, else -1. An earlier version
+        cast a probe ray from a point just past the hit and looked up its
+        containing object (`_obj_index_at_points_batch`, deleted as dead code);
+        probe-point ambiguity made that wrong on ~50% of crossings, so do not
+        reintroduce it.
         """
         N = len(origins)
         n_obj = len(self.objects)
@@ -316,8 +325,8 @@ def load(yaml_path, device='cpu'):
 
     Parameters
     ----------
-    yaml_path : str — path to the scene YAML file
-    device    : str — 'cpu' (default) or 'cuda' for GPU-accelerated
+    yaml_path : str -- path to the scene YAML file
+    device    : str -- 'cpu' (default) or 'cuda' for GPU-accelerated
                 ray intersection in SurfaceMesh and Tube primitives.
     """
     with open(yaml_path) as f:

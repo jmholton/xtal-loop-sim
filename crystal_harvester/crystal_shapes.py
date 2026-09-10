@@ -74,7 +74,7 @@ def _halfspace_spec(normal, offset_mm):
 
 
 # ---------------------------------------------------------------------------
-# Presets — (Miller index, dimension key) pairs
+# Presets: (Miller index, dimension key) pairs
 # ---------------------------------------------------------------------------
 
 # Each preset is a list of (hkl, dimension_index) tuples.
@@ -89,13 +89,13 @@ _PRESETS = {
         ((0, 1, 0), 1), ((0,-1, 0), 1),
         ((0, 0, 1), 2), ((0, 0,-1), 2),
     ],
-    # thin along c, wide in ab  — dimensions_mm: [ab_half, c_half]
+    # thin along c, wide in ab; dimensions_mm: [ab_half, c_half]
     "plate": [
         ((1, 0, 0), 0), ((-1, 0, 0), 0),
         ((0, 1, 0), 0), ((0,-1, 0), 0),
         ((0, 0, 1), 1), ((0, 0,-1), 1),
     ],
-    # elongated along c — dimensions_mm: [ab_half, c_half]
+    # elongated along c; dimensions_mm: [ab_half, c_half]
     "needle": [
         ((1, 0, 0), 0), ((-1, 0, 0), 0),
         ((0, 1, 0), 0), ((0,-1, 0), 0),
@@ -103,7 +103,7 @@ _PRESETS = {
         ((1,-1, 0), 0), ((-1, 1, 0), 0),
         ((0, 0, 1), 1), ((0, 0,-1), 1),
     ],
-    # hexagonal prism — dimensions_mm: [r_half, c_half]
+    # hexagonal prism; dimensions_mm: [r_half, c_half]
     "hexagonal": [
         ((1, 0, 0),    0), ((-1, 0, 0),   0),
         ((0, 1, 0),    0), ((0, -1, 0),   0),

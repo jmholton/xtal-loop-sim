@@ -1,33 +1,18 @@
-"""
-The camera server's lock order, checked statically.
+"""The camera server's lock order, checked statically.
 
-    _anim_cv (3)  >  _scene_lock (2, RLock)  >  _gonio_lock (1)
-    _frame_cv (0) and _xray_frame_cv (0) are each a LEAF -- two independent
-    leaves, sharing a rank on purpose: the same-rank-non-reentrant check below
-    then automatically catches either one accidentally nesting inside the
-    other, with no extra test code (see docs/DECISIONS.md, the X-ray stream
-    entry, and the 2026-07-06 _active_compiled incident this discipline
-    exists to not repeat).
+    _anim_cv (3) > _scene_lock (2, RLock) > _gonio_lock (1)
+    _frame_cv (0) and _xray_frame_cv (0) share rank 0 as independent leaves.
 
-Inside `with self._L:`, nothing -- directly, or through any CameraServer method
-it calls -- may acquire a lock of rank >= rank(L).  Re-acquiring _scene_lock is
-allowed and expected: it is an RLock, and _render_now holds it across
-_render_frame, which calls _snapshot_gonio, which needs it too.
+Inside `with self._L:`, nothing it calls may acquire rank >= rank(L);
+re-acquiring `_scene_lock` is fine (it is an RLock).
 
-Why STATIC.  The inversions that actually happen here are call-mediated and
-invisible in the body of either function involved.  The live example:
-`_servable` reads self._templates, and `_set_pose_instant` calls it from inside
-_gonio_lock -- so giving _servable a lock of its own would create
-_gonio_lock -> _scene_lock and hang against _render_now, which holds
-_scene_lock and then wants _gonio_lock.  Neither function looks wrong on its
-own.  And a runtime assertion cannot cover the other half: threading.Condition
-wraps an RLock, so an accidentally re-entrant _anim_cv would silently succeed
-and release early rather than deadlocking, leaving nothing to observe.
-
-tests/test_scene_switch.py::test_no_deadlock_under_concurrent_switch_render_and_motor
-is the runtime backstop for anything this cannot see.
-
-Run:  pytest tests/test_server_lock_order.py -v
+Checked statically: the inversions are call-mediated and invisible in
+either function alone (a lock on `_servable` would create `_gonio_lock ->
+_scene_lock` via `_set_pose_instant`), and `threading.Condition` wraps an
+RLock, so a re-entrant `_anim_cv` would succeed silently rather than
+hang.  Runtime backstop: test_scene_switch.py's
+test_no_deadlock_under_concurrent_switch_render_and_motor.  See
+docs/DECISIONS.md 2026-07-06 (_active_compiled incident).
 """
 import ast
 import os

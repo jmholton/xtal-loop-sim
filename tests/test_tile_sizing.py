@@ -1,25 +1,13 @@
-"""
-Trace-tile sizing: the DEFAULT must be safe on a mesh scene without probing.
+"""Trace-tile sizing: the default must be safe on a mesh scene without probing.
 
-The old default was a flat 1,000,000 rays, so a 640x480 frame went through in a
-single pass. On a scene with a solvent droplet that is 307200 x 2880 faces x
-160 B = 19.8 GB and a hard OOM -- i.e. every droplet-bearing scene, including a
-routine crystal_harvester Hampton loop, was unrenderable at default settings.
+A droplet-bearing scene (e.g. a crystal_harvester Hampton loop) is
+unrenderable at a flat default tile; the OOM math is in
+`et._MESH_BYTES_PER_RAY_FACE`. See docs/DECISIONS.md 2026-08-11 (the mesh
+path never culled) for how the budget moved to `_mesh_survivor_chunk`.
 
-The budget is calculated rather than measured on purpose: plan_tile_size's
-probing ramp resets torch's global peak-memory counters (which bench_frame.py
-and acceptance_voltron.py read) and its upper rungs are exactly the allocations
-WSL2 spills on instead of failing, so it cannot be what runs by default.
-
-WHERE THE BUDGET LIVES CHANGED ON 2026-08-11. It used to divide the whole
-frame's ray count down until `tile_rays x faces x 160 B` fitted. TSurfaceMesh
-now AABB-culls (rejecting ~99.7% of rays on the shipped droplet scene before a
-triangle is touched) and chunks its own survivors, so the product no longer
-scales with the caller's tile. The tile went back to the flat default and the
-budget moved to `_mesh_survivor_chunk`. Same law, same constant, enforced one
-level down -- worth 10.2x on the build frame on top of the cull's own 4.05x.
-
-Run:  pytest tests/test_tile_sizing.py -v
+The budget is calculated, not measured: `plan_tile_size`'s probing ramp
+resets torch's global peak-memory counters that other tools read, and its
+upper rungs are exactly what WSL2 silently spills on instead of failing.
 """
 import os
 import sys
@@ -69,23 +57,17 @@ def test_meshless_scene_keeps_the_flat_default():
 
 
 # ---------------------------------------------------------------------------
-# The budget moved (2026-08-11), the invariant did not.
-#
-# TSurfaceMesh now AABB-culls and chunks its own survivors, so `tile_rays x
-# faces x 160 B` no longer depends on the caller's tile and shrinking the tile
-# buys only passes. The three tests below used to pin that law on
-# fit_tile_size; they now pin the SAME law on _mesh_survivor_chunk, which is
-# where it is enforced. The end-to-end no-OOM test at the bottom is unchanged
-# and is what actually proves the pair works.
+# TSurfaceMesh AABB-culls and chunks its own survivors, so `tile_rays x
+# faces x 160 B` no longer depends on the caller's tile. The three tests
+# below pin that law on `_mesh_survivor_chunk` instead of `fit_tile_size`
+# (see docs/DECISIONS.md 2026-08-11). The end-to-end no-OOM test at the
+# bottom is what actually proves the pair works.
 # ---------------------------------------------------------------------------
 
 @cuda_only
 def test_tile_is_no_longer_shrunk_by_face_count():
-    """The behaviour change, pinned so it cannot regress by accident.
-
-    A mesh scene gets the same flat default a tube scene does. Measured on
-    hampton_300um_realistic at build resolution: the old face-derived tile was
-    6800 rays / 133 passes / 19.90 s; one full-frame tile is 1.95 s at 2.56 GB.
+    """A mesh scene gets the same flat default a tube scene does; pinned
+    so the change cannot regress by accident.
     """
     dev = torch.device("cuda")
     WH = 640 * 480
@@ -121,20 +103,16 @@ def test_survivor_chunk_keeps_predicted_peak_inside_the_budget():
 
 @cuda_only
 def test_survivor_chunk_is_capped_absolutely_not_just_as_a_fraction():
-    """A fraction of free VRAM is not a bound on a card someone else is using.
-
-    Sizing purely by fraction took ~8 GB on an idle 16 GB card and pushed a
-    build to 13.7 GB in nvidia-smi -- inside the WSL2 spill zone, on a GPU
-    shared with a desktop. The cull makes survivors scarce enough that the cap
-    costs nothing.
+    """A fraction of free VRAM is not a bound on a card someone else is
+    using: sizing purely by fraction spilled a real build into the WSL2
+    zone on an idle 16 GB card.  The cull makes survivors scarce enough
+    that an absolute cap costs nothing.
     """
     dev = torch.device("cuda")
-    # Face counts MUST straddle the point where the floor stops fitting the
-    # budget (~6,553 faces at a 2 GiB cap). The first version of this test used
-    # 234/2880/5472 -- all below it -- and passed while a 50,976-face droplet
-    # reserved 16.1 GB, because `max(_MESH_CHUNK_MIN, ...)` silently overrode
-    # the cap. 50,976 is the Rayleigh-matched droplet; 200,000 is absurd on
-    # purpose.
+    # Face counts must straddle where the floor stops fitting the budget
+    # (~6,553 faces at a 2 GiB cap); omitting 50,976 (the Rayleigh-matched
+    # droplet) would let `max(_MESH_CHUNK_MIN, ...)` silently override the
+    # cap again. 200,000 is absurd on purpose.
     for faces in (234, 2880, 5472, 6553, 22464, 50976, 200_000):
         chunk = et._mesh_survivor_chunk(faces, dev, vram_fraction=1.0)
         peak = chunk * faces * et._MESH_BYTES_PER_RAY_FACE
@@ -144,15 +122,10 @@ def test_survivor_chunk_is_capped_absolutely_not_just_as_a_fraction():
 
 @cuda_only
 def test_survivor_chunk_floor_yields_to_the_budget():
-    """An absurd mesh must still produce a usable chunk -- but never one the
-    budget cannot pay for.
-
-    This previously asserted the floor WINS (`== _MESH_CHUNK_MIN`). That
-    assertion was the bug: applying the floor unconditionally made a
-    50,976-face droplet demand 2048 x 50976 x 160 B = 16.7 GB and spill the
-    card, under a cap that was supposed to be 2 GiB. The floor is a preference
-    against a pathologically small chunk; past ~6,553 faces it no longer fits
-    and must yield.
+    """An absurd mesh must still produce a usable chunk, but never one the
+    budget cannot pay for. The floor is a preference against a
+    pathologically small chunk; past ~6,553 faces it no longer fits and
+    must yield.
     """
     dev = torch.device("cuda")
     assert et._mesh_survivor_chunk(500, dev) >= et._MESH_CHUNK_MIN   # fits: honour it
@@ -162,22 +135,23 @@ def test_survivor_chunk_floor_yields_to_the_budget():
         assert chunk < et._MESH_CHUNK_MIN, "floor must yield when it cannot fit"
         assert chunk * faces * et._MESH_BYTES_PER_RAY_FACE <= et._MESH_CHUNK_MAX_BYTES
 
-    # Beyond ~13.4M faces (2 GiB / 160 B) even ONE ray's Moller-Trumbore
-    # temporaries exceed the budget, and no chunking can help -- that would need
-    # a per-face broad phase, which this codebase deliberately does not have
-    # (dead by Amdahl once the AABB cull lands; see DECISIONS). The contract
-    # there is only that it stays renderable rather than returning zero.
+    # Beyond ~13.4M faces (2 GiB / 160 B) even one ray's Moller-Trumbore
+    # temporaries exceed the budget, and no chunking can help -- that
+    # would need a per-face broad phase, deliberately not built (dead by
+    # Amdahl since the AABB cull landed; see docs/DECISIONS.md 2026-08-11).
+    # The contract here is only that it stays renderable, never zero.
     assert et._mesh_survivor_chunk(200_000_000, dev) == 1
 
 
 @cuda_only
 def test_the_cull_is_byte_exact_against_brute_force():
-    """The whole justification for Step 1, asserted directly.
+    """The whole justification for the AABB cull, asserted directly.
 
-    Every triangle point lies inside the vertex AABB, so a ray the slab test
-    rejects provably misses every face -- brute force returned INF for exactly
-    those rays. Widening the box to infinity disables the cull without touching
-    any other code path, so this compares the two answers on identical input.
+    Every triangle point lies inside the vertex AABB, so a ray the slab
+    test rejects provably misses every face -- brute force returned INF
+    for exactly those rays. Widening the box to infinity disables the
+    cull without touching any other code path, so this compares the two
+    answers on identical input.
     """
     dev = torch.device("cuda")
     mesh = _mesh(1500, dev)
@@ -203,12 +177,10 @@ def test_the_cull_is_byte_exact_against_brute_force():
 
 @cuda_only
 def test_default_render_of_a_mesh_scene_does_not_oom():
-    """End to end: render a droplet-bearing scene with NO tile_size argument.
-
-    This is the call every caller in the repo makes -- camera_server,
-    frame_library's scout sweep, bench_frame, the investigation harnesses -- and
-    before this change it raised torch.OutOfMemoryError on any scene with a
-    droplet.
+    """End to end: render a droplet-bearing scene with no tile_size
+    argument, the call every real caller makes (camera_server,
+    frame_library's scout sweep, bench_frame, the investigation
+    harnesses). Must not raise torch.OutOfMemoryError.
     """
     from loop_sim.motors.goniometer import Goniometer
     from loop_sim.renderer.engine_torch import TorchScene, render_torch
@@ -246,13 +218,9 @@ def test_default_render_of_a_mesh_scene_does_not_oom():
 
 
 # ---------------------------------------------------------------------------
-# The VRAM guarantee for the beamline's 12 GB TITAN V.
-#
-# These exist because "it worked when I tried it on the 16 GB dev box" is not a
-# guarantee, and twice in one day it was wrong: a survivor-chunk floor that
-# demanded 16.7 GB passed a cap test whose face counts all sat just under the
-# threshold, and fit_tile_size spent an afternoon not consulting the card at
-# all. torch.cuda.set_per_process_memory_fraction imposes a synthetic ceiling,
+# The VRAM guarantee targets the beamline's 12 GB TITAN V, not the 16 GB
+# dev box these tests run on: "it worked on my box" is not a guarantee.
+# torch.cuda.set_per_process_memory_fraction imposes a synthetic ceiling
 # so a 12 GB card can be asserted here on whatever hardware CI has.
 # ---------------------------------------------------------------------------
 
@@ -277,17 +245,16 @@ def _simulated_card(gb):
 
 @cuda_only
 def test_tile_size_shrinks_when_the_card_is_smaller():
-    """The tile must come from the CARD, not from a constant.
-
-    For one afternoon `fit_tile_size` was `min(total_rays, _TILE_DEFAULT)` and
-    never called `mem_get_info()` -- fine on 16 GB, silent on 12.
+    """The tile must come from the card, not from a constant: a version
+    that never called `mem_get_info()` would be fine on 16 GB and
+    silently wrong on 12.
     """
     dev = torch.device("cuda")
     ts = _FakeScene([], dev)
     big = fit_tile_size(ts, 50_000_000)
     # set_per_process_memory_fraction cannot be used here: it constrains the
     # allocator while mem_get_info keeps reporting the real device, so the
-    # SIZING would not see it. The budget override is the seam.
+    # sizing would not see it. The budget override is the seam.
     os.environ["LOOPSIM_VRAM_BUDGET_GB"] = "2"
     try:
         small = fit_tile_size(ts, 50_000_000)
@@ -310,16 +277,14 @@ def test_memory_budget_tracks_free_not_total():
 def test_preflight_accepts_a_build_that_fits_and_refuses_one_that_does_not():
     """The end-to-end guarantee, on a simulated small card.
 
-    A team member re-rendering a scene on the beamline's 12 GB TITAN V must get
-    either a build or an actionable refusal -- never an OOM at frame 300 of
-    360, and never a WSL2-style silent spill.
+    A team member re-rendering a scene on the beamline's 12 GB TITAN V
+    must get either a build or an actionable refusal, never an OOM
+    mid-render and never a WSL2-style silent spill.
 
-    THE REFUSAL IS PROVOKED BY SHRINKING THE BUDGET, NOT BY GROWING THE RENDER.
-    The first version of this test asked for 40000x20000, whose accumulator
-    alone is 17.9 GB; on WSL2 that spills into host RAM and killed the VM. A
-    test for a memory guard must never itself be the allocation that breaks the
-    machine -- and it does not need to be, since the guard compares a render
-    against a budget and either side can be moved.
+    The refusal below is provoked by shrinking the budget, not by growing
+    the render: a test for a memory guard must never itself be the
+    allocation that breaks the machine, and it does not need to be, since
+    the guard compares a render against a budget and either side can move.
     """
     from loop_sim.scene.scene import load
     from loop_sim.renderer.engine_torch import (TorchScene, check_render_fits,

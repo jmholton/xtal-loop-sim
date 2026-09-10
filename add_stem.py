@@ -4,8 +4,8 @@ Attach a twisted-pair helix stem to a digitized hoop, producing a single
 continuous loop fiber tube (stem + hoop + stem).
 
 Terminology:
-    hoop  — the oval/teardrop fiber part holding the crystal
-    loop  — the complete assembly: stem + hoop
+    hoop  -- the oval/teardrop fiber part holding the crystal
+    loop  -- the complete assembly: stem + hoop
 
 The stem helix axis is computed from the hoop waypoints (opposite to the
 centroid of interior points).  The two helix strands and the hoop are joined
@@ -23,8 +23,8 @@ Usage:
                         [--pitch-ratio N]       (default 20)
                         [--n-samples-per-mm N]  (default 100, i.e. 1 µm/capsule)
 
-Input:  hoop.yaml — from digitize_fiber.py
-Output: loop.yaml — objects: [one tube] + motor: {tx, ty}
+Input:  hoop.yaml -- from digitize_fiber.py
+Output: loop.yaml -- objects: [one tube] + motor: {tx, ty}
                     ready to pass to generate_scene.py
 
 Coordinate convention
@@ -120,7 +120,7 @@ def main():
     # Three separate tube objects.  The stem is a twisted pair: two fibers
     # that physically cross each other periodically, producing crossover
     # shadows in the rendered image.  This requires two separate tube
-    # objects (stem_1, stem_2) — a single continuous path cannot model
+    # objects (stem_1, stem_2): a single continuous path cannot model
     # the crossing of one fiber over another.  The hoop gets its own tube
     # so it has an independent CubicSpline and full n_samples budget.
     # ------------------------------------------------------------------
@@ -136,7 +136,7 @@ def main():
         return max(50, int(arc * args.n_samples_per_mm) + 1)
 
     # ------------------------------------------------------------------
-    # Output: partial scene — motor + objects only, no camera/materials
+    # Output: partial scene, motor + objects only, no camera/materials
     # ------------------------------------------------------------------
     output = {
         'motor': {

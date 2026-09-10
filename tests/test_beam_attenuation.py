@@ -1,20 +1,15 @@
-"""
-X-ray attenuation (Beer-Lambert) tests for the beam reporter + radiograph.
+"""X-ray attenuation (Beer-Lambert) tests for the beam reporter and
+radiograph. Exercises the `mu_xray` material coefficient.
 
-Covers the Phase-1-of-enhancements work that finally consumes the long-dead
-`mu_xray` material coefficient:
+  * Scene.path_segments() -- ordered front-to-back traversal that
+    path_lengths is refactored on top of
+  * beam.compute_beam_volumes() -- per-material absorbed_dose,
+    transmitted_frac, and shadowing-aware beam_transmission
+  * the X-ray transmission map -- render_xray_numpy (CPU ref) and, when
+    torch is present, render_xray_torch parity against it
 
-  * Scene.path_segments()        — ordered front-to-back traversal (the new
-                                   primitive path_lengths is refactored on top of)
-  * beam.compute_beam_volumes()  — per-material absorbed_dose + transmitted_frac
-                                   + top-level beam_transmission, shadowing-aware
-  * X-ray transmission map       — render_xray_numpy (CPU ref) and, when torch is
-                                   present, render_xray_torch parity vs the numpy ref
-
-These use tiny synthetic scenes (boxes/spheres) with analytically known path
+Uses tiny synthetic scenes (boxes/spheres) with analytically known path
 lengths, so the asserts are exact Beer-Lambert, not golden images.
-
-Run:  pytest tests/test_beam_attenuation.py -v
 """
 import os
 import sys
@@ -83,7 +78,7 @@ def _sum_absorbed(res):
 
 
 # ---------------------------------------------------------------------------
-# path_segments — ordering + path_lengths equivalence
+# path_segments -- ordering + path_lengths equivalence
 # ---------------------------------------------------------------------------
 
 def test_path_segments_front_to_back_order():
@@ -120,7 +115,7 @@ def test_path_lengths_equals_reduced_path_segments():
 
 
 # ---------------------------------------------------------------------------
-# beam.compute_beam_volumes — Beer-Lambert attenuation
+# beam.compute_beam_volumes -- Beer-Lambert attenuation
 # ---------------------------------------------------------------------------
 
 def test_single_slab_transmission_matches_analytic():

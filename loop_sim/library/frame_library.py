@@ -1,50 +1,15 @@
-"""
-Pre-computed frame library: a rotation sweep rendered once and replayed.
+"""Pre-computed frame library: a rotation sweep rendered once and replayed.
 
-Rationale
----------
-The camera is orthographic, so the only motor that genuinely changes image
-content is the spindle.  Everything else is an image-space transform of a
-sufficiently large, sufficiently finely sampled master frame:
-
-    frames rendered  = 360 / step_deg          (e.g. 360 at 1 deg)
-    tx / ty / tz     = crop offset (see `pose_crop` -- the stage rides on the
-                       spindle, so which motor is lateral depends on phi)
-    zoom             = rescale, exact down from the supersampled master
-    depth            = defocus, approximated by a Gaussian blur
-
-Supersampling
--------------
-`supersample` divides the rendered pixel size, so the master is sampled finer
-than the camera.  Zooming out from it is exact decimation; zooming in past it
-would be upsampling, so `supersample` is the hard ceiling on zoom.  4x is the
-default because it is where sampling critically matches the NA 0.10 objective
-(Rayleigh 3.35 um -> Nyquist 1.68 um/px against a 7.4 um native pixel).
-
-Framing
--------
-The render window is measured from the scene rather than being a uniform blow-up
-of the camera.  A mount is long and thin -- the hampton pin runs to x=6.7 mm
-against a 4.7 mm field -- so a symmetric margin centred on the goniometer origin
-leaves most of the pin unrendered and panning scrolls in blank background.
-`content_window` renders a coarse wide-field scout sweep, measures where the
-image actually differs from background, and the sweep is then rendered with a
-fixed `tx` offset that centres that window.  `tx` is parallel to the spindle
-axis, so a constant tx offset is rotation-invariant and is exactly equivalent
-to moving the camera.
-
-Layout
-------
-    frame_library/<scene_stem>/manifest.json
-    frame_library/<scene_stem>/rot_0000.png ...
-
-Frames are stored LOSSLESSLY.  A real AXIS camera applies exactly one JPEG
-compression; storing JPEG templates and re-encoding them on the wire applied
-two.  PNG is also smaller for these near-binary frames -- see DEFAULT_FORMAT.
-
-The manifest records a SHA-256 of the scene YAML and the build parameters;
-`ensure_library()` rebuilds when either changes.  `format` and `psf` are build
-parameters, so a library predating either correctly reads as stale.
+The camera is orthographic, so the spindle is the only motor that changes
+image content. A library is a directory of PNG frames around a measured
+render window, one per spindle angle, plus a manifest.json recording the
+scene's SHA-256, the build parameters, and each frame's file name and crop
+offset/size. `library_status` reads a library as `current` (matches the
+request), `stale` (complete and servable, built with older parameters --
+see `library_diff`), or `missing` (unusable); `ensure_library` builds when
+not current and returns the manifest. `pose_crop`/`servable_pose` turn a
+goniometer pose into the crop, size and blur to serve; `frame_for_angle`
+and `zoom_limits` pick a sweep frame and bound the servable zoom.
 """
 import glob
 import hashlib
@@ -75,15 +40,11 @@ DEFAULT_SUPERSAMPLE = 4
 DEFAULT_PAN_MM = 0.6
 DEFAULT_N_COND = 7
 DEFAULT_QUALITY = 90
-# Templates are stored losslessly.  A real AXIS camera applies exactly ONE JPEG
-# compression; storing JPEG templates and re-encoding them on the wire applied
-# two, which is a compression signature no real camera has.  PNG also happens to
-# be SMALLER here (measured on the shipped hampton sweep: 28.7 MB against the
-# 84.9 MB it replaced, ~3x): the frame is overwhelmingly flat black and white, which deflate
-# handles far better than JPEG, which spends its bits ringing around exactly the
-# hard edges that matter.  Decode is dearer (~55 vs 36 ms), which costs only on a
-# spindle slew where every frame is a fresh decode: measured 14.7 fps through a
-# sustained spin, against ~21.6 fps on the JPEG library.
+# Lossless: a real AXIS camera applies exactly one JPEG compression, and a
+# stored JPEG re-encoded on the wire would apply a second, a signature no
+# real camera has. PNG is also smaller for these near-binary frames, at the
+# cost of decode speed. See docs/DECISIONS.md 2026-08-06 (realism pass: the
+# objective PSF, and lossless templates).
 DEFAULT_FORMAT = "png"
 # PNG compression level.  NOT a build parameter: it changes file size, never a
 # pixel, so it must not invalidate a library.
@@ -98,16 +59,11 @@ DEFAULT_VRAM_FRACTION = 0.80
 # the content measurement went wrong.
 MAX_TEMPLATE_MPX = 200.0
 
-# A rendered template is overwhelmingly empty: the sample occupies ~10% of the
-# frame, and the window is large only because `plan_window` unions the measured
-# content with the CENTRED field of view plus `pan_mm`.  Only the content is
-# stored; the reader fills the rest.
-#
-# That is EXACT, not an approximation.  Templates hold raw transmittance and
-# every ray is born at radiance 1.0, so anything the sample does not touch is
-# exactly white -- `renderer/field.py` applies the photographic look at serve
-# time, downstream of the crop, and deliberately never bakes it in.  Recorded in
-# the manifest rather than assumed, so the format says what to fill with.
+# Only the content is stored, not the full render window; the reader fills
+# the rest. This is exact, not approximate: every ray is born at radiance
+# 1.0, so anything the sample does not touch is exactly white -- recorded
+# in the manifest rather than assumed, so the format says what to fill with.
+# See docs/DECISIONS.md 2026-08-14 (templates store content only).
 BACKGROUND_RGB = (255, 255, 255)
 
 
@@ -181,25 +137,18 @@ def crop_to_content(arr, margin, background=BACKGROUND_RGB):
 _BUILD_KEYS = ("axis", "step_deg", "n_cond", "supersample", "pan_mm",
                "jpeg_quality", "format", "psf", "render_sha")
 
-# The modules whose SOURCE decides what a template pixel is.  A change to any
-# of them makes every stored template a render of code that no longer exists,
-# and until `render_sha` existed nothing noticed: `scene_sha256` catches a
-# changed scene and `_BUILD_KEYS` catches changed settings, but a renderer edit
-# left the manifest reading `current` while the frames were built by the old
-# tracer.  That was the one genuine silent-staleness hole.
-#
-# WHAT IS DELIBERATELY NOT HERE, because over-invalidating costs hours:
-#   renderer/field.py   camera emulation -- applied at SERVE time, downstream
-#                       of pose_crop, and never written into a template.  Being
-#                       able to change it without a rebuild is the whole reason
-#                       it was placed there; hashing it would give that back.
-#   renderer/beam.py,
-#   renderer/xray_torch.py   the X-ray path.  No optical template comes from
-#                       either -- render_xray_torch/trace_xray used to live
-#                       IN engine_torch.py (which IS hashed below), so an
-#                       X-ray-only GPU edit silently invalidated every optical
-#                       library until they were split out (2026-08-18, see
-#                       docs/DECISIONS.md).  Keep X-ray code out of this file.
+# Modules whose SOURCE decides what a template pixel is; a change to any of
+# them makes every stored template stale.  Deliberately NOT hashed, because
+# over-invalidating costs hours:
+#   renderer/field.py   camera emulation, applied at SERVE time downstream of
+#                       `pose_crop`, never baked into a template -- see
+#                       docs/DECISIONS.md 2026-08-10 (the renders became
+#                       photographs).  Living outside the tracer is what lets
+#                       it change without forcing a rebuild.
+#   renderer/beam.py, renderer/xray_torch.py   the X-ray path, no optical
+#                       template comes from either.  Keep X-ray code out of
+#                       this file -- see docs/DECISIONS.md 2026-08-18
+#                       (xray_torch split out of engine_torch.py).
 #   library/, server/   delivery, not content -- and `pose_crop` lives in
 #                       library/, so hashing it would invalidate every library
 #                       for a change to how frames are CROPPED.
@@ -271,13 +220,10 @@ def load_manifest(lib_dir):
 def _write_manifest(lib_dir, manifest):
     """Write manifest.json atomically and force it to disk.
 
-    The manifest is the last thing a build produces and the one file that makes
-    the other 360 usable, so it is exactly the wrong thing to leave sitting in
-    the page cache. A host crash after a long build otherwise loses it and
-    orphans the whole library -- which happened once, costing a rebuild that
-    was only avoided because the window is deterministic and could be
-    recomputed. Temp-file + fsync + rename also means a crash mid-write can
-    never leave a truncated manifest behind.
+    The manifest is the one file that makes the other 360 usable, so an
+    unflushed write a host crash loses orphans the whole library. Temp-file
+    + fsync + rename also means a crash mid-write can never leave a
+    truncated manifest behind.
     """
     path = os.path.join(lib_dir, "manifest.json")
     tmp = path + ".tmp"
@@ -399,10 +345,10 @@ def library_status(scene_path, lib_dir, **params):
     Splits the single bool `is_current` returns, because its two failure modes
     need opposite answers:
 
-      missing — nothing usable: no manifest, frames absent or damaged, or the
+      missing -- nothing usable: no manifest, frames absent or damaged, or the
                 scene YAML has changed since the build (those frames are of a
                 different object, so serving them would be a lie).
-      stale   — a COMPLETE, servable library that simply was not built the way
+      stale   -- a COMPLETE, servable library that simply was not built the way
                 we would build it now.  `frame_library/mitegen_200um` is exactly
                 this: 360 usable frames, ~1.9 h to reproduce, whose only sin is
                 a manifest older than the `format` and `psf` build keys.
@@ -656,14 +602,12 @@ def build_library(scene_path, root=DEFAULT_ROOT, axis="rotx",
 
     cam["width"], cam["height"], cam["pixel_size"] = RW, RH, tpl_px
 
-    # PREFLIGHT: prove one frame fits this GPU before committing to hours of
-    # them.  A build that discovers its memory ceiling at frame 300 of 360 has
-    # wasted the whole night and leaves a half-written library behind; the
-    # beamline's TITAN V has 12 GB against this dev box's 16, and voltron is a
-    # shared 8-GPU node where "free" is whoever else is on the card.  Costs one
-    # frame.  Shrinks the trace tile itself if that is enough (byte-exact, so
-    # the library is unaffected) and raises RenderTooLargeError naming the
-    # largest --supersample that WOULD fit if it is not.
+    # PREFLIGHT: render one real frame and check it fits, rather than
+    # discovering the memory ceiling at frame 300 of 360.  Shrinks the trace
+    # tile if that's enough (byte-exact, so the library is unaffected), or
+    # raises RenderTooLargeError naming the largest --supersample that would
+    # fit.  See docs/DECISIONS.md 2026-08-11 (the VRAM budget is enforced,
+    # not assumed).
     if tile_size is None:
         tile_size = check_render_fits(tscene, n_cond=n_cond, psf=psf,
                                       vram_fraction=vram_fraction,
@@ -730,18 +674,12 @@ def build_library(scene_path, root=DEFAULT_ROOT, axis="rotx",
                 slow_run = 0
 
         arr = (img * 255).clamp(0, 255).to(torch.uint8).cpu().numpy()
-        # Crop to what is actually drawn.  Measured from the frame's own pixels
-        # rather than from `content_window`, which scouts 8 angles at 320x240
-        # with n_cond=1 and an effectively-disabled PSF -- 32x coarser than a
-        # template pixel.  It under-measures, which is harmless where it is used
-        # (`plan_window` unions it with a far larger field) and would clip real
-        # sample here.  The array is already in hand and the bbox costs
-        # milliseconds against a frame that took a minute to trace.
-        #
-        # PER FRAME, not one box for the sweep: it is free at read time (the
-        # record carries the offset either way) and `mitegen_200um` needs it --
-        # 231 distinct bboxes across its 360 angles, against 1 for hampton,
-        # whose spindle axis happens to be the pin axis.
+        # Cropped from the frame's own pixels, not `content_window`'s coarse
+        # scout (320x240, n_cond=1, effectively no PSF), which under-measures
+        # and would clip real sample here.  Per frame, not one box for the
+        # sweep: `mitegen_200um` needs 231 distinct bboxes across its 360
+        # angles, against 1 for hampton.  See docs/DECISIONS.md 2026-08-14
+        # (templates store content only).
         arr, (ox, oy) = crop_to_content(arr, margin)
         name = f"rot_{i:04d}.{ext}"
         if fmt == "png":

@@ -1,52 +1,30 @@
-"""
-X-ray beam volume reporter.
+"""X-ray beam volume reporter and radiograph.
 
-Beam model
-----------
-The beam is described by a PNG image (one pixel = one mini-beam sampling
-point; pixel value = relative intensity).  The physical pixel size is stored
-in the PNG as a ``pixel_size_mm`` text chunk written by make_beam_image.py.
+The beam is a PNG (one pixel = one mini-beam; pixel value = relative
+intensity, physical pixel size in a ``pixel_size_mm`` text chunk) with an
+optional circular pinhole mask applied at load time.  For each mini-beam,
+``scene.path_segments()`` returns its ordered (material, length) crossings;
+summed and weighted by the beam profile these give the illuminated volume per
+material (mm³), and walked front-to-back they give the Beer-Lambert
+attenuation:
 
-A circular pinhole aperture (``pinhole_diameter`` in the beam config) is
-applied to the loaded image at simulation time so the aperture can be changed
-without regenerating the image.
+    flux_after = flux_before * exp(-mu_xray * length)
 
-For each mini-beam the scene path_segments() method returns the ordered list
-of (material, length) segments the ray crosses, front-to-back.  The illuminated
-volume contributed by one mini-beam is:
+``absorbed_dose`` is flux absorbed per material (relative units; mu_xray is
+illustrative, not absolute dosimetry).  ``transmitted_frac`` is the mean
+surviving fraction per material; ``beam_transmission`` is the fraction of the
+whole incident beam that exits the sample.  Energy book-keeping:
+sum(absorbed_dose) + beam_transmission ~= 1.
 
-    dV_material = path_length_material × beam_weight × pixel_area
-
-Summed over all mini-beams: illuminated volume per material (mm³, weighted).
-
-X-ray attenuation (Beer-Lambert)
---------------------------------
-Each mini-beam carries incident flux equal to its (normalised) beam weight.
-Walking its segments front-to-back, the flux is attenuated in every material:
-
-    flux_after = flux_before × exp(-mu_xray × length)
-
-so a segment behind an absorber sees the already-attenuated flux — the metal
-pin (mu_xray≈100 mm⁻¹) shadows everything downstream.  The flux absorbed in a
-segment, flux_before × (1 − exp(-mu_xray × length)), is accumulated per material
-as ``absorbed_dose`` (a relative dose proxy, not absolute dosimetry — mu_xray
-values are illustrative).  ``transmitted_frac`` is the mean fraction of flux
-that survives passing through a material; the top-level ``beam_transmission``
-is the fraction of the whole incident beam that exits the sample.  By energy
-book-keeping, Σ_materials absorbed_dose + beam_transmission ≈ 1.
-
-Nylon fiber axes
-----------------
-For tube objects with is_fiber=True the reporter also accumulates the local
-fiber axis direction (tangent to the Neville curve) weighted by the
-illuminated volume of that segment, for downstream diffraction orientation
-calculations.
+For fiber tube objects the reporter also accumulates the local fiber axis
+(tangent to the curve), volume-weighted, for downstream diffraction
+orientation.
 
 beam: section of template.yaml
 -------------------------------
     beam:
       image:            beam.png        # path to beam profile PNG
-      pinhole_diameter: 0.100           # mm — circular aperture applied at load time
+      pinhole_diameter: 0.100           # mm, circular aperture applied at load time
       # pixel_size_mm: 0.001           # override if not embedded in the PNG
 """
 import json
@@ -67,16 +45,16 @@ def _load_beam_image(path, pinhole_mm=0.0, fallback_px_mm=0.001):
 
     Parameters
     ----------
-    path           : str   — path to the PNG (16-bit or 8-bit greyscale/RGB)
-    pinhole_mm     : float — circular aperture diameter in mm (0 = no mask)
-    fallback_px_mm : float — pixel size to use if not embedded in the PNG
+    path           : str   -- path to the PNG (16-bit or 8-bit greyscale/RGB)
+    pinhole_mm     : float -- circular aperture diameter in mm (0 = no mask)
+    fallback_px_mm : float -- pixel size to use if not embedded in the PNG
 
     Returns
     -------
-    gx      : (N,) mm — horizontal offsets from beam centre (camera_fast dir)
-    gy      : (N,) mm — vertical offsets from beam centre (camera_slow dir)
-    weights : (N,) — relative intensities, normalised to [0, 1]
-    px_mm   : float — physical pixel size in mm
+    gx      : (N,) mm -- horizontal offsets from beam centre (camera_fast dir)
+    gy      : (N,) mm -- vertical offsets from beam centre (camera_slow dir)
+    weights : (N,) -- relative intensities, normalised to [0, 1]
+    px_mm   : float -- physical pixel size in mm
     """
     from PIL import Image
 
@@ -297,7 +275,7 @@ def beam_volumes_json(scene, goniometer):
 
 
 # ---------------------------------------------------------------------------
-# X-ray transmission map (radiograph) — numpy reference / CPU fallback
+# X-ray transmission map (radiograph) -- numpy reference / CPU fallback
 # ---------------------------------------------------------------------------
 
 def render_xray_numpy(scene, goniometer):
@@ -310,8 +288,8 @@ def render_xray_numpy(scene, goniometer):
     cast a dark shadow exactly where they sit in the bright-field image.
 
     Order is irrelevant for transmission (the sum commutes), so this reuses
-    ``path_lengths``.  It is slow at full resolution — the per-ray Python loop
-    in ``path_lengths`` dominates — so the GPU ``render_xray_torch`` is the live
+    ``path_lengths``.  It is slow at full resolution -- the per-ray Python loop
+    in ``path_lengths`` dominates -- so the GPU ``render_xray_torch`` is the live
     path; reduce resolution for CPU snapshots.
     """
     cam = scene.camera_cfg

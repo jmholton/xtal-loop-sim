@@ -1,19 +1,13 @@
-"""
-Mesh-back validation of generated scenes: the geometry that is EMITTED must
-match what was ASKED for.
+"""Mesh-back validation of generated scenes: the geometry a scene emits
+must match what was requested.
 
-Born of the silent-hemisphere episode (docs/DECISIONS.md 2026-08-07): the old
-Bashforth-Adams droplet solver failed for ordinary inputs and silently
-substituted a flat-bottomed hemisphere at the origin — ignoring
---solvent-volume and --contact-angle, and landing at the loop/stem junction
-instead of in the aperture.  That shipped through a fidelity audit because
-nothing measured the mesh back.  These tests pin the closed-form replacement
-(crystal_harvester/droplet.py) and the validator (crystal_harvester/
-validate.py) that makes any such regression loud.
+Guards against silently substituting a wrong shape when a solver fails
+(the silent-hemisphere regression, docs/DECISIONS.md 2026-08-07): these
+tests pin the closed-form droplet replacement (crystal_harvester/
+droplet.py) and the validator (crystal_harvester/validate.py) that makes
+any such regression loud.
 
-Pure geometry — no rendering, no GPU, no scene files touched.
-
-Run:  pytest tests/test_scene_geometry.py -v
+Pure geometry: no rendering, no GPU, no scene files touched.
 """
 import copy
 import os
@@ -97,7 +91,7 @@ def test_revolved_mesh_is_watertight_with_no_degenerate_faces():
 
 
 def test_droplet_in_loop_hits_requested_volume():
-    """Divergence-theorem volume of the emitted mesh matches the request —
+    """Divergence-theorem volume of the emitted mesh matches the request --
     the check whose absence let a 3.5x-too-big hemisphere ship."""
     t = np.linspace(0, 2 * np.pi, 60, endpoint=False)
     loop = np.stack([0.16 * np.cos(t) - 0.1, 0.16 * np.sin(t), 0 * t], -1)
@@ -184,8 +178,8 @@ def _corrupt(scene, fn):
 
 
 def test_validator_catches_the_old_placement_bug(scene):
-    """Translate the droplet back to the origin — the exact defect the old
-    generator shipped — and the validator must name it."""
+    """Translate the droplet back to the origin -- the exact defect the old
+    generator shipped -- and the validator must name it."""
     def move_to_origin(sc):
         sv = np.array(sc["objects"][1]["shape"]["vertices"])
         _, c = __import__("crystal_harvester.droplet", fromlist=["x"]) \
@@ -235,7 +229,7 @@ def test_validator_catches_a_degenerate_fallback_shape(scene):
 
 def test_stem_is_glued_into_the_pin(scene):
     """The stem fibers must end inside the pin's metal (the break-face glue
-    joint) — the old generator left them floating 0.3 mm in front of it."""
+    joint) -- the old generator left them floating 0.3 mm in front of it."""
     from crystal_harvester.validate import _point_in_csg
     pin = next(o for o in scene["objects"] if o["name"] == "pin")
     for name in ("stem_fiber_1", "stem_fiber_2"):
@@ -246,7 +240,7 @@ def test_stem_is_glued_into_the_pin(scene):
 
 
 def test_validator_catches_a_detached_stem(scene):
-    """Truncate the stems back to the pin tip — the old defect — and the
+    """Truncate the stems back to the pin tip -- the old defect -- and the
     validator must name it."""
     def truncate(sc):
         for name in ("stem_fiber_1", "stem_fiber_2"):

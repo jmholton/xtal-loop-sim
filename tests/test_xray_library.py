@@ -1,31 +1,19 @@
-"""
-Tests for the pre-computed X-ray radiograph library (loop_sim/library/
-xray_library.py) -- the X-ray analogue of frame_library.py, split into its
-own module and its own render_sha scope so the two trees invalidate
-independently (docs/DECISIONS.md 2026-08-18).
+"""Tests for the pre-computed X-ray radiograph library: the X-ray
+analogue of frame_library.py, its own module and render_sha scope so the
+two trees invalidate independently (docs/DECISIONS.md 2026-08-18).
 
-The load-bearing claims, and the test that guards each:
+The claims here, and the test that guards each:
 
-  * the X-ray render_sha scope is right, in BOTH directions
-    -> test_xray_render_sha_covers_the_right_files,
-       test_xray_render_sha_excludes_optical_only_files
-    (too few files and a tracer change ships stale frames; too many -- or the
-    optical scope reaching into xray_torch.py -- and an unrelated edit costs
-    an expensive rebuild on the wrong side)
+  * render_sha scope is right, both directions ->
+    test_xray_render_sha_covers_the_right_files,
+    test_xray_render_sha_excludes_optical_only_files
   * a stored crop reproduces a live render -> test_stored_crop_matches_live_render
-    (byte-exact: templates hold raw transmission, quantized to 16-bit, and
-    AIR.mu_xray == 0.0 makes the crop boundary exact rather than thresholded)
-  * depth genuinely does not blur an X-ray template -> test_pose_crop_has_no_depth_blur
-    (na_condenser: 0.0 in the manifest makes the REUSED pose_crop compute
-    sigma_px == 0.0 for any tz, with no reader-side special case)
-  * a library built with different parameters is stale -> test_is_current_tracks_build_parameters
+  * depth does not blur an X-ray template -> test_pose_crop_has_no_depth_blur
+  * different build parameters make a library stale -> test_is_current_tracks_build_parameters
 
-Building a library renders, so the heavier tests are CUDA-gated and use a
-coarse sweep in tmp_path rather than a tracked deliverable -- there is no
-`xray_library/` shipped yet (see docs/DECISIONS.md 2026-08-18: the physics
-constants aren't settled, so a real 360-frame build is deferred).
-
-Run:  pytest tests/test_xray_library.py -v
+Heavier tests are CUDA-gated, using a coarse sweep in tmp_path; no
+`xray_library/` is shipped yet (physics constants unsettled, see
+docs/DECISIONS.md 2026-08-18, mu_xray stays illustrative).
 """
 import os
 import sys
@@ -138,6 +126,8 @@ def test_stored_crop_matches_live_render(tiny_xray_library):
     """The stored, cropped, 16-bit-quantized frame must equal a fresh live
     render at the exact pose the build used -- proves the crop offset math
     and the quantization round-trip are both correct, not just plausible.
+    Byte-exact because AIR.mu_xray == 0.0 makes the crop boundary exact
+    rather than thresholded.
     """
     import torch
     from PIL import Image
@@ -181,10 +171,10 @@ def test_stored_crop_matches_live_render(tiny_xray_library):
 # ---------------------------------------------------------------------------
 @cuda_only
 def test_pose_crop_has_no_depth_blur(tiny_xray_library):
-    """na_condenser: 0.0 must make the REUSED pose_crop report zero blur at
+    """na_condenser: 0.0 must make the reused pose_crop report zero blur at
     any tz -- a collimated beam's Beer-Lambert integral along a straight line
     is invariant to translating the ray's start point along that same line,
-    so depth genuinely does not defocus a radiograph (unlike the optical PSF
+    so depth does not defocus a radiograph (unlike the optical PSF
     defocus approximation pose_crop was written for).
     """
     man, lib_dir = tiny_xray_library

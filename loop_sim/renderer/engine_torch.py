@@ -9,7 +9,7 @@ against it by a three-rung differential ladder:
 
     rung 1  numpy-f64        -- frozen reference / executable spec
     rung 2  torch-cpu-f64    -- must equal rung 1 to ~1e-10 (proves the port; no GPU)
-    rung 3  torch-cuda       -- must equal rung 1 within uint8 tolerance (production)
+    rung 3  torch-cuda       -- must equal rung 1 within uint8 tolerance (the served path)
 
 Each torch shape mirrors the corresponding numpy primitive's ray_intersect
 contract exactly:
@@ -18,7 +18,6 @@ contract exactly:
     t_*    : (N,)   +inf where no hit (HalfSpace may return +-inf interval ends)
     n_*    : (N, 3) outward normals; zero where no hit
 
-Built incrementally: 2a = analytic primitives (this file's first cut).
 """
 import os
 import numpy as np
@@ -348,7 +347,7 @@ class TCapsule:
 
 
 # ---------------------------------------------------------------------------
-# CSG (interval arithmetic on t) — mirrors scene/csg.py
+# CSG (interval arithmetic on t) -- mirrors scene/csg.py
 # ---------------------------------------------------------------------------
 class TIntersection:
     def __init__(self, children):
@@ -710,12 +709,11 @@ class TSurfaceMesh:
 # TNull: inert stand-in for provably-hitless shapes (e.g. a radius-0 Sphere,
 # the default hampton scene's placeholder "solvent" object).
 #
-# A zero-radius sphere can never yield an interface: disc = 4[(oc.d)^2 -
-# (d.d)(oc.oc)] <= 0 by Cauchy-Schwarz, so entry == exit at best and the
-# strict te < tx tests in next_interface (and the material-interval probe)
-# reject it identically in numpy and torch. Substituting it out at build time
-# removes its kernels from every depth iteration while keeping the object
-# index (and so the material tables) aligned -- byte-exact by construction.
+# A zero-radius sphere never yields an interface (Cauchy-Schwarz forces entry
+# == exit), so both engines reject it identically; substituting TNull at
+# build time removes its kernels from every depth iteration while keeping the
+# object index, and so the material tables, aligned -- byte-exact by
+# construction.
 # ---------------------------------------------------------------------------
 class TNull:
     def __init__(self, dev, dt):
@@ -759,7 +757,7 @@ def build_torch_shape(shape, dev, dt):
         return TDifference(build_torch_shape(shape.A, dev, dt),
                            build_torch_shape(shape.B, dev, dt))
     if name == "Cylinder":
-        # Composite: barrel ∩ (cap_lo ∩ cap_hi) — reuse the numpy sub-shapes.
+        # Composite: barrel ∩ (cap_lo ∩ cap_hi) -- reuse the numpy sub-shapes.
         barrel = build_torch_shape(shape._barrel, dev, dt)
         caps = TIntersection([build_torch_shape(shape._cap_lo, dev, dt),
                               build_torch_shape(shape._cap_hi, dev, dt)])
@@ -804,7 +802,7 @@ class TorchScene:
         """Lazily build a torch.compile()d next_interface for the PREVIEW path.
 
         Compiled only on CUDA (Inductor's CPU backend historically miscompiled
-        the mesh/CSG path here), with mode="default" — reduce-overhead's implicit
+        the mesh/CSG path here), with mode="default" -- reduce-overhead's implicit
         CUDA-graph capture is not thread-safe in the single-flight server ("already
         recording to mempool"/CUBLAS crashes). dynamic=True keeps the symbolic
         batch dim from recompiling as depth-compaction shrinks the active set.
@@ -969,22 +967,16 @@ _TILE_MIN = 32_768
 # VRAM-aware size instead.
 _TILE_DEFAULT = 1_000_000
 
-# Peak trace memory is linear in (tile rays x mesh faces): every Moller-Trumbore
-# temporary in TSurfaceMesh._mt_batch is (B, F) or (B, F, 3), and there is no
-# AABB cull on the mesh path to shrink F. Measured 2026-08-07 on an RTX 4080
-# SUPER at 160 B per ray per face, stable to ~1% across tiles of 2048-16384 rays
-# AND across scenes of 234 faces (mitegen_200um) and 2880 (a crystal_harvester
-# droplet) -- so it is a property of the kernel, not of one scene. Scenes with
-# no mesh carry no such term at all (measured 0.5 KB/ray total) and keep the
-# flat _TILE_DEFAULT above.
+# Memory law: every Moller-Trumbore temporary in TSurfaceMesh._mt_batch is
+# (B, F) or (B, F, 3), so mesh intersection memory is linear in (rays x faces)
+# at 160 B per ray per face (measured 2026-08-07, RTX 4080 SUPER, stable
+# across tile sizes and scenes). Scenes with no mesh carry no such term
+# (0.5 KB/ray total) and keep the flat _TILE_DEFAULT above.
 #
-# This is what makes the DEFAULT safe without probing. _TILE_DEFAULT alone put a
-# 640x480 frame through in one pass, which on a 2880-face droplet scene is
-# 307200 x 2880 x 160 B = 19.8 GB and a hard OOM -- i.e. any scene with a
-# solvent droplet was unrenderable at default settings. Probing instead (see
-# plan_tile_size) cannot be the default: it resets torch's global peak-memory
-# counters, which bench_frame.py and acceptance_voltron.py read, and its upper
-# rungs are exactly the allocations WSL2 spills on rather than failing.
+# This tile (`fit_tile_size`) bounds the ray-grid and condenser terms, which
+# scale with total_rays alone. It does not bound the mesh term: that is
+# `_mesh_survivor_chunk`'s job, sized against AABB survivors rather than the
+# whole tile (see the TSurfaceMesh header above).
 _MESH_BYTES_PER_RAY_FACE = 160
 # Floor for the computed tile. Below this the Python-level tile loop starts to
 # dominate; a 2880-face scene on a 16 GB card lands near 20k, so this only binds
@@ -1064,27 +1056,12 @@ def fit_tile_size(tscene, total_rays, vram_fraction=0.80):
     remains available for callers that explicitly ask for tile_size=None and
     want the measured answer.
 
-    CHANGED 2026-08-11: the mesh term is gone. It existed because
-    TSurfaceMesh brute-forced every ray against every face, so the frame's whole
-    ray count had to be divided down to fit `tile_rays x faces x 160 B`. The
-    mesh now AABB-culls and chunks its own survivors
-    (`_mesh_survivor_chunk`), so that product no longer depends on the caller's
-    tile and shrinking the tile buys nothing but passes. Measured on
-    hampton_300um_realistic at build resolution (1396x644, n_cond 7): the old
-    sizing gave 6800 rays and 133 passes at 19.90 s; a single full-frame tile
-    is 1.95 s at 2.56 GB peak -- 10.2x, on top of the 4.05x the cull itself
-    gave against the 80.6 s baseline.
+    This tile bounds the ray-grid and condenser-accumulator terms, which scale
+    with total_rays; it does not bound the mesh's own survivor-chunk memory
+    (`_mesh_survivor_chunk`, 160 B per ray per face), which AABB-culls and
+    chunks independently of this tile.
 
-    CHANGED AGAIN 2026-08-11 (later): it is VRAM-aware again, because for one
-    afternoon it was not. Dropping the mesh term left `min(total_rays,
-    _TILE_DEFAULT)`, which never consulted the card at all -- fine on the
-    16 GB dev box, a hazard on the beamline's 12 GB TITAN V, and silent either
-    way. Peak grows with OUTPUT resolution through terms no tile can shrink
-    (measured on a simulated 12 GB card: 2.16 / 5.94 / 7.14 / 8.83 GB at
-    supersample 1 / 4 / 6 / 8, and OOM at 12), so the tile is now capped by
-    what is actually free.
-
-    This is a STARTING size, not a guarantee. The measured peak does not fit a
+    This is a starting size, not a guarantee: the measured peak does not fit a
     clean linear model, so the guarantee comes from `check_render_fits`, which
     renders one frame and reads the real peak before a build commits.
     """
@@ -1277,12 +1254,11 @@ def _probe_peak(fn):
     NOTE: this RESETS the process-global peak-memory counters. Torch offers no
     way to restore them, so anything reporting peak memory around a render
     (`bench_frame.py`, `acceptance_voltron.py`) must not run while a calibration
-    is happening. Both are safe -- but NOT, as this note used to claim, because
-    they pass an explicit `tile_size`: neither does. They are safe because they
-    take the default, and the default is `fit_tile_size`, which calculates and
-    never probes. That is one of the reasons the probing ramp cannot be made the
-    default; changing it back would corrupt the VRAM figures in the TITAN V
-    GO/NO-GO harness with no test to catch it.
+    is happening. Both are safe because they take the default tile size
+    (`fit_tile_size`, which calculates and never probes), not because they pass
+    an explicit `tile_size` -- neither does. That is one of the reasons the
+    probing ramp cannot be made the default; changing it back would corrupt the
+    VRAM figures in the TITAN V GO/NO-GO harness with no test to catch it.
     """
     torch.cuda.empty_cache()          # start from a clean pool so the delta is real
     torch.cuda.synchronize()

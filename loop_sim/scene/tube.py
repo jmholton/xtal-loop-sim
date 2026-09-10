@@ -33,9 +33,9 @@ def neville_eval(points, t_nodes, t_query):
     Evaluate a vector-valued interpolating polynomial at scalar `t_query`
     using Neville's algorithm.
 
-    points  : (n, d)  array — data values at each node
-    t_nodes : (n,)    array — parameter values at each node (must be distinct)
-    t_query : float   — parameter value to evaluate at
+    points  : (n, d)  array -- data values at each node
+    t_nodes : (n,)    array -- parameter values at each node (must be distinct)
+    t_query : float   -- parameter value to evaluate at
 
     Returns: (d,) array
     """
@@ -147,7 +147,7 @@ class Tube:
             self._pts_t  = _t(pts)
 
     # ------------------------------------------------------------------
-    # Ray intersection — vectorized over (batch, K) capsules
+    # Ray intersection -- vectorized over (batch, K) capsules
     # ------------------------------------------------------------------
 
     def ray_intersect(self, origins, dirs):
@@ -289,7 +289,7 @@ class Tube:
         bi     = torch.arange(B, device=dev)
         best_te = te_all[bi, best_k]                 # (B,)
 
-        # Best exit — prefer cylinder; fall back to sphere
+        # Best exit -- prefer cylinder; fall back to sphere
         tx_cyl_after = torch.where(tx_k  > best_te.unsqueeze(1),
                                    tx_k,  torch.full_like(tx_k,  INF))
         tx_sp_after  = torch.where(tx_sp > best_te.unsqueeze(1),
@@ -303,7 +303,7 @@ class Tube:
         exit_k       = torch.where(use_cyl_exit, exit_cyl_k, exit_sp_k + K)
 
         # ------------------------------------------------------------------
-        # Normals — fully vectorized (compute for all B rays, zero misses)
+        # Normals -- fully vectorized (compute for all B rays, zero misses)
         # ------------------------------------------------------------------
         hit_mask = best_te < INF    # (B,)
 
@@ -344,8 +344,8 @@ class Tube:
         Dispatches to CUDA if device is set.
 
         The tube surface is the union of:
-          • K cylinder barrels — one per spline span, clipped to their span.
-          • N_s sphere caps   — one at every sample point (fills the elbow gap
+          • K cylinder barrels -- one per spline span, clipped to their span.
+          • N_s sphere caps   -- one at every sample point (fills the elbow gap
             at each curved junction).
 
         Sphere cap normals (P − center)/r equal the adjacent cylinder barrel
@@ -419,7 +419,7 @@ class Tube:
         bi      = np.arange(B)
         best_te = te_all[bi, best_k]                       # (B,)
 
-        # Best exit — prefer cylinder; fall back to sphere if no cylinder exits.
+        # Best exit -- prefer cylinder; fall back to sphere if no cylinder exits.
         tx_cyl_after = np.where(tx_k  > best_te[:, None], tx_k,  _INF)
         tx_sp_after  = np.where(tx_sp > best_te[:, None], tx_sp, _INF)
         exit_cyl_k   = np.argmin(tx_cyl_after, axis=1)
@@ -480,18 +480,15 @@ class Tube:
 
     def recompute_normals_f64(self, origins, dirs, t_vals, hit_mask):
         """
-        Recompute surface normals in float64 for GPU-rendered hits.
-
-        The CUDA path uses float32 throughout (~6nm coordinate ULP at t=50mm),
-        giving normal errors of ~0.1%.  Here we reuse the float64 origins/dirs
-        from the ray tracer plus the float64 _curve_pts to recover ~0.03% error
-        (limited only by the float32 t value precision).
+        Recompute surface normals in float64 for GPU-rendered hits, from the
+        float64 origins/dirs and the float64 _curve_pts; the precision of the
+        hit `t` is the only limit.
 
         Parameters
         ----------
         origins, dirs : (N, 3) float64
-        t_vals        : (N,)   float  — hit distances (float32 precision)
-        hit_mask      : (N,)   bool   — which entries to process
+        t_vals        : (N,)   float  -- hit distances (float32 precision)
+        hit_mask      : (N,)   bool   -- which entries to process
 
         Returns
         -------

@@ -1,21 +1,18 @@
-"""
-Runtime scene switching: the swap itself, and the endpoints that drive it.
+"""Runtime scene switching: the swap itself, and the endpoints that drive it.
 
-The tests that matter here are the silent ones -- every failure mode this
-covers produces a plausible-looking picture rather than an exception:
+The tests that matter here are the silent ones: every failure mode this
+covers produces a plausible-looking picture rather than an exception.
 
   * a swap under a running animation, where the cancelled animation could
     stamp the old scene's pose onto the new scene's goniometer
-  * a failed load, which must leave every live object identical BY IDENTITY
-  * the goniometer keeping the OLD scene's axes, because Goniometer captures
-    scene.geometry by reference
+  * a failed load must leave every live object identical by identity
+  * the goniometer keeping the old scene's axes, because Goniometer
+    captures scene.geometry by reference
   * a render observing two different scenes across one frame
-  * a /move resolved against one scene's pixel size and another's axes -- the
-    two fixtures differ 7.4x on purpose, so a torn read is unmistakable
+  * a /move resolved against one scene's pixel size and another's axes --
+    the two fixtures differ 7.4x on purpose, so a torn read is unmistakable
 
-All CPU-only: empty scenes, engine='numpy', and a faked render.
-
-Run:  pytest tests/test_scene_switch.py -v
+All CPU-only: empty scenes, engine='numpy', a faked render.
 """
 import json
 import os
@@ -53,7 +50,7 @@ PX_A, PX_B = 0.0074, 0.001
 
 
 def _write_scene(path, pixel_size=PX_A, rotx_axis=(1, 0, 0), width=640, height=480):
-    """A minimal but genuinely loadable scene YAML.
+    """A minimal but actually loadable scene YAML.
 
     scene.load() needs only `geometry` and `camera`; with no `objects` it
     returns the same empty Scene the other CPU-only server tests build by hand,
@@ -271,8 +268,8 @@ def test_move_never_mixes_two_scenes(tmp_path):
 
     The two fixtures differ 7.4x in pixel size, so a target resolved against
     one scene's camera and another's geometry lands on a value that is neither
-    of the two legal answers.  Silently clamped in production; a hard assertion
-    here.
+    of the two legal answers.  Silently clamped when this runs live; a
+    hard assertion here.
     """
     a = _write_scene(tmp_path / "a.yaml", pixel_size=PX_A)
     b = _write_scene(tmp_path / "b.yaml", pixel_size=PX_B)

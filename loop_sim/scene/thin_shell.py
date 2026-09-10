@@ -24,13 +24,13 @@ def _revolve_outline(outline_2d, normal, fast, slow, thickness, sag, n_edge=60):
     """
     Build a triangulated mesh from a 2-D closed outline.
 
-    outline_2d : (m, 2) array — closed 2-D waypoints in (fast, slow) coords (mm)
-    normal     : (3,)  unit vector — extrusion / thickness direction
-    fast       : (3,)  unit vector — first in-plane axis
-    slow       : (3,)  unit vector — second in-plane axis
+    outline_2d : (m, 2) array -- closed 2-D waypoints in (fast, slow) coords (mm)
+    normal     : (3,)  unit vector -- extrusion / thickness direction
+    fast       : (3,)  unit vector -- first in-plane axis
+    slow       : (3,)  unit vector -- second in-plane axis
     thickness  : float (mm)
-    sag        : float — dome height at centre (positive = dome toward +normal)
-    n_edge     : int   — number of outline sample points
+    sag        : float -- dome height at centre (positive = dome toward +normal)
+    n_edge     : int   -- number of outline sample points
     """
     outline_2d = np.asarray(outline_2d, dtype=float)
     # Resample outline via Neville
@@ -42,7 +42,7 @@ def _revolve_outline(outline_2d, normal, fast, slow, thickness, sag, n_edge=60):
     r_max_sq = r_sq.max()
 
     # Compute sag offset per point (spherical dome approximation)
-    # sag_offset(r) = sag * (1 - r² / r_max²)  — zero at boundary, max at centre
+    # sag_offset(r) = sag * (1 - r² / r_max²)  -- zero at boundary, max at centre
     sag_offset = sag * (1.0 - r_sq / (r_max_sq + 1e-30))  # (n_edge,)
 
     def to_3d(pts_2d_local, v_offset):
@@ -96,12 +96,12 @@ class ThinShell:
     outline_2d : array-like, shape (m, 2)
         Closed 2-D waypoints in (u, w) = (fast, slow) coordinates (mm).
         The first and last point should be the same (closed loop).
-    thickness  : float — sheet thickness (mm)
-    sag        : float — dome height at centre (mm); 0 = flat
-    normal     : array-like, shape (3,) — extrusion direction in sample frame
-    fast       : array-like, shape (3,) — first in-plane axis
-    slow       : array-like, shape (3,) — second in-plane axis
-    n_outline  : int — Neville resample count for the outline
+    thickness  : float -- sheet thickness (mm)
+    sag        : float -- dome height at centre (mm); 0 = flat
+    normal     : array-like, shape (3,) -- extrusion direction in sample frame
+    fast       : array-like, shape (3,) -- first in-plane axis
+    slow       : array-like, shape (3,) -- second in-plane axis
+    n_outline  : int -- Neville resample count for the outline
     """
 
     def __init__(self, outline_2d, thickness=0.007, sag=0.0,

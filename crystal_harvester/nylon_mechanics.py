@@ -1,28 +1,21 @@
 """
 Nylon fiber mechanics for loop and stem geometry.
 
-Two functions:
+Two functions, both returning (N, 3) arrays of waypoints for the 'tube'
+primitive's 'path' field in a scene YAML:
 
 helix_path(R, pitch, length, n_points)
-    Compute Neville waypoints for one fiber of a twisted-pair stem.
-    The helix has radius R (= fiber diameter, so touching fibers) and
+    Neville waypoints for one fiber of a twisted-pair stem, wound around
+    `axis` with radius R (= fiber diameter, so touching fibers) and
     user-specified pitch.
 
 elastica_loop(fiber_diameter_mm, loop_diameter_mm, youngs_modulus_gpa,
               loop_shape, n_points)
-    Solve the planar Kirchhoff/Euler elastica BVP for the loop fiber.
-    Returns Neville waypoints for the loop half-fiber (one strand, from
-    stem attachment point around the loop and back).
-
-Both functions return (N, 3) arrays of waypoints suitable for the 'tube'
-primitive's 'path' field in a scene YAML.
-
-Physics references
-------------------
-- Euler elastica: Antman, "Nonlinear Problems of Elasticity" (Springer 2005),
-  Chapter 4.
-- Kirchhoff rod: Love, "A Treatise on the Mathematical Theory of Elasticity"
-  (1927), §§ 258-272.
+    Neville waypoints for the loop fiber as a closed-form mirror-symmetric
+    ellipse (two half-strands sharing the stem attachment point and the
+    apex). fiber_diameter_mm and youngs_modulus_gpa are accepted for API
+    compatibility but unused; shape comes from the loop_shape aspect and
+    asymmetry presets.
 """
 
 import numpy as np
@@ -42,16 +35,16 @@ def helix_path(R, pitch, length, n_points=50, phase_offset=0.0,
 
     Parameters
     ----------
-    R            : float      — helix radius (mm); fibers touch when R = fiber_diameter
-    pitch        : float      — axial distance per full revolution (mm)
-    length       : float      — total stem length (mm)
-    n_points     : int        — number of waypoints
-    phase_offset : float      — initial azimuthal phase (radians); use π for fiber 2
-    axis         : (3,) array — unit vector along the stem/pin direction
+    R            : float      -- helix radius (mm); fibers touch when R = fiber_diameter
+    pitch        : float      -- axial distance per full revolution (mm)
+    length       : float      -- total stem length (mm)
+    n_points     : int        -- number of waypoints
+    phase_offset : float      -- initial azimuthal phase (radians); use π for fiber 2
+    axis         : (3,) array -- unit vector along the stem/pin direction
 
     Returns
     -------
-    pts : (n_points, 3) float array — waypoints in sample frame
+    pts : (n_points, 3) float array -- waypoints in sample frame
     """
     ax = np.asarray(axis, dtype=float)
     ax = ax / np.linalg.norm(ax)
@@ -73,7 +66,7 @@ def helix_path(R, pitch, length, n_points=50, phase_offset=0.0,
 
 
 # ---------------------------------------------------------------------------
-# Elastica BVP helper
+# Loop fiber: closed-form ellipse
 # ---------------------------------------------------------------------------
 
 def elastica_loop(fiber_diameter_mm, loop_diameter_mm, youngs_modulus_gpa=2.0,
@@ -84,13 +77,13 @@ def elastica_loop(fiber_diameter_mm, loop_diameter_mm, youngs_modulus_gpa=2.0,
     The loop is parameterised as two mirror-symmetric elliptical arcs (upper
     and lower strands) that share the stem attachment point at the origin and
     meet at the apex on the opposite side.  The ellipse is always C1-smooth at
-    both junctions by construction — no kink is possible.
+    both junctions by construction: no kink is possible.
 
     The shape presets control the X/Y aspect ratio of the ellipse:
 
-        'circular'  — perfect circle; a = b = loop_diameter/2
-        'oval'      — slightly taller than wide; a/b ≈ 0.85
-        'teardrop'  — more elongated; a/b ≈ 0.70
+        'circular'  -- perfect circle; a = b = loop_diameter/2
+        'oval'      -- slightly taller than wide; a/b ≈ 0.85
+        'teardrop'  -- more elongated; a/b ≈ 0.70
 
     In all cases the Y span is normalised to loop_diameter_mm so that the
     parameter matches the Hampton catalogue widest-opening convention.
@@ -101,22 +94,22 @@ def elastica_loop(fiber_diameter_mm, loop_diameter_mm, youngs_modulus_gpa=2.0,
 
     Parameters
     ----------
-    fiber_diameter_mm  : float — nylon fiber diameter (mm); unused in geometry
+    fiber_diameter_mm  : float -- nylon fiber diameter (mm); unused in geometry
                                  but retained for API compatibility
-    loop_diameter_mm   : float — widest Y span of the loop opening (mm)
-    youngs_modulus_gpa : float — unused (kept for API compatibility)
-    loop_shape         : str   — 'teardrop' | 'oval' | 'circular'
-    n_points           : int   — waypoints per half-strand (total = 2*n_points−1)
+    loop_diameter_mm   : float -- widest Y span of the loop opening (mm)
+    youngs_modulus_gpa : float -- unused (kept for API compatibility)
+    loop_shape         : str   -- 'teardrop' | 'oval' | 'circular'
+    n_points           : int   -- waypoints per half-strand (total = 2*n_points−1)
 
     Returns
     -------
-    pts : (2*n_points−1, 3) float array — closed loop waypoints in XY plane
+    pts : (2*n_points−1, 3) float array -- closed loop waypoints in XY plane
     """
     # Shape parameters:
-    #   aspect  — X half-axis / Y half-axis.
+    #   aspect  -- X half-axis / Y half-axis.
     #             < 1 → loop shallower than wide (flat oval)
     #             > 1 → loop deeper than wide (elongated teardrop)
-    #   c_asym  — second-harmonic coefficient for y(t) = sin(t) + c*sin(2t).
+    #   c_asym  -- second-harmonic coefficient for y(t) = sin(t) + c*sin(2t).
     #             c = 0  → symmetric ellipse, max-width at midpoint
     #             c < 0  → max-width shifted toward apex (teardrop shape)
     if loop_shape == "circular":

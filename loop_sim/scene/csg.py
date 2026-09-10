@@ -73,7 +73,7 @@ class Union:
         for child in self.children[1:]:
             te2, tx2, ne2, nx2 = child.ray_intersect(origins, dirs)
             # New interval = min(te, te2) … max(tx, tx2)
-            # (This merges overlapping intervals into their union — correct only
+            # (This merges overlapping intervals into their union -- correct only
             #  when the two intervals overlap.  For non-overlapping intervals this
             #  produces a slightly wrong merged interval; the scene-level code
             #  handles non-overlapping unions correctly.)
@@ -110,7 +110,7 @@ class Difference:
     through B with interval [tb_e, tb_x]:
 
         If B interval is entirely inside A:   result is two sub-intervals
-            (we return only the first one for simplicity — correct for
+            (we return only the first one for simplicity -- correct for
             crystal-out-of-solvent use cases where the crystal is always
             smaller than the solvent blob)
 

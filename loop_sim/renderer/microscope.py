@@ -141,7 +141,7 @@ def _trace_rays(scene, origins, dirs, na_obj, n_background=1.0,
     iteration as rays exit the scene or undergo TIR.  This avoids re-testing
     background rays (which exit immediately) on every subsequent bounce.
 
-    opt_axis_sample : (3,) array — optical axis in the sample frame.
+    opt_axis_sample : (3,) array -- optical axis in the sample frame.
         If None, falls back to scene.geometry['optical_axis'] (correct only
         when there is no sample rotation).  Pass this explicitly whenever the
         goniometer has non-zero rotation so the NA cutoff is evaluated in the
@@ -212,7 +212,7 @@ def _trace_rays(scene, origins, dirs, na_obj, n_background=1.0,
         # Advance origins to interface
         new_orig = o[h_g] + t_next[hit, None] * d[h_g]
 
-        # Snell's law — n2 from lookup table (mat_out_oi: -1=bg, oi=obj index)
+        # Snell's law -- n2 from lookup table (mat_out_oi: -1=bg, oi=obj index)
         n1 = mat_n_tab[oi_h]                         # (n_hit,)
         new_oi_shifted = mat_out_oi[hit] + 1         # shift: -1→0, oi→oi+1
         n2 = mat_n_tab[new_oi_shifted]               # (n_hit,)
@@ -249,16 +249,16 @@ def render(scene, goniometer, n_cond=1, jpeg_quality=85, psf=True):
     ----------
     scene      : Scene object (from scene.scene.load)
     goniometer : Goniometer object (current motor positions)
-    n_cond     : int — number of condenser illumination rays per pixel
-    jpeg_quality: int — JPEG compression quality
-    psf        : bool — convolve with the objective's diffraction PSF
+    n_cond     : int -- number of condenser illumination rays per pixel
+    jpeg_quality: int -- JPEG compression quality
+    psf        : bool -- convolve with the objective's diffraction PSF
                  (renderer/optics.py).  Off reproduces the pre-2026-08 purely
                  geometric output; the trace itself is identical either way.
 
     Returns
     -------
     img_array : (H, W, 3) float32 array, values in [0, 1]
-    jpeg_bytes : bytes — JPEG-encoded RGB image
+    jpeg_bytes : bytes -- JPEG-encoded RGB image
     """
     cam = scene.camera_cfg
     W = int(cam.get("width",  640))
@@ -288,7 +288,7 @@ def render(scene, goniometer, n_cond=1, jpeg_quality=85, psf=True):
     # Focal-plane points in sample frame (computed once; shared across condenser rays)
     focal_pts_s = apply_transform(T_inv, focal_pts)
 
-    # Optical axis in sample frame — needed for NA cutoff.
+    # Optical axis in sample frame -- needed for NA cutoff.
     # The camera is FIXED in the lab; only the sample rotates.  So the lab
     # optical axis transforms into the sample frame via T_inv's rotation part.
     opt_axis_s = T_inv[:3, :3] @ opt_axis
@@ -309,7 +309,7 @@ def render(scene, goniometer, n_cond=1, jpeg_quality=85, psf=True):
         # Origins: each condenser ray starts 50 mm upstream but is laterally
         # shifted so it converges on its pixel centre at the focal plane.
         # Without this shift, off-axis rays drift ~8 mm at the focal plane
-        # (50 mm × tan(9°)) and miss the loop entirely — the bug that caused
+        # (50 mm × tan(9°)) and miss the loop entirely -- the bug that caused
         # n_cond > 1 to produce a washed-out near-white image.
         t_up = 50.0 / max(abs(np.dot(illum_dir, opt_axis)), 1e-6)
         origins_s_k = focal_pts_s - t_up * illum_dir_s

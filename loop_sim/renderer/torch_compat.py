@@ -1,39 +1,12 @@
-"""Make `torch._dynamo` reachable before `engine_torch` is imported.
+"""Bind `torch._dynamo` before `engine_torch` is imported, or install a no-op stub.
 
-THE FAILURE THIS FIXES, observed on voltron 2026-08-13:
-
-    File "loop_sim/renderer/engine_torch.py", line 467, in TTube
-        @torch._dynamo.disable
-    AttributeError: module 'torch' has no attribute '_dynamo'
-
-`engine_torch` decorates two methods with `@torch._dynamo.disable`, and a
-decorator runs when the class body executes -- i.e. at IMPORT time, before any
-code has had a chance to import the submodule.  On torch 2.6 (the dev box) that
-works because `torch/__init__.py` binds `_dynamo` itself.  On torch 2.0.1 (the
-beamline's `/programs/pytorch/envs/pt`) it does not: `torch._dynamo` exists as a
-module but is only bound as an attribute once something does an explicit
-`import torch._dynamo`.  So the whole GPU path was unimportable on the
-deployment machine while being perfectly healthy in development -- the exact
-class of bug a first real deploy exists to find.
-
-WHY THIS IS A SEPARATE FILE, AND NOT A LINE IN `engine_torch.py`
-
-`engine_torch.py` is one of the five sources `frame_library._RENDER_SOURCES`
-hashes into `render_sha`, so editing it marks every frame library stale and
-re-arms the launch-path rebuild (7.5 h for the droplet scene) -- for a change
-that cannot alter a single pixel.  `renderer/` is enumerated file by file rather
-than globbed, so a new module here is outside the hash, the same reason
-`pin_projection.py` lives here.  `tests/test_frame_library.py` asserts both stay
-out.
-
-WHY NOT `loop_sim/__init__.py`, WHICH WOULD BE UNMISSABLE
-
-Because it would drag torch into the torch-free path.  Measured: `import torch`
-is 1.63 s, and `from loop_sim.scene.scene import load` currently leaves torch
-unimported entirely -- `requirements.txt` omits torch on purpose so the numpy
-reference renderer runs without it.  Paying 1.6 s and torch's memory on every
-CPU render, to fix a GPU-only import, is the wrong trade.  So this is called
-explicitly by the handful of places that are about to import `engine_torch`.
+Works around torch 2.0.1 (the beamline's `/programs/pytorch/envs/pt`), which
+does not bind `_dynamo` as a `torch` attribute until something explicitly
+imports it, so `engine_torch`'s `@torch._dynamo.disable` decorators raise
+`AttributeError` at import time.  Kept out of `engine_torch.py` because that
+file is hashed into `render_sha` (`frame_library._RENDER_SOURCES`) and a
+change here must not mark every frame library stale.  Call `ensure_dynamo()`
+before importing `engine_torch`.
 """
 
 

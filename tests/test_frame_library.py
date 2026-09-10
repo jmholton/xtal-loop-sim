@@ -1,23 +1,19 @@
-"""
-Tests for the pre-computed frame library: the template pipeline that serves
-every camera frame by transforming a rendered spindle sweep instead of
-raytracing.
+"""Tests for the pre-computed frame library: the template pipeline that
+serves every camera frame by transforming a rendered spindle sweep
+instead of raytracing.
 
-The load-bearing claims, and the test that guards each:
+The claims here, and the test that guards each:
 
-  * tracing is tile-independent            -> test_tile_independence*
-    (the whole bounded-VRAM strategy rests on this; without it, sizing the
-    tile to fit the card would change the pixels)
+  * tracing is tile-independent -> test_tile_independence*
+    (sizing the tile to fit the card must not change the pixels)
   * a template crop reproduces a live render -> test_template_matches_live*
-    (guards the phi coupling and the crop signs: the stage rides on the
-    spindle, so `ty` is lateral at phi=0 and along the view axis at phi=90)
+    (guards the phi coupling: `ty` is lateral at phi=0, along the view
+    axis at phi=90)
   * out-of-range requests are refused, not clamped -> test_*_raises
   * a library built with different parameters is stale -> test_is_current_*
 
-Building a library renders, so the heavier tests are CUDA-gated and use a
-coarse sweep in tmp_path rather than the committed frame_library/.
-
-Run:  pytest tests/test_frame_library.py -v
+Heavier tests are CUDA-gated and use a coarse sweep in tmp_path rather
+than the committed frame_library/.
 """
 import inspect
 import math
@@ -487,10 +483,10 @@ def test_render_sha_is_stable_and_content_sensitive(tmp_path):
 
 
 def test_a_manifest_built_by_another_renderer_is_stale_not_current(tmp_path):
-    """The hole this closes: `scene_sha256` catches a changed scene and the
-    other build keys catch changed settings, but until now a renderer edit
-    left the manifest reading `current` while the frames were traced by code
-    that no longer existed.
+    """The gap this closes: `scene_sha256` catches a changed scene and the
+    other build keys catch changed settings, but neither catches a
+    renderer edit that leaves the manifest reading `current` while the
+    frames were traced by code that no longer exists.
     """
     import json
     from loop_sim.library.frame_library import library_diff, render_sha
@@ -759,21 +755,16 @@ def test_template_cache_shrinks_rather_than_promising_memory_it_lacks():
 
 
 def test_the_cache_never_plans_more_than_the_ram_it_was_given():
-    """`plan_template_cache`'s one guarantee, tested against the guarantee.
+    """`plan_template_cache`'s one guarantee, tested against the guarantee:
+    it must under-promise, returning fewer frames than the RAM could hold
+    rather than more.  PIL decodes RGB into 4-byte-aligned RGBX, so a
+    decoded frame costs `w*h*4`, not `w*h*3` -- see docs/DECISIONS.md
+    2026-08-14 (decoded-template byte figures) for the measured figure.
 
-    It is documented to UNDER-promise -- to return fewer frames than the RAM
-    could hold rather than more.  With `w*h*3` it did the exact opposite: PIL
-    stores RGB as 4-byte-aligned RGBX, so a decoded frame costs at least
-    `w*h*4` (measured 4.22 B/px on real templates, 275.2 MB for 40 of them
-    against the 195.7 MB `w*h*3` predicts).  Every planned cache was therefore
-    a third larger than the budget it was computed from, and a 360-frame sweep
-    reported as 1.64 GiB actually occupied 2.31.
-
-    Checked arithmetically against a 4 B/px floor rather than by watching RSS:
-    an allocator-based check inside a shared test process is not a measurement,
-    because a previous test's freed arena can absorb the allocation and the
-    delta reads zero.  The empirical 4.22 figure is recorded in DECISIONS
-    2026-08-14; what has to hold FOREVER is the inequality below.
+    Checked arithmetically against a 4 B/px floor rather than by watching
+    RSS: an allocator-based check inside a shared test process is not a
+    measurement, because a previous test's freed arena can absorb the
+    allocation and the delta reads zero.
     """
     from loop_sim.server.camera_server import (_CACHE_RAM_FRACTION,
                                                _DECODED_BYTES_PER_PX,
@@ -891,10 +882,10 @@ def test_crop_margin_covers_the_readers_inward_rounding():
 def test_frames_complete_refuses_a_mismatched_library_both_ways():
     """The size check is the interlock between cropped and uncropped libraries.
 
-    It is the only gate that returns "missing", which genuinely refuses to
-    serve -- a merely stale library is served with a warning.  So it has to
-    catch a manifest claiming a crop over full-window frames AND full-window
-    frames under a manifest that declares none.
+    It is the only gate that returns "missing", the one verdict that
+    actually blocks serving; a merely stale library is served with a
+    warning.  It has to catch a manifest claiming a crop over full-window
+    frames, and full-window frames under a manifest that declares none.
     """
     from PIL import Image
     from loop_sim.library.frame_library import _frames_complete
@@ -1038,7 +1029,7 @@ def test_ensure_dynamo_binds_or_stubs_a_torch_that_lacks_it(monkeypatch):
     whole GPU path was unimportable on the deployment machine while healthy in
     development.
 
-    Driven against a FAKE torch rather than the real one: torch >= 2.1 serves
+    Driven against a fake torch rather than the real one: torch >= 2.1 serves
     `_dynamo` from a module-level `__getattr__`, so deleting the attribute does
     not reproduce 2.0.1, and mutating the real module risks leaving it broken
     for every test that runs after this one.

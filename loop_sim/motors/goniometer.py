@@ -3,11 +3,11 @@ Goniometer: converts motor positions to an SE(3) homogeneous transform.
 
 Motor parameters
 ----------------
-tx, ty, tz : float (mm)   — translations along user-defined axis vectors
-rotx       : float (deg)  — rotation about geometry['rotx_axis']
-roty       : float (deg)  — rotation about geometry['roty_axis']
-rotz       : float (deg)  — rotation about geometry['rotz_axis']
-zoom       : float (≥0)   — camera zoom multiplier (not part of SE(3))
+tx, ty, tz : float (mm)   -- translations along user-defined axis vectors
+rotx       : float (deg)  -- rotation about geometry['rotx_axis']
+roty       : float (deg)  -- rotation about geometry['roty_axis']
+rotz       : float (deg)  -- rotation about geometry['rotz_axis']
+zoom       : float (≥0)   -- camera zoom multiplier (not part of SE(3))
 
 The sample transform is:
     T = R_rotz · R_roty · R_rotx · T_trans
@@ -104,7 +104,7 @@ class Goniometer:
         return Rz @ Ry @ Rx @ T
 
     def transform_inv(self):
-        """Inverse of transform() — maps lab → sample frame."""
+        """Inverse of transform() -- maps lab → sample frame."""
         return np.linalg.inv(self.transform())
 
 

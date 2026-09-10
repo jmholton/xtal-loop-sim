@@ -5,9 +5,9 @@ plus a lightweight HTTP smoke test of the new endpoints.
 The animation + recenter math is factored into pure functions so it can be
 asserted exactly without a live render or GPU:
 
-  * resolve_target   — absolute / relative / screen-fraction-pan resolution
-  * move_duration    — FOV-crosses-in-2s, 360deg/s, speed-dial scaling
-  * recenter_target  — click-to-centre (exact 3-D, Δtrans = -R^T p_lab)
+  * resolve_target   -- absolute / relative / screen-fraction-pan resolution
+  * move_duration    -- FOV-crosses-in-2s, 360deg/s, speed-dial scaling
+  * recenter_target  -- click-to-centre (exact 3-D, Δtrans = -R^T p_lab)
 
 Run:  pytest tests/test_server_controls.py -v
 """
@@ -113,7 +113,8 @@ def test_resolve_pan_scales_with_zoom():
 # ---------------------------------------------------------------------------
 
 def test_translation_crosses_screen_in_four_seconds():
-    """Rates were halved on 2026-08-06: what needed the dial at 0.5x is 1.0x."""
+    """Pins the current rate constant; see docs/DECISIONS.md 2026-08-06
+    (stage speeds halved)."""
     target = dict(REST, tx=FOV_W)        # pan exactly one screen width
     assert move_duration(REST, target, 1.0, W, PX) == pytest.approx(4.0, rel=1e-9)
 
@@ -177,7 +178,7 @@ def test_recenter_horizontal_exact_under_rotx():
 
 
 # ---------------------------------------------------------------------------
-# HTTP smoke test (no rendering — only the lightweight control endpoints)
+# HTTP smoke test (no rendering -- only the lightweight control endpoints)
 # ---------------------------------------------------------------------------
 
 def _GET(port, path):
@@ -222,11 +223,11 @@ def test_control_endpoints_smoke():
 def test_preempted_animation_writes_nothing():
     """A superseded animation must not stamp its pose after losing the race.
 
-    The generation check and the goniometer write used to sit in separate
-    critical sections, so a preempt landing between them wrote the loser's
-    pose on top of the winner's -- a newer /move, an instant /motor, or (once
-    scenes can be switched) a pose belonging to a different scene entirely.
-    Both the step loop and the settle block are now gen-checked.
+    The generation check and the goniometer write must be inside the same
+    critical section: a gap between them would let a preempt land between
+    check and write, stamping the loser's pose on top of the winner's (a
+    newer /move, an instant /motor, or a different scene's pose entirely).
+    Both the step loop and the settle block are gen-checked.
     """
     scene = Scene([], GEOM, CAM, {}, background=AIR)
     srv = CameraServer(scene, host="127.0.0.1", port=0, engine="numpy")

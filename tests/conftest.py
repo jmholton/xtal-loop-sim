@@ -3,7 +3,7 @@
 `ensure_dynamo()` before anything imports `engine_torch`: on torch 2.0.1 (the
 beamline's pt env) `torch._dynamo` is not bound as an attribute, and
 `engine_torch` decorates two methods with `@torch._dynamo.disable` at class-body
-time, so the import fails outright.  The production entry points call it
+time, so the import fails outright.  The entry points (render.py, camera_server.py) call it
 themselves; this covers the test suite, which imports `engine_torch` directly in
 seven files.  Harmless on torch >= 2.1, where it is a `hasattr` check.
 """
