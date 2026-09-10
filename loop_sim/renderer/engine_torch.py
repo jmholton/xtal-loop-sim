@@ -1055,27 +1055,6 @@ def _mesh_survivor_chunk(faces, dev, vram_fraction=0.25):
     return max(1, min(fits, max(_MESH_CHUNK_MIN, fits)))
 
 
-def _mesh_face_count(shapes):
-    """Faces in the LARGEST mesh in a shape tree, or 0 if there is none.
-
-    The largest, not the total: _mt_batch broadcasts one mesh at a time, so peak
-    memory is set by the biggest F, not the sum. Walks CSG children because a
-    droplet reaches the renderer wrapped in Intersection/Difference nodes.
-    """
-    worst = 0
-    stack = list(shapes)
-    while stack:
-        s = stack.pop()
-        if isinstance(s, TSurfaceMesh):
-            worst = max(worst, int(s._v0.shape[0]))
-        stack.extend(getattr(s, "children", None) or [])
-        for attr in ("A", "B"):
-            child = getattr(s, attr, None)
-            if child is not None:
-                stack.append(child)
-    return worst
-
-
 def fit_tile_size(tscene, total_rays, vram_fraction=0.80):
     """Largest tile that fits in free VRAM, computed rather than measured.
 

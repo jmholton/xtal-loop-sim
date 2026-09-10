@@ -134,22 +134,6 @@ class Scene:
         self.background = background
 
     # ------------------------------------------------------------------
-    # Material at a point (for tracking current medium)
-    # ------------------------------------------------------------------
-
-    def material_at(self, point):
-        """Return the highest-priority material containing `point`."""
-        p = np.asarray(point, dtype=float)
-        for obj in self.objects:
-            # Use a very short ray in an arbitrary direction to test containment
-            o = p[None, :]
-            d = np.array([[0., 0., 1.]])
-            te, tx, _, _ = obj.shape.ray_intersect(o, d)
-            if te[0] < 0.0 < tx[0]:   # origin is inside
-                return obj.material
-        return self.background
-
-    # ------------------------------------------------------------------
     # next_interface: closest t > t_min where material changes
     # ------------------------------------------------------------------
 
@@ -224,49 +208,6 @@ class Scene:
             best_n[tube_hit] = new_n[tube_hit]
 
         return best_t, best_n, mat_out_oi
-
-    def _material_at_point(self, point):
-        """Scalar version: material at a single 3-D point."""
-        o = point[None, :]
-        d = np.zeros((1, 3)); d[0, 2] = 1.0
-        for obj in self.objects:
-            te, tx, _, _ = obj.shape.ray_intersect(o, d)
-            if te[0] < 0.0 < tx[0]:
-                return obj.material
-        return self.background
-
-    def _obj_index_at_points_batch(self, points):
-        """
-        Vectorized containment probe: returns (M,) int array.
-
-        For each point, returns the index into self.objects of the
-        highest-priority object containing the point (-1 = background).
-        Uses a probe ray along +Z: inside iff te < 0 < tx.
-        """
-        M = len(points)
-        probe_d = np.zeros((M, 3))
-        probe_d[:, 2] = 1.0
-        result_idx = np.full(M, -1, dtype=np.intp)
-
-        for oi, obj in enumerate(self.objects):
-            te, tx, _, _ = obj.shape.ray_intersect(points, probe_d)
-            inside = (te < 0.0) & (tx > 0.0) & (result_idx == -1)
-            result_idx[inside] = oi
-            if np.all(result_idx >= 0):
-                break
-
-        return result_idx
-
-    def _material_at_points_batch(self, points):
-        """
-        Vectorized material probe: returns list[Material] of length len(points).
-
-        For each point, returns the highest-priority material whose shape
-        contains that point (te < 0 < tx for a probe ray along +Z).
-        """
-        idx = self._obj_index_at_points_batch(points)
-        return [self.objects[i].material if i >= 0 else self.background
-                for i in idx]
 
     # ------------------------------------------------------------------
     # path traversal → ordered segments / per-material totals per ray

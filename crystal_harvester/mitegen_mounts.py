@@ -26,7 +26,7 @@ Usage
         yaml.dump(scene_dict, f)
 """
 
-from typing import List, Optional
+from typing import Optional
 import numpy as np
 
 from .crystal_shapes import make_crystal
@@ -132,9 +132,6 @@ for _ap in [100, 200, 400, 600, 800, 1000]:
         sag_mm        = 0.005,
         description   = f"MiTeGen Micromount teardrop {_ap} µm",
     )
-
-# Aliases
-_MODELS["M2-L18SP-10"]  = _MODELS["M2-L18SP-10"] if "M2-L18SP-10" in _MODELS else _MODELS["M2-L18SP-20"]
 
 
 # ---------------------------------------------------------------------------

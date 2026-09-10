@@ -26,8 +26,6 @@ Physics references
 """
 
 import numpy as np
-from scipy.integrate import solve_ivp
-from scipy.optimize import brentq
 
 
 # ---------------------------------------------------------------------------
@@ -77,54 +75,6 @@ def helix_path(R, pitch, length, n_points=50, phase_offset=0.0,
 # ---------------------------------------------------------------------------
 # Elastica BVP helper
 # ---------------------------------------------------------------------------
-
-def _elastica_rhs(s, state):
-    """
-    ODE right-hand side for planar Euler elastica.
-
-    State: [x, y, theta, kappa]
-    where theta = tangent angle, kappa = curvature = d(theta)/ds.
-
-    No external forces: kappa is constant (free elastica → circular arc
-    or straight).  With end-load F along X: kappa' = -F * sin(theta) / EI.
-
-    We use the moment-free BVP (closed loop, no end force on the loop itself):
-        kappa'(s) = 0  → kappa = const  → circular arc
-    But for a teardrop (non-uniform curvature), we impose an end-force
-    along the loop-closure direction.
-
-    This simplified version uses a constant kappa for each half-loop and
-    matches boundary conditions via shooting.  For higher accuracy use
-    scipy.solve_bvp.
-    """
-    x, y, theta, kappa = state
-    return [
-        np.cos(theta),
-        np.sin(theta),
-        kappa,
-        0.0,    # free elastica: kappa = const
-    ]
-
-
-def _integrate_halfloop(arc_length, kappa0, theta0):
-    """
-    Integrate planar elastica from s=0 to s=arc_length.
-
-    Returns (x_end, y_end, theta_end) and the full trajectory.
-    """
-    state0 = [0.0, 0.0, theta0, kappa0]
-    sol = solve_ivp(
-        _elastica_rhs,
-        [0.0, arc_length],
-        state0,
-        method="RK45",
-        dense_output=True,
-        max_step=arc_length / 200,
-        rtol=1e-8,
-        atol=1e-10,
-    )
-    return sol
-
 
 def elastica_loop(fiber_diameter_mm, loop_diameter_mm, youngs_modulus_gpa=2.0,
                   loop_shape="teardrop", n_points=40):
@@ -203,31 +153,3 @@ def elastica_loop(fiber_diameter_mm, loop_diameter_mm, youngs_modulus_gpa=2.0,
         pts_3d = pts_3d * (loop_diameter_mm / y_span)
 
     return pts_3d
-
-
-# ---------------------------------------------------------------------------
-# Fiber tangent helper
-# ---------------------------------------------------------------------------
-
-def fiber_tangents(waypoints):
-    """
-    Compute unit tangent vectors at each waypoint using finite differences.
-
-    Parameters
-    ----------
-    waypoints : (N, 3) array
-
-    Returns
-    -------
-    tangents : (N, 3) unit vectors
-    """
-    pts = np.asarray(waypoints, dtype=float)
-    N = len(pts)
-    tangents = np.zeros_like(pts)
-    # Central differences for interior, forward/backward at ends
-    tangents[1:-1] = pts[2:] - pts[:-2]
-    tangents[0]    = pts[1] - pts[0]
-    tangents[-1]   = pts[-1] - pts[-2]
-    norms = np.linalg.norm(tangents, axis=1, keepdims=True)
-    norms[norms < 1e-30] = 1.0
-    return tangents / norms

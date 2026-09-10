@@ -53,9 +53,6 @@ import json
 import numpy as np
 
 from ..motors.goniometer import apply_transform, apply_transform_dirs
-from ..scene.tube        import Tube
-
-_INF = np.inf
 
 
 # ---------------------------------------------------------------------------

@@ -124,8 +124,7 @@ VIGNETTE = (1.09472, -0.02534, +0.05636, +0.02100, -0.00112, -0.30397)
 # "background" to mean brighter than the 60th percentile, which clips the dark
 # half of every cloud and biases the spread down; the mask now dilates the dark
 # body instead and reads 3.38 / 3.48 / 3.92%.
-MOTTLE = 0.0435        # raw fBm amplitude, SOLVED for MOTTLE_RESIDUAL below
-MOTTLE_RESIDUAL = 0.036  # what it must LEAVE after a quadratic is re-fitted
+MOTTLE = 0.0435        # raw fBm amplitude, solved so 0.036 survives a quadratic re-fit
 MOTTLE_UV = 0.80        # coarsest octave, in u-units (u spans 2.0 across w)
 MOTTLE_OCTAVES = 6
 # 0.90, not the textbook 0.5.  Real background energy is nearly FLAT across

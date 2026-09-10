@@ -31,7 +31,6 @@ import numpy as np
 import matplotlib
 matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
-from matplotlib.patches import Circle
 from PIL import Image
 import yaml
 

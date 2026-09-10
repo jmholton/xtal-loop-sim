@@ -29,8 +29,7 @@ import io
 import numpy as np
 from PIL import Image
 
-from ..motors.goniometer import apply_transform, apply_transform_dirs
-from ..scene.materials   import AIR
+from ..motors.goniometer import apply_transform
 from .optics             import apply_psf_for
 
 _INF = np.inf

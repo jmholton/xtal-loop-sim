@@ -57,7 +57,7 @@ import numpy as np
 from .frame_library import (
     CPU_BUILD_REFUSAL, DEFAULT_PAN_MM, DEFAULT_STEP_DEG, DEFAULT_SUPERSAMPLE,
     MAX_TEMPLATE_MPX, PNG_COMPRESS_LEVEL, _round_up_to_parity, _sha_over,
-    _write_manifest, content_bbox, crop_margin_px, crop_to_content,
+    _write_manifest, crop_margin_px, crop_to_content,
     cuda_available, frame_for_angle, library_dir, load_manifest, plan_window,
     pose_crop, scene_fingerprint, servable_pose, zoom_limits,
 )

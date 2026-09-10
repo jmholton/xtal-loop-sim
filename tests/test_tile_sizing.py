@@ -34,8 +34,8 @@ if REPO_ROOT not in sys.path:
 torch = pytest.importorskip("torch")
 
 from loop_sim.renderer import engine_torch as et
-from loop_sim.renderer.engine_torch import (TIntersection, TSurfaceMesh,
-                                            _mesh_face_count, fit_tile_size)
+from loop_sim.renderer.engine_torch import (TSurfaceMesh,
+                                            fit_tile_size)
 
 cuda_only = pytest.mark.skipif(not torch.cuda.is_available(),
                                reason="CUDA not available")
@@ -52,27 +52,6 @@ class _FakeScene:
     """Just enough TorchScene for the sizing helpers: a device and shapes."""
     def __init__(self, shapes, dev):
         self.shapes, self.dev, self.dt = shapes, dev, torch.float64
-
-
-def test_mesh_face_count_finds_the_largest_mesh():
-    dev = torch.device("cpu")
-    shapes = [_mesh(10, dev), _mesh(70, dev), _mesh(30, dev)]
-    assert _mesh_face_count(shapes) == 70, "must take the max, not the sum"
-
-
-def test_mesh_face_count_walks_csg_children():
-    """A droplet reaches the renderer wrapped in CSG nodes, not bare.
-
-    Missing it there would report 0 faces and hand back the flat default --
-    exactly the OOM this sizing exists to prevent, and silently.
-    """
-    dev = torch.device("cpu")
-    nested = TIntersection([TIntersection([_mesh(2880, dev)])])
-    assert _mesh_face_count([nested]) == 2880
-
-
-def test_mesh_face_count_is_zero_without_a_mesh():
-    assert _mesh_face_count([]) == 0
 
 
 @cuda_only

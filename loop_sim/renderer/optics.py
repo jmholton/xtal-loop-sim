@@ -24,7 +24,6 @@ to the byte-identity guarantee.
 documented as working without PyTorch), which is the other reason the shared
 implementation lives here in numpy rather than in the torch engine.
 """
-import numpy as np
 from scipy.ndimage import gaussian_filter
 
 # Illumination wavelength, mm.  550 nm -- green, the eye's peak sensitivity and

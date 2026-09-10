@@ -23,12 +23,6 @@ import numpy as np
 _INF = np.inf
 
 
-def _no_hit(N):
-    inf = np.full(N, _INF)
-    zero = np.zeros((N, 3))
-    return inf, inf, zero, zero
-
-
 # ---------------------------------------------------------------------------
 # Sphere
 # ---------------------------------------------------------------------------
@@ -417,9 +411,6 @@ class Capsule:
                     # Only use this if on the correct hemisphere
                     pts = origins[cap_hit] + tc[:, None] * dirs[cap_hit]
                     proj = (pts - p0) @ ax
-                    on_cap = (cap_sign * (proj - L / 2.0 - L / 2.0) >= 0.0) if cap_sign == 1 \
-                             else (proj <= 0.0)
-                    # Simpler: cap0 when proj <= 0, cap1 when proj >= L
                     if cap_sign == -1:
                         on_cap = proj <= 0.0
                     else:

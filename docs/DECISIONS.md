@@ -2045,6 +2045,14 @@ numbers, not just the renderer.
 
 ## Already Tried
 
+### probe-ray material lookup after an interface (`_obj_index_at_points_batch`)
+
+The original `next_interface` found the material a ray enters by casting a probe
+ray from a point just past the hit. Probe-point ambiguity made it wrong on ~50% of
+crossings; the interval check on the already-computed `all_te`/`all_tx` (CLAUDE.md
+"Material-after-interface") replaced it. The probe-ray methods sat unused until
+2026-09-10, when they were deleted as dead code. Do not reintroduce them.
+
 ### df64 / "two float32s to emulate float64" (Dekker double-float)
 
 Investigated 2026-08-11 against the sibling repo `nanoBragg`, which implements

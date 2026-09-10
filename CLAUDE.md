@@ -280,8 +280,9 @@ inside  = (te_m < t_probe) & (t_probe < tx_m)
 mat_out_oi = first object whose interval contains t_probe, else -1
 ```
 
-**Do not** revert to `_obj_index_at_points_batch` probe rays — that was the
-original broken path (50% failure from probe-point ambiguity).
+**Do not** revert to probe-ray material lookup (the `_obj_index_at_points_batch`
+family, deleted 2026-09-10 as dead code) — that was the original broken path
+(50% failure from probe-point ambiguity).
 
 ## Comparison workflow
 

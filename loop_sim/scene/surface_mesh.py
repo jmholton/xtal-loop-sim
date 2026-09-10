@@ -30,22 +30,15 @@ class SurfaceMesh:
     ----------
     vertices : array-like, shape (V, 3)
     faces    : array-like, shape (F, 3) — integer indices into vertices
-    use_grid : bool
-        Build a uniform spatial grid for faster intersection.  Recommended
-        for meshes with > 500 triangles.  Ignored when device is CUDA
-        (the GPU batch handles all triangles at once).
     device : str
         'cpu' (default, numpy) or 'cuda' (PyTorch GPU).
     """
 
-    def __init__(self, vertices, faces, use_grid=True, device='cpu'):
+    def __init__(self, vertices, faces, device='cpu'):
         self.vertices = np.asarray(vertices, dtype=float)
         self.faces    = np.asarray(faces,    dtype=int)
         self._device  = device
         self._precompute()
-        self._grid = None
-        if device == 'cpu' and use_grid and len(self.faces) > 200:
-            self._build_grid()
 
     def _precompute(self):
         v0 = self.vertices[self.faces[:, 0]]   # (F, 3)
@@ -72,75 +65,6 @@ class SurfaceMesh:
             self._e1_t = _t(self._e1)
             self._e2_t = _t(self._e2)
             self._fn_t = _t(self._face_normals)
-
-    def _build_grid(self, n_cells=20):
-        """Build a uniform grid; store per-cell triangle lists."""
-        lo = self.vertices.min(axis=0) - 1e-6
-        hi = self.vertices.max(axis=0) + 1e-6
-        self._grid_lo = lo
-        self._grid_hi = hi
-        self._grid_n  = n_cells
-        cell_size = (hi - lo) / n_cells
-        self._grid_cell = cell_size
-
-        from collections import defaultdict
-        grid = defaultdict(list)
-        tri_lo = np.minimum(self._v0, np.minimum(self._v0 + self._e1,
-                                                  self._v0 + self._e2))
-        tri_hi = np.maximum(self._v0, np.maximum(self._v0 + self._e1,
-                                                  self._v0 + self._e2))
-        for fi in range(len(self.faces)):
-            i0 = np.floor((tri_lo[fi] - lo) / cell_size).astype(int).clip(0, n_cells - 1)
-            i1 = np.floor((tri_hi[fi] - lo) / cell_size).astype(int).clip(0, n_cells - 1)
-            for ix in range(i0[0], i1[0] + 1):
-                for iy in range(i0[1], i1[1] + 1):
-                    for iz in range(i0[2], i1[2] + 1):
-                        grid[(ix, iy, iz)].append(fi)
-        self._grid = {k: np.array(v) for k, v in grid.items()}
-
-    # ------------------------------------------------------------------
-    # Core intersection: one ray against all (or subset of) triangles
-    # ------------------------------------------------------------------
-
-    def _intersect_ray_triangles(self, origin, direction, face_indices=None):
-        """
-        Möller-Trumbore: one ray against a set of triangles.
-        Returns sorted (t, face_idx) array of all hits.
-        """
-        if face_indices is None:
-            v0 = self._v0
-            e1 = self._e1
-            e2 = self._e2
-            fi = np.arange(len(self.faces))
-        else:
-            fi = face_indices
-            v0 = self._v0[fi]
-            e1 = self._e1[fi]
-            e2 = self._e2[fi]
-
-        h = np.cross(direction, e2)             # (F, 3)
-        a = np.einsum("fj,fj->f", e1, h)        # (F,)
-        parallel = np.abs(a) < _EPS
-        inv_a = np.where(parallel, 0.0, 1.0 / np.where(parallel, 1.0, a))
-
-        s = origin - v0                          # (F, 3)
-        u = inv_a * np.einsum("fj,fj->f", s, h)
-        miss = parallel | (u < 0.0) | (u > 1.0)
-
-        q = np.cross(s, e1)
-        v = inv_a * np.einsum("j,fj->f", direction, q)
-        miss |= (v < 0.0) | (u + v > 1.0)
-
-        t = inv_a * np.einsum("fj,fj->f", e2, q)
-        miss |= (t < _EPS)
-
-        hits = ~miss
-        if not np.any(hits):
-            return np.empty(0), np.empty(0, int)
-        t_hit = t[hits]
-        fi_hit = fi[hits]
-        order = np.argsort(t_hit)
-        return t_hit[order], fi_hit[order]
 
     # ------------------------------------------------------------------
     # GPU batch: Möller-Trumbore on CUDA via PyTorch
@@ -369,7 +293,3 @@ class SurfaceMesh:
         n_exit[v_g] = np.where(cos_x[:, None] > 0, fn_x, -fn_x)
 
         return t_enter, t_exit, n_enter, n_exit
-
-    @property
-    def bounding_box(self):
-        return self._bbox_lo, self._bbox_hi
