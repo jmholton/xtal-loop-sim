@@ -7,7 +7,7 @@
 #SBATCH --output=slurm_%j.log
 
 PT=/programs/pytorch/envs/pt/bin/python
-cd "$(dirname "$0")"
+cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")}"
 
 echo "=== Node: $SLURMD_NODENAME  GPU: $CUDA_VISIBLE_DEVICES ===" >&2
 
