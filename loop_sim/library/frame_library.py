@@ -1,7 +1,7 @@
 """Pre-computed frame library: a rotation sweep rendered once and replayed.
 
 The camera is orthographic, so the spindle is the only motor that changes
-image content. A library is a directory of PNG frames around a measured
+image content. A library is a directory of PNG (or JPEG) frames around a measured
 render window, one per spindle angle, plus a manifest.json recording the
 scene's SHA-256, the build parameters, and each frame's file name and crop
 offset/size. `library_status` reads a library as `current` (matches the

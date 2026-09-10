@@ -17,8 +17,9 @@ Verify: `python -m pytest tests/ -q` from the repo root. GPU tests skip on CPU-o
 - Material `color` is an absorption spectrum, not just display RGB.
 - `loop_sim/library/frame_library.py`'s `_RENDER_SOURCES` hashes `renderer/microscope.py`,
   `engine_torch.py`, `optics.py`, `motors/goniometer.py`, and `scene/*.py` into `render_sha`.
-  An edit to any of them grades all six shipped libraries stale, and a bare server launch
-  rebuilds them. Re-stamp the manifests only after proving pixels unchanged.
+  An edit to any of them grades the three optical libraries stale, and a bare server
+  launch rebuilds them. The X-ray libraries hash their own list (`xray_torch.py`,
+  `engine_torch.py`, `beam.py`, `scene/*.py`, `motors/goniometer.py`). Re-stamp the manifests only after proving pixels unchanged.
 - `renderer/` is enumerated file by file and `scene/*.py` is globbed. A new module that
   changes template pixels must be added to `_RENDER_SOURCES` by name or its edits never
   grade a library stale; a serve-time module (`field.py`, `pin_projection.py`,

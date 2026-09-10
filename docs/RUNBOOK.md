@@ -300,7 +300,7 @@ the per-scene build times).
 |---|---|---|
 | `<scene.yaml>` | none | scene to render (positional) |
 | `--tx` `--ty` | from the scene's `motor:` block | stage translation, mm. The CLI overrides the YAML; there is no `--tz` here |
-| `--rotx` `--roty` `--rotz` | 0 | rotation, degrees; `rotx` is the spindle for the bundled scenes |
+| `--rotx` `--roty` `--rotz` | from the scene's `motor:` block, else 0 | rotation, degrees; `rotx` is the spindle for the bundled scenes |
 | `--n-cond` | 1 | condenser angles per pixel; 7 = soft NA edges, >7 buys little |
 | `--device` | `cpu` | `cuda` runs the GPU-resident engine (`engine_torch`), same one the camera server uses; falls back to CPU with no CUDA visible |
 | `--output` | `<scene_basename>.jpg` | output JPEG path |
@@ -326,6 +326,7 @@ server, whose `/motor` endpoint takes all seven axes.
 | `--mono` | `off` | `on` collapses to grey before the camera stage. Colour here is an absorption spectrum, so a scene declaring a crystal `[0.7,0.9,1.0]` renders it blue, and `--mono on` masks that. To strip colour at the scene level instead, set `colour: [1,1,1]` with the absorption in `mu_optical`, which *rebuilds every library*. Ignored when `--camera-emulation off` |
 | `--pin-streak` | `on` | draw the specular glint a real machined pin carries along its shank, projected from the scene (`renderer/pin_projection.py`) through the current pose, exact at any zoom, crop or angle, absent when the pin is out of view. Only objects the code declares shiny get one (`SHINY`: `pin`+`metal`), so `mitegen_200um` never does. Ignored when `--camera-emulation off` |
 | `--sensor-pitch` | `on` | deliver on the real camera's **704×480** raster. BL831 pixels are 1.11 non-square and the tracer's are square, so a consumer applying dcss's µm-per-pixel constant to a 640-wide render reads 10% wide. `off` serves the render's own square pixels. Template path resamples in PIL, not `field.to_sensor` (6.7 → 1.3 ms, agrees to 1 level) |
+| `--prewarm` | `on` | decode the whole library into the template cache before the socket binds (a few seconds); `off` fills the cache lazily |
 | `--template-cache` | `auto` | decoded templates held in RAM. `auto` takes as much of the library as half of available memory allows; `off` caps at 8 frames; an integer pins the count. **All-or-nothing per sweep**: if the host cannot hold a full revolution, `auto` **declines** rather than half-filling: LRU against a cyclic sweep evicts each frame just before it comes round again, so a partial cache is worth zero rather than a share |
 | `--supersample` | builder default (4) | *rebuilds library* |
 | `--template-format` | builder default (`png`) | *rebuilds library* |
@@ -339,7 +340,7 @@ server, whose `/motor` endpoint takes all seven axes.
 
 | Flag | Default | Effect |
 |---|---|---|
-| `--modality` | `optical` | `xray` builds the radiograph library instead; see "X-ray radiograph library" above. Every flag past this row is optical-only and ignored: with `--modality xray`, only `--scene`/`--all`, `--root`, `--step`, `--supersample`, `--pan-mm`, `--axis`, `--device`, `--force` apply (no `--n-cond`/`--format`/`--psf`/`--quality`) |
+| `--modality` | `optical` | `xray` builds the radiograph library instead; see "X-ray radiograph library" above. Every flag past this row is optical-only and ignored: with `--modality xray`, only `--scene`/`--all`, `--root`, `--step`, `--supersample`, `--pan-mm`, `--axis`, `--device`, `--force`, `--allow-cpu` apply (no `--n-cond`/`--format`/`--psf`/`--quality`) |
 | `--scene` / `--all` | none | one scene, or every `scene_files/*.yaml` |
 | `--root` | `frame_library/` | output directory |
 | `--step` | 1.0° | degrees between frames → 360 frames. *rebuilds library* |
@@ -355,6 +356,7 @@ server, whose `/motor` endpoint takes all seven axes.
 | `--device` | auto | `cuda` when available |
 | `--force` | off | rebuild even if current |
 | `--preview` | off | build the same coarse library the camera server builds on demand (5° steps, 1× supersample, n_cond 1 → 72 frames) into `frame_library_preview/`. Minutes instead of ~45 min; zoom capped at 1× |
+| `--recrop` | off | migrate an existing full-window library to content-only storage in place, no GPU, ~2.5 min per sweep |
 | `--allow-cpu` | off | permit a build with no CUDA. Without it a CPU build is **refused**: ~179 s/frame is ~3.6 h for a preview and ~18 h for a full library. `--device cpu` needs this flag too |
 
 ### Scene YAML `camera:` block
@@ -539,7 +541,7 @@ Operational notes:
 
 - **~1-2 min compile warmup** at server start: Inductor compiles the preview kernels once.
 - **A build sizes itself to free VRAM and refuses rather than OOMing** (the preflight under
-  "Frame libraries"); the droplet scene fits a 12 GB card (DECISIONS §2026-08-13 12 GB).
+  "Frame libraries"); the droplet scene fits a 12 GB card (DECISIONS §2026-08-11 VRAM budget).
 - **Pin `CUDA_VISIBLE_DEVICES` to a free GPU**: a busy card OOMs the mesh scene on arrival.
 - If a run fails at *import* with `GLIBCXX...not found` (not a compile error), wrap the
   command in `scl enable devtoolset-7 "<command>"` so the runtime libraries match.

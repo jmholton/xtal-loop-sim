@@ -68,7 +68,7 @@ def make_pin(diameter_mm, length_mm, bevel_angle_deg=45.0, bevel_offset_mm=0.3,
     # lengthwise and leaves a half-pin staring up-beam.  Everything from ~78.6
     # up also pushes the stem's glue joint outside the metal (the stem is run
     # deliberately past the tip so it emerges from the score face); the guard
-    # below rejects that range.
+    # below rejects everything at or above _BEVEL_MAX_DEG, the top of that range.
     if not (0.0 <= float(bevel_angle_deg) < _BEVEL_MAX_DEG):
         raise ValueError(
             f"bevel_angle_deg={bevel_angle_deg} is outside [0, {_BEVEL_MAX_DEG}); "

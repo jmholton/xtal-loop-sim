@@ -31,7 +31,7 @@ libraries (`hampton_300um`, `hampton_300um_realistic`, `mitegen_200um`) are curr
 ~37 MB total (DATA.md). Both the optical and X-ray template caches pre-warm at boot and
 on scene switch, and the viewer clears the 10 fps goal on all three candidate beamline
 hosts: dataserver3 33.9 fps, voltron 30.0, gateway 27.7. See DECISIONS §2026-08-14
-templates.
+three beamline hosts.
 
 **Realism.** Frames render at the real camera's 704x480 raster; BL831 pixels are 1.110
 non-square, so the scene itself stays square-pixel and `field.to_sensor` resamples at

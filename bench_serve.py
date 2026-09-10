@@ -154,8 +154,8 @@ def _stage_split(src, angles):  # noqa: C901
         delivered = tuple(src.sensor) if src.sensor else out_size
         pin = src._pin(float(ang), box, delivered, sensor=None)
 
-        # The sensor stretch is charged to the CAMERA stage, because that is
-        # where `field.to_sensor` does the same work inside encode_frame.
+        # The sensor stretch is charged to the CAMERA stage: on the live-render
+        # path `field.to_sensor` does the same work inside encode_frame.
         t0 = time.perf_counter()
         img = (src._sensor_stretch(crop_im) if src.sensor
                else np.asarray(crop_im, dtype=np.float64) / 255.0)

@@ -235,8 +235,8 @@ def to_sensor(img, size=SENSOR_WH):
 #
 # Constants were measured off two reference frames at the mid zoom stop
 # (`real_images/A01_nylonloop_pinleft_mid.jpg`,
-# `E02_digitize_source_mid.jpg`); see docs/DECISIONS.md 2026-08-11 the glint
-# met an operator.  `gain` sits deliberately near the quiet end of the
+# `E02_digitize_source_mid.jpg`); see docs/DECISIONS.md 2026-08-10 the pin's
+# specular streak.  `gain` sits deliberately near the quiet end of the
 # measured range: a blown-out glint on an otherwise flat pin reads worse than
 # no glint at all.  Not modelled: a bright rim at the pin's far edge (edge
 # diffraction plus the cylinder's grazing return) -- a second term, and much
