@@ -1,4 +1,4 @@
-# RUNBOOK — loop-sim (xtal-loop-sim)
+# RUNBOOK: loop-sim (xtal-loop-sim)
 
 Environment → run → verify → deploy → rollback. `../README.md` is the user guide (full
 pipeline, every CLI flag, all HTTP endpoints); this file is the from-nothing path and the
@@ -6,14 +6,14 @@ operational detail the README leaves out. Paths are relative to the repo root.
 
 ## Environment (from nothing)
 
-**On the beamline, the interpreter already exists — use it:**
+**On the beamline, the interpreter already exists. Use it:**
 
 ```
 /programs/pytorch/envs/pt/bin/python
 ```
 
 It carries numpy, scipy, PIL, pyyaml, and PyTorch+CUDA. **Do not use `python3` or
-`/usr/bin/python3`** — the system Python is 3.6, root-owned, and has none of the required
+`/usr/bin/python3`**: the system Python is 3.6, root-owned, and has none of the required
 packages. Every command below spells this as `$PY`:
 
 ```bash
@@ -32,7 +32,7 @@ pip install pytest                    # for the verify command; not in requireme
 PY=$(conda run -n loopsim which python)   # or the env's python path directly
 ```
 
-`requirements.txt` deliberately omits torch — the CPU reference path (`--device cpu`)
+`requirements.txt` deliberately omits torch: the CPU reference path (`--device cpu`)
 runs without it, and the right torch build is site-specific. Confirm the GPU is visible:
 
 ```bash
@@ -47,7 +47,7 @@ There are no environment variables to set and no `.env`.
 # Render a bundled scene (tube-based; this is the one that exercises the GPU path)
 $PY render.py scene_files/hampton_300um.yaml --n-cond 7 --output /tmp/out.jpg
 
-# Same on the GPU (legacy per-object CUDA path)
+# Same on the GPU (GPU-resident engine, engine_torch.py)
 $PY render.py scene_files/hampton_300um.yaml --n-cond 7 --device cuda --output /tmp/out.jpg
 
 # Rotate about the spindle (rotx for the bundled scenes) / translate
@@ -60,19 +60,17 @@ $PY -m loop_sim.server.camera_server --scene scene_files/hampton_300um.yaml --po
 
 Then open `http://<host>:8080/` for the control page, or point an AXIS consumer at
 `http://<host>:8080/axis-cgi/mjpg/video.cgi`. `../README.md` documents every flag and
-endpoint; `../CLAUDE.md` explains the animation/concurrency model.
+endpoint; `loop_sim/server/camera_server.py`'s docstrings explain the animation and concurrency model.
 
 Notes that save time:
 
-- **`scene.yaml` / `loop.yaml` are gitignored and not shipped.** A fresh clone has no
-  `scene.yaml`, so the README's `render.py scene.yaml` quick-start needs one built first
-  (README "Full pipeline") — or just render a complete bundled scene from `scene_files/`.
-- **Only tube/mesh scenes have a CUDA path.** `hampton_300um.yaml` (tubes) exercises it.
-  `mitegen_200um.yaml` is subtler than this runbook previously claimed: its `micromount` is
-  a `ThinShell` wrapping an internal `SurfaceMesh`, so the **torch engine** does run the
-  mesh path on it, but `render.py`'s legacy path never hands the shell a device, so there
-  `--device cuda` really is a no-op and CPU/GPU agreement is byte-identical by construction
-  rather than evidence the GPU ran. See docs/HANDOFF.md "Other traps".
+- **`scene.yaml` / `loop.yaml` are pipeline outputs, gitignored and not shipped.** The
+  three scenes in `scene_files/` are complete; build your own with the README's "Full
+  pipeline".
+- **`--device cuda` runs the GPU-resident engine** (`engine_torch.py`), the same one the
+  camera server uses. `render.py` builds a `TorchScene` and calls `render_torch` for any
+  bundled scene, tube or mesh, not just `hampton_300um`. Falls back to CPU when no CUDA
+  device is visible.
 - Run from the repo root.
 - Which motor is the spindle is scene-dependent: `rotx` for the bundled scenes.
 
@@ -80,7 +78,7 @@ Notes that save time:
 
 A frame library is a full 360° spindle sweep rendered once and replayed, so the camera
 responds instantly and nothing is rendered at request time. Libraries are **tracked in
-git** — they are part of the deliverable, not build output — and live in
+git** (part of the deliverable, not build output) and live in
 `frame_library/<scene_stem>/` alongside a `manifest.json`.
 
 ```bash
@@ -98,121 +96,48 @@ centred field of view, default 0.6), `--axis` (spindle motor, default `rotx`), `
 `--tile-size` (default `auto`), `--vram-fraction` (default 0.80), `--device`.
 Every lever, with defaults and what it costs, is tabulated under "Every lever" below.
 
-> **`hampton_300um_realistic` was rebuilt 2026-08-11** for slice 3 (neutral
-> crystal, flat pin tip, half-maximum drop): 360 frames, 1396x644, supersample 1,
-> **2.1 MB**, 8.06 h at 80.6 s/frame, verified against a live f64 render at phi=30
-> to **0,0 px registration, mean |diff| 0.00056, 99.1% of pixels identical**.
-> All three libraries read `current` (re-measured 2026-08-11).
->
-> **SUPERSEDED 2026-08-11 by the mesh AABB cull -- `--tile-size` is no longer
-> needed here.** The mesh path now culls and chunks its own survivors, so the
-> whole reason for hand-picking a tile is gone and the build is **11.2 minutes
-> at 1.86 s/frame** rather than 8.06 h. A plain
->
-> ```bash
-> $PY -u -m loop_sim.library --scene scene_files/hampton_300um_realistic.yaml \
->     --supersample 1
-> ```
->
-> holds ~5.9 GB throughout. Passing the old `--tile-size 6800` still works but
-> now costs **10x** (19.90 s/frame): it forces 133 passes over a frame that fits
-> in one. The historical note follows, because the reasoning still applies to
-> any scene heavy enough to need a manual tile.
->
-> *(historical)* **Both flags in the command below are load-bearing on WSL2.**
-> `--supersample 1`
-> is this scene's own optically-correct value; the default 4 on a mesh scene is
-> days, not hours. `--tile-size 6800` is ~6 GB by the measured 160 B/ray/face
-> law -- the `auto` ramp sizes near the VRAM ceiling and WSL2 silently spills to
-> host RAM, which took one overnight run to **~45 min/frame** instead of 80.
-> The 2026-08-11 run held 14.8 of 16.4 GB throughout, ~700 MB under that cliff.
->
-> A rebuild DELETES the manifest first and overwrites frames in place, so a
-> server launched at that scene mid-rebuild will not find a library. All 361
-> files are tracked (2.1 MB), so `git checkout -- frame_library/hampton_300um_realistic/`
-> recovers the previous one -- which is what recovered the 2026-08-10 incident.
-> **The same recovery works for any of the three** -- the libraries are tracked
-> deliverables, so an accidental rebuild is a `git checkout` away as long as it
-> is caught before the working tree is committed.
+**Only `mitegen_200um` needs `--supersample 1` on a bare launch**: `hampton_300um` and
+`hampton_300um_realistic` are safe bare. The flag passed at launch must match the value
+the library on disk was actually built at (`manifest.json`'s `supersample` field); a
+mismatch rebuilds the library before the socket binds. `python -m loop_sim.library
+--scene <s>.yaml` with nothing else confirms this: it is a no-op when the library is
+current.
 
-> **UPDATED 2026-08-12: only `mitegen_200um` still needs the flag.**
-> `hampton_300um_realistic` was rebuilt at `--supersample 4`, which matches
-> `build_params`' default, so a bare launch on it is now safe. Re-measured:
->
-> ```
->   hampton_300um            bare launch -> serves it
->   hampton_300um_realistic  bare launch -> serves it   (was: WOULD REBUILD)
->   mitegen_200um            bare launch -> WOULD REBUILD (~18 min)
-> ```
->
-> The rule is unchanged and still bites on mitegen -- the flag must MATCH the
-> library's own supersample, and there is no blanket-safe launch command. The
-> 2026-08-11 measurement follows.
->
-> **LAUNCHING ON AN `--supersample 1` SCENE NEEDS `--supersample 1` ON THE
-> COMMAND LINE — AND TWO OF THE THREE SHIPPED SCENES ARE ONE.** Re-measured
-> 2026-08-11 across every bundled scene, with `build_library` monkeypatched to
-> raise so nothing could run:
->
-> ```
->   hampton_300um            bare launch      -> serves it, no build
->   hampton_300um            --supersample 1  -> WOULD REBUILD   (~45 min)
->   hampton_300um_realistic  bare launch      -> WOULD REBUILD   (~8 h)
->   hampton_300um_realistic  --supersample 1  -> serves it, no build
->   mitegen_200um            bare launch      -> WOULD REBUILD   (~1.9 h)
->   mitegen_200um            --supersample 1  -> serves it, no build
-> ```
->
-> **The flag has to MATCH the library, so there is no blanket-safe launch
-> command.** `--supersample 1` rescues the two S=1 scenes and destroys the S=4
-> one. Pass the value the library on disk was built at — `manifest.json`'s
-> `supersample` field, or `python -m loop_sim.library --scene <s>.yaml` with
-> nothing else, which is a no-op when the library is current.
->
-> `ensure_library` resolves its kwargs through `build_params`, which fills
-> `supersample=4` from its own default, so any library built at another value
-> grades stale on the launch path and is rebuilt before the socket binds. The
-> **serving** path does not do this: `_grading_params` drops `supersample`
-> unless the operator passed it explicitly, because supersample is per-scene by
-> design (RUNBOOK "Frame libraries"), so the tab strip correctly reads all three
-> as `current`. The launch path is the one that disagrees — see HANDOFF "Open
-> questions", where reconciling the two is an open item. `--templates off` and
-> the runtime tab strip remain safe by construction.
->
-> (While `hampton_300um_realistic`'s library was MISSING, between slice 3 and
-> the 2026-08-11 rebuild, no flag helped at all; now that it is `current` the
-> flag works again.)
+A rebuild **deletes the manifest first** and overwrites frames in place, so a server
+launched at that scene mid-rebuild finds no library. All frames are tracked, so
+`git checkout -- frame_library/<scene>/` recovers the previous one, for any of the three
+scenes, as long as it is caught before the working tree is committed.
 
-Re-running is a **no-op when the library is current** — the manifest stores a SHA-256 of
-the scene YAML, a SHA-256 of the **renderer source** (`render_sha`, added 2026-08-10),
-*and* the build parameters, so an edited scene, an edited tracer or a different
-`--supersample` rebuilds automatically. From Python, `ensure_library(scene_path)` does the
-same and returns the manifest; `frame_for_angle(manifest, deg)` picks the frame and
-`pose_crop(manifest, tx, ty, tz, angle_deg, zoom)` gives the crop box, output size and
-defocus blur.
+| scene | supersample | frames | size |
+|---|---|---|---|
+| `hampton_300um` | 4 | 360 | 15 MB |
+| `hampton_300um_realistic` | 4 | 360 | 14 MB |
+| `mitegen_200um` | 1 | 360 | 9 MB |
+
+~37 MB total, all `current`.
+
+Re-running is a **no-op when the library is current**: the manifest stores a SHA-256 of
+the scene YAML, a SHA-256 of the **renderer source** (`render_sha`), *and* the build
+parameters, so an edited scene, an edited tracer or a different `--supersample` rebuilds
+automatically. From Python, `ensure_library(scene_path)` does the same and returns the
+manifest; `frame_for_angle(manifest, deg)` picks the frame and `pose_crop(manifest, tx,
+ty, tz, angle_deg, zoom)` gives the crop box, output size and defocus blur.
 
 Notes:
 
-- **The window is measured from the scene, not centred on the origin.** A mount is long
-  and thin — the hampton pin reaches x=6.7 mm against a 4.7 mm field — so a symmetric
-  margin leaves most of the pin unrendered and panning scrolls in blank background.
-  `content_window()` renders a coarse wide-field scout sweep to find where content
-  actually is, and the sweep is then rendered at a fixed `tx` offset that centres it.
-- **What the library serves:** the spindle axis (quantised to `--step`), `tx`/`ty`/`tz`
-  as a crop, and `zoom` between the floor the window allows and `--supersample`. Depth
-  translation becomes a Gaussian blur approximating condenser defocus. `roty`/`rotz` are
-  **not** covered — one sweep is one axis, and `--axis` other than `rotx` is refused
-  rather than silently building a geometrically wrong library. The server prints the
-  actual zoom range at startup; `zoom_limits(manifest)` returns it. The floor is not
-  simply `camera / template` — the window is anchored on the sample rather than centred,
-  so at the home pose the camera runs out of room on the near side first.
+- **The window is measured from the scene, not centred on the origin** (`content_window()`
+  scouts a coarse wide sweep first). A symmetric margin would leave most of a long thin
+  mount, like hampton's 6.7 mm pin in a 4.7 mm field, unrendered, and panning would scroll
+  into blank background. Served: the spindle axis (quantised to `--step`), `tx`/`ty`/`tz`
+  as a crop (`tz` becomes a Gaussian defocus blur), and `zoom` between the window floor
+  and `--supersample`. `roty`/`rotz` are **not** covered: `--axis` other than `rotx` is
+  refused rather than silently building a geometrically wrong library.
 - **Out-of-range requests are refused, not clamped**, except in the live server, which
-  clamps so it keeps serving and prints what it clamped. Clamping slides the crop and
-  never squeezes it: squeezing would change magnification per axis and silently alter the
-  aspect ratio.
-- **Which motor is lateral depends on φ.** The XYZ stage rides on the spindle, so at φ=0
-  `ty` moves the image vertically and `tz` is pure defocus, while at φ=90 they swap. This
-  is handled in `pose_crop`; it is also the single easiest thing to get backwards.
+  clamps (and prints what it clamped) so it keeps serving, sliding the crop rather than
+  squeezing it. Squeezing would alter the aspect ratio.
+- **Which motor is lateral depends on φ.** At φ=0 `ty` moves the image vertically and
+  `tz` is pure defocus; at φ=90 they swap. Handled in `pose_crop`, the single easiest
+  thing to get backwards.
 - **Pick `--supersample` per scene, from the camera's own sampling.** The right value is
   where the template pitch reaches the objective's Nyquist limit, `0.61λ/NA / 2`:
 
@@ -225,216 +150,126 @@ Notes:
   template grows with the square. For a scene whose content is wider than its field
   (mitegen's is, 1.10 mm against 0.48 mm) the useful zoom direction is *out*, which the
   window already provides, not *in*.
-- **Cost after the mesh cull (2026-08-11), measured on an RTX 4080 SUPER at
-  n_cond 7.** Mesh scenes dropped by roughly the fraction of the frame their
-  bounding box covers:
+- **A build sizes itself to the GPU and refuses rather than dying half-way**, with no need to
+  pass `--tile-size` or `--vram-fraction` on any card:
 
-  | scene | build raster | before | after | 360-frame build |
-  |---|---|---|---|---|
-  | `hampton_300um_realistic` | 1396x644 | 80.6 s | **1.86 s** | 8.06 h -> **11.2 min** |
-  | `mitegen_200um` | 1840x2296 | 17.0 s | **3.00 s** | 1.9 h -> **18 min** |
-  | `hampton_300um` (no mesh) | 5578x2570 | 7.93 s | 8.0 s | ~48 min, unchanged |
-
-  Peak VRAM during a droplet build is ~5.9 GB. **Watch `nvidia-smi`, not
-  torch's own counter** -- the caching allocator reserves and never returns, so
-  `max_memory_allocated()` under-reports what the card is actually holding, by
-  8 GB in one measured case.
-- **A build sizes itself to the GPU, and refuses rather than dying half-way.**
-  Since 2026-08-11 you should not need to pass `--tile-size` or `--vram-fraction`
-  on any card. What happens automatically:
-
-  1. **The budget comes from FREE VRAM, not the card's total** — on a shared
-     node like voltron another tenant's allocation reduces yours, rather than
-     surfacing as an out-of-memory error at frame 300 of 360. A gigabyte is
-     held back for the CUDA context and allocator slack.
-  2. **The budget is a hard limit**, so an overrun raises instead of silently
-     spilling to host RAM (see "Dev-environment caveat" for why a spill is the
-     worse failure).
-  3. **A preflight renders ONE frame and reads the real peak before the build
-     commits.** It prints a line like
+  1. **The budget comes from free VRAM, not the card's total**: on a shared node like
+     voltron another tenant's usage reduces yours instead of surfacing as an
+     out-of-memory error mid-build. A gigabyte is held back for CUDA context and
+     allocator slack.
+  2. **The budget is a hard limit**: an overrun raises rather than silently spilling to
+     host RAM (see "Dev-environment caveat").
+  3. **A preflight renders one frame and reads the real peak before the build commits**,
+     printing a line like
      `[preflight] 1396x644 n_cond=7: 2.26 GB peak against a 10.82 GB budget,
-     tile 899024 -- fits`. If it does not fit, the trace tile is reduced (this
-     changes no pixels) and re-probed.
-  4. **If it still does not fit, the build refuses before rendering anything**,
-     naming the largest `--supersample` that would work:
-     `... needs more memory than this GPU has: peak 12.4 GB against a 8.8 GB
-     budget. Tiling cannot help -- the cost that does not fit scales with
-     OUTPUT PIXELS. At this scene's settings --supersample 4 is the largest
-     that fits (you asked for 8).`
-     A too-large request is never silently downgraded: a library that quietly
-     differs from what was asked for would pass every staleness check.
+     tile 899024 -- fits`. If it doesn't fit, the trace tile shrinks (no pixel change) and
+     re-probes.
+  4. **If it still doesn't fit, the build refuses before rendering anything**, naming the
+     largest workable `--supersample`:
+     `... needs more memory than this GPU has: peak 12.4 GB against a 8.8 GB budget.
+     Tiling cannot help -- the cost that does not fit scales with OUTPUT PIXELS. At this
+     scene's settings --supersample 4 is the largest that fits (you asked for 8).`
+     A too-large request is never silently downgraded.
 
-  `LOOPSIM_VRAM_BUDGET_GB` overrides the measured budget. Two uses: leaving room
-  for someone else on a shared card, and rehearsing a smaller card's behaviour
-  before deploying to it (`LOOPSIM_VRAM_BUDGET_GB=12` on a 16 GB box mimics the
-  TITAN V's sizing decisions).
+  `LOOPSIM_VRAM_BUDGET_GB` overrides the measured budget: leave room for another tenant
+  on a shared card, or rehearse a smaller card's sizing before deploying to it
+  (`=12` on a 16 GB box mimics the TITAN V).
 
-  **REHEARSED 2026-08-13, and the answer is yes: the droplet scene fits a 12 GB
-  card.** The docs had never said whether it would -- 7.3 GB was a 16 GB
-  measurement. Four frames of `hampton_300um_realistic` at `--supersample 4`
-  under a simulated TITAN V:
-
-  ```bash
-  LOOPSIM_VRAM_BUDGET_GB=12 $PY -u -m loop_sim.library \
-      --scene scene_files/hampton_300um_realistic.yaml \
-      --step 90 --root /tmp/lib_rehearsal --force
-  ```
-  ```
-  [preflight] 5578x2570 n_cond=7: 3.30 GB peak against a 8.80 GB budget, tile 1000000 -- fits
-  ```
-
-  It completed under the hard ceiling, so the true peak is under 8.8 GiB. The
-  tile stayed at the full 1,000,000, which means a 12 GB card runs the same
-  tiling regime as a 16 GB one and a cross-machine comparison is hardware
-  against hardware. **`--step 90` is the cheap probe**: 4 frames through the
-  real loop, real scout, real preflight. Use a disposable `--root` -- a build
-  deletes the manifest and overwrites frames in place.
-
-  **Per-frame cost is strongly pose-dependent, so never time one frame.**
-  Measured (differencing the elapsed column -- the progress line prints a
-  CUMULATIVE average, not a per-frame time): phi=0 91.7 s, phi=90 64.3 s,
-  phi=180 92.7 s, phi=270 62.7 s. A 1.48x spread, because the drop is edge-on
-  at 90/270 and face-on at 0/180. Mean 77.9 s/frame against the shipped
-  build's 74.8, so capping to 12 GB costs essentially nothing.
-- **Tile size is not worth hand-tuning.** Measured at 14.4 Mpx: tiles of
-  1M / 2M / 4M / 6M rays run 18.6 / 17.5 / 17.3 / 17.1 s, all byte-identical.
-  Six times the tile buys 8% and costs 1.8 GB of peak, so the default stays at
-  1M. The curve is steep in the other direction, though -- a tile small enough
-  to force ~130 passes costs ~10x -- which is why the preflight reduces the
-  tile proportionally rather than dropping to its floor.
+  **Watch `nvidia-smi`, not torch's own counter**: the caching allocator reserves and
+  never returns, so `max_memory_allocated()` under-reports what the card is actually
+  holding. **Per-frame cost is strongly pose-dependent, so never time one frame** to
+  estimate a build: the progress line prints a cumulative average, not a per-frame time.
 - **Raising `--supersample` on a mesh scene costs time, not correctness.** See
-  docs/HANDOFF.md "Open questions" for the measured table: supersample 4 on the
-  droplet scene runs 20-85 s/frame depending on droplet tessellation, i.e. a
-  2-8 h build. (An earlier note here said a 50,976-face droplet spilled past
-  16 GB and could not complete a frame; that was a defect in the survivor-chunk
-  sizing, not a limit of the scene, and it peaks at 10.4 GB now.)
-- **Cost** *(historical, pre-cull)* (RTX 4080 SUPER, n_cond 7): `hampton_300um` ~7.2 s/frame at `--supersample 4`
-  (5578×2570), a 360-frame sweep in ~45 min. `mitegen_200um` ~18 s/frame at
-  `--supersample 1` (1840×2296) — **slower despite being 3.4× smaller**, because it is a
-  mesh scene and `TSurfaceMesh` has no AABB cull, so its tile is memory-capped at ~262 k
-  rays. ~1.8 h for its sweep.
-- **VRAM no longer limits resolution.** The trace is tiled and the tile is sized at
-  runtime to fit `--vram-fraction` of free VRAM, so an 8 GB card renders the same
-  templates as a 16 GB one, just in more passes. Per-ray results are tile-independent
-  (tested byte-exact down to 1000-ray tiles), so the image does not depend on the tile.
-  Tiling bounds the *trace* working set; the resident ray arrays are still O(W×H)
-  (~1 GB at a 14 Mpx template) and no tile size shrinks them, so peak memory is reduced
-  by tiling rather than made independent of resolution.
-- **Mesh scenes cost `rays × faces × 160 B` of VRAM, and that sets the tile.** There
-  is no AABB cull on the mesh path, so a droplet scene is far heavier than a tube
-  one: a 2880-face droplet at 640×480 needs 19.8 GB in a single pass. The trace
-  tile is therefore sized from the face count and free VRAM by default, which is
-  what makes such a scene renderable at all (3.2 s at 3.6 GB here). Tube scenes
-  carry no mesh term and are unaffected. If you add a much denser mesh and builds
-  slow down, that is the tile shrinking to fit — the durable fix is giving
-  `TSurfaceMesh` the AABB cull `TTube` already has.
-- **The build raises on out-of-memory rather than quietly dropping resolution** — a
-  library rendered at a degraded setting is indistinguishable from a good one once it is
-  on disk. Under WSL2 there is no OOM to catch (the driver spills to host RAM instead), so
-  the builder also warns when frames slow down persistently; see "Dev-environment caveat".
+  DECISIONS §2026-08-12 supersample 4 for the measured cost table.
+- **Under WSL2 there is no OOM to catch** (the driver spills to host RAM instead of
+  raising), so the builder also warns when frames slow down persistently; see
+  "Dev-environment caveat".
 
 ### X-ray radiograph library
 
-`/xray` has the same problem the optical camera had before templating: on the deployed
-config (`--templates on`, the default) there is no GPU-resident scene, so a live `/xray`
-request falls to the numpy reference — tens of seconds on the flagship scene (measured:
-21-57s on `hampton_300um_realistic`, holding a lock the optical stream also needs before
-the 2026-08-18 fix; see DECISIONS.md). The X-ray library is the same fix as the optical
-one, in its own module (`loop_sim/library/xray_library.py`), root (`xray_library/`, not
-`frame_library/`) and `render_sha` scope, so an X-ray-only change never costs an optical
-rebuild or vice versa:
+Same mechanism as the optical frame library, in its own module
+(`loop_sim/library/xray_library.py`), root (`xray_library/`, not `frame_library/`) and
+`render_sha` scope, so an X-ray-only change never costs an optical rebuild or vice versa:
 
 ```bash
 python -m loop_sim.library --modality xray --scene scene_files/hampton_300um.yaml
 python -m loop_sim.library --modality xray --scene scene_files/hampton_300um.yaml --supersample 4
 ```
 
-Simpler than the optical build throughout: no `--n-cond` condenser loop, no `--psf`, no
-`--format`/`--quality` (always lossless 16-bit greyscale PNG — 8-bit would quantize the
-crystal's contrast into ~50 usable levels), no depth-blur approximation to make (a
-collimated beam's Beer-Lambert integral genuinely does not change with `tz`). Cost,
-measured on the flagship mesh scene at `--supersample 4`: ~13.7 s/frame, ~82 min for a
-full 360-frame sweep (vs. optical's ~11.2 min at the same supersample — the X-ray tracer
-is cheaper per ray, but there is no template reuse across the two modalities).
+Simpler than the optical build: no `--n-cond`, `--psf`, or `--format`/`--quality` (always
+lossless 16-bit greyscale: 8-bit would quantize contrast into ~50 levels), and no
+depth-blur approximation (a collimated beam's Beer-Lambert integral doesn't change with
+`tz`).
 
-**Serving is read-only and never builds implicitly** — the one thing the optical launch
-path got wrong until it was fixed (HANDOFF "Hazards"). `--xray-library-root` points
-`camera_server` at a library root; if a complete one exists for the current scene (current
-*or* stale — a stale one is served as-is, same convention as the optical side), `/xray`
-serves from it in single-digit ms and it is also **prewarmed into RAM at boot and on
-every scene switch** (`XrayTemplateSource.prewarm()`, mirroring the optical templates'
-own prewarm), which is what `GET /xray-stream` — the MJPEG-style push stream, started by
-`POST /stream-mode?mode=radiograph` and stopped by `mode=microscope` — needs to run at
-close to the optical stream's own frame rate (~28 fps measured in motion) rather than
-paying a disk decode per frame. If no library exists, both `/xray` and `/xray-stream`
-keep rendering live exactly as `/xray` always did — there is no `--allow-cpu`-style
-override here because there is nothing to refuse; a missing library is simply not used.
-Building one is always the explicit CLI command above, never a server side effect.
+**Serving is read-only and never builds implicitly.** `--xray-library-root` points
+`camera_server` at a library root; a complete library there (current *or* stale, stale is
+served as-is) is served from it in single-digit ms and **prewarmed into RAM at boot and on
+every scene switch** (`XrayTemplateSource.prewarm()`), which is what `GET /xray-stream`
+(started by `POST /stream-mode?mode=radiograph`, stopped by `mode=microscope`) needs to run
+near the optical stream's own frame rate (~28 fps in motion) instead of paying a disk
+decode per frame. If no library exists, both `/xray` and `/xray-stream` keep rendering
+live. Building one is always the explicit CLI command above, never a server side effect.
 
-**Built 2026-08-19, committed.** All three shipped scenes have a current X-ray
-library, built with the illustrative `mu_xray` values settled 2026-08-18 (see
-DECISIONS.md) — a future switch to literature-real coefficients would need a rebuild:
+All three shipped scenes have a current X-ray library, built with the illustrative
+`mu_xray` values settled 2026-08-18 (see DECISIONS.md), and a future switch to
+literature-real coefficients would need a rebuild:
 
 | scene | build time | size |
 |---|---|---|
-| `hampton_300um` | 783 s (13.1 min) | 10.8 MB |
-| `hampton_300um_realistic` (flagship, mesh) | 4890 s (81.5 min) | 9.0 MB |
-| `mitegen_200um` | 365 s (6.1 min) | 16.6 MB |
+| `hampton_300um` | 783 s (13.1 min) | 12 MB |
+| `hampton_300um_realistic` (flagship, mesh) | 4890 s (81.5 min) | 10 MB |
+| `mitegen_200um` | 365 s (6.1 min) | 18 MB |
 
-39 MB total. `xray_library/` needs the same `.gitignore` re-include `frame_library/` has
-(`!xray_library/**/*.png` / `!xray_library/**/manifest.json`, added 2026-08-19) — without
-it every frame PNG matches the blanket `*.png` ignore and `git add -A` would silently
-ship an empty library. See DECISIONS.md for the full build numbers.
+~39 MB total, tracked and committed. `xray_library/` needs the same `.gitignore`
+re-include as `frame_library/` (`!xray_library/**/*.png`,
+`!xray_library/**/manifest.json`): without it `git add -A` silently ships an empty
+library.
 
 ### Switching scenes on a running server
 
 The control page carries a tab per scene in `scene_files/`; clicking one swaps
 the sample live without restarting or dropping the MJPEG stream. The pose resets
-to home — a millimetre does not mean the same thing in two scenes whose pixel
+to home. A millimetre does not mean the same thing in two scenes whose pixel
 sizes differ 7.4×. Same thing from a terminal:
 
 ```bash
 curl -X POST 'http://host:8080/scene?path=mitegen_200um'   # 202 accepted
 curl -s http://host:8080/scene                             # progress + errors
-curl -s http://host:8080/scenes                            # library state of each
+curl -s http://host:8080/scenes                             # library state of each
 ```
 
 Each tab is badged with that scene's library state, and only one of them stops a
 switch:
 
-- **(no badge)** — matches current build settings; switches immediately.
-- **`stale`** — complete and servable, built with different settings. **Switches
-  immediately**, and the page names what differs. This is normal, not a fault:
-  `mitegen_200um` ships stale because its manifest predates the `format` and
-  `psf` build keys, and its 360 frames are fine. **It is never rebuilt
-  automatically** — that would cost ~1.9 h nobody asked for.
-- **`preview`** — only a coarse on-demand library exists (5° steps, 1× zoom).
-- **`no library`** — nothing to serve; the page offers a preview or full build.
+- **(no badge)**: matches current build settings; switches immediately.
+- **`stale`**: complete and servable, built with different settings, e.g. before a new
+  build key existed. **Switches immediately** and the page names what differs; **never
+  rebuilt automatically**: that would cost a full build nobody asked for.
+- **`preview`**: only a coarse on-demand library exists (5° steps, 1× zoom).
+- **`no library`**: nothing to serve; the page offers a preview or full build.
 
-**Builds are refused without CUDA** (~179 s/frame → ~3.6 h for a preview), in
+**Builds are refused without CUDA** (~179 s/frame → hours for a full library), in
 the viewer *and* the CLI. The viewer has no override by design; build offline on
 a GPU host instead, then switch:
 
 ```bash
-python -m loop_sim.library --scene scene_files/<scene>.yaml            # full, ~45 min
+python -m loop_sim.library --scene scene_files/<scene>.yaml            # full, tens of minutes
 python -m loop_sim.library --scene scene_files/<scene>.yaml --preview  # coarse, minutes
 python -m loop_sim.library --scene <scene>.yaml --allow-cpu            # if you really mean it
 ```
 
-Two consequences worth knowing:
+Two consequences:
 
-- **A switch waits for the in-flight frame**, so the stage briefly stops
-  responding: ~70 ms on the default template path, up to ~1 s with
-  `--templates off`, and one whole frame (~18 s) on `--templates off --engine
-  numpy`, where the stream is already that slow.
-- **`--templates off --engine torch` loses the compiled preview after the first
-  switch** (6.3 fps eager instead of 11.9). `torch.compile` warmup has to run
-  single-threaded, which is only true at startup; the server prints a
-  `[compile-preview]` line saying so rather than degrading silently. Restart to
-  get it back. The default template path is unaffected — it holds no GPU state.
-- **With `--templates off`, a switch holds both the old and the new `TorchScene`
-  until the install completes**, so peak VRAM is the sum. That is the price of
-  having no rollback path; it does not arise on the default path.
+- **A switch waits for the in-flight frame**, so the stage briefly stops responding: ~70
+  ms on the default template path, up to ~1 s with `--templates off`, one whole frame
+  (~18 s) on `--templates off --engine numpy`.
+- **`--templates off --engine torch` loses the compiled preview after the first switch**
+  (6.3 fps eager instead of 11.9). `torch.compile` warmup only runs at startup; the
+  server prints a `[compile-preview]` line rather than degrading silently. Restart to get
+  it back. The default template path holds no GPU state and is unaffected.
+- **With `--templates off`, a switch holds both the old and the new `TorchScene` until
+  the install completes**, so peak VRAM is the sum. That is the price of having no rollback
+  path; it does not arise on the default path.
 
 ### On voltron (the beamline GPU node)
 
@@ -446,7 +281,7 @@ squeue --job <jobid>
 cat slurm_<jobid>.log
 ```
 
-**Never set `--time` in these job scripts** — this queue has no time limits and the flag
+**Never set `--time` in these job scripts**: this queue has no time limits and the flag
 gets jobs cancelled early. If you need an interactive session, voltron's login shell is
 tcsh and does not parse `&&`: write a bash script and run
 `ssh voltron "cd $PWD ; bash script.bash"`.
@@ -456,55 +291,56 @@ tcsh and does not parse `&&`: write a bash script and run
 Everything a user can turn, with its default and what it does. **The right-hand column is
 the one to read before a long run:** a lever marked *rebuilds library* changes the stored
 template pixels, so touching it invalidates a frame library and the next server launch
-silently regenerates it (~45 min for hampton, ~1.9 h for mitegen).
+silently regenerates it (tens of minutes to hours; DECISIONS §2026-08-11 mesh cull has
+the per-scene build times).
 
-### `render.py` — offline single frame
+### `render.py`: offline single frame
 
 | Flag | Default | Effect |
 |---|---|---|
-| `<scene.yaml>` | — | scene to render (positional) |
+| `<scene.yaml>` | none | scene to render (positional) |
 | `--tx` `--ty` | from the scene's `motor:` block | stage translation, mm. The CLI overrides the YAML; there is no `--tz` here |
 | `--rotx` `--roty` `--rotz` | 0 | rotation, degrees; `rotx` is the spindle for the bundled scenes |
 | `--n-cond` | 1 | condenser angles per pixel; 7 = soft NA edges, >7 buys little |
-| `--device` | `cpu` | `cuda` uses the legacy per-object GPU path (tube/mesh scenes only) |
+| `--device` | `cpu` | `cuda` runs the GPU-resident engine (`engine_torch`), same one the camera server uses; falls back to CPU with no CUDA visible |
 | `--output` | `<scene_basename>.jpg` | output JPEG path |
 
 `render.py` exposes no `--zoom`; set `zoom` in the scene's `motor:` block, or use the
 server, whose `/motor` endpoint takes all seven axes.
 
-### `python -m loop_sim.server.camera_server` — the live/pretend camera
+### `python -m loop_sim.server.camera_server`: the live/pretend camera
 
 | Flag | Default | Effect |
 |---|---|---|
 | `--scene` | `scene_files/hampton_300um.yaml` | scene to serve |
 | `--host` / `--port` | `0.0.0.0` / 8080 | bind address |
-| `--templates` | `on` | serve from the pre-computed sweep (no GPU at runtime). `off` raytraces every frame — the correctness reference |
-| `--fps-limit` | 30.0 | MJPEG wire-rate ceiling. This is a hard clamp: the old default of 5 capped the stream far below what templates can deliver |
+| `--templates` | `on` | serve from the pre-computed sweep (no GPU at runtime). `off` raytraces every frame, the correctness reference |
+| `--fps-limit` | 30.0 | MJPEG wire-rate ceiling, a hard clamp on how fast frames go out |
 | `--n-cond` | 7 | condenser angles for settled frames |
-| `--jpeg-quality` | 85 | quality of frames the server **sends**. Not the stored template — see `--template-quality` |
+| `--jpeg-quality` | 85 | quality of frames the server **sends**. Not the stored template: see `--template-quality` |
 | `--engine` | `auto` | `torch` (GPU-resident) / `numpy` (reference) / auto-detect |
 | `--preview-mode` | `on` | approximate frames while moving, exact on settle |
 | `--compile-preview` | `on` | `torch.compile` the preview path (CUDA + preview only) |
 | `--settle-delay` | 0.5 s | quiet time after a `/motor` set before the exact frame renders |
-| `--camera-emulation` | `on` | map transmittance through the illumination field, black floor and tone response (`loop_sim/renderer/field.py`), so an empty field reads ~0.60 and an opaque body ~0.18 instead of the rails. **Serve-time only — costs no library rebuild** |
-| `--mono` | **`off`** (was `on` until 2026-08-14) | `on` collapses to grey before the camera stage, masking the fact that colour is an ABSORPTION spectrum here — a scene declaring a crystal `[0.7,0.9,1.0]` renders it blue. Now off by default: the simulator is a colour instrument and scenes are allowed to be coloured, so flattening by default meant no coloured scene could ever be seen. Measured on the shipped libraries, on-vs-off differs by at most 20/21/46 levels on 0.003–0.42% of pixels (realistic/hampton/mitegen) — a tint on loop and droplet edges, not a wash. The scene-side repair is `colour: [1,1,1]` with the absorption in `mu_optical`, which *rebuilds every library*. Ignored when `--camera-emulation off` |
-| `--pin-streak` | `on` | draw the specular glint a real machined pin carries along its shank. Its position is PROJECTED FROM THE SCENE (`renderer/pin_projection.py`) through the current pose, so it is exact at any zoom, crop or angle, and there is simply no glint when the pin is out of view. Only an object the code declares shiny gets one (`SHINY`, currently `pin`+`metal`), so `mitegen_200um` never does. Ignored when `--camera-emulation off` |
-| `--sensor-pitch` | `on` | deliver on the real camera's **704×480** raster. The BL831 pixels are 1.11 non-square and the tracer's are square, so a 640-wide render covers the same field (to under 1%) on a different grid — and a consumer applying dcss's µm-per-pixel constant to 640 columns reads 10% wide. `off` serves the render's own square pixels. On the template path the resample runs in PIL rather than `field.to_sensor` (6.7 → 1.3 ms, agrees to 1 level); the live path still uses `to_sensor` |
-| `--template-cache` | **`auto`** (was `off` until 2026-08-14) | decoded templates held in RAM. `auto` takes as much of the library as half of AVAILABLE memory allows; `off` is 8; an integer pins it. Default now that a template stores only its content — ~6.6 MiB a frame, ~2.3 GiB for a 360-frame sweep, against the ~20 GiB the full window cost. (PIL packs RGB into 4-byte pixels, so a decoded frame costs `w*h*4.25`, not `w*h*3` — every earlier figure in these docs was a third low.) If the host cannot afford a whole revolution `auto` **declines**: LRU against a cyclic sweep evicts each frame just before it comes round again, so a partial cache is worth zero rather than a share |
+| `--camera-emulation` | `on` | map transmittance through the illumination field, so an empty field reads ~0.60 and an opaque body ~0.18 rather than pure black/white. **Serve-time only: no library rebuild** |
+| `--mono` | `off` | `on` collapses to grey before the camera stage. Colour here is an absorption spectrum, so a scene declaring a crystal `[0.7,0.9,1.0]` renders it blue, and `--mono on` masks that. To strip colour at the scene level instead, set `colour: [1,1,1]` with the absorption in `mu_optical`, which *rebuilds every library*. Ignored when `--camera-emulation off` |
+| `--pin-streak` | `on` | draw the specular glint a real machined pin carries along its shank, projected from the scene (`renderer/pin_projection.py`) through the current pose, exact at any zoom, crop or angle, absent when the pin is out of view. Only objects the code declares shiny get one (`SHINY`: `pin`+`metal`), so `mitegen_200um` never does. Ignored when `--camera-emulation off` |
+| `--sensor-pitch` | `on` | deliver on the real camera's **704×480** raster. BL831 pixels are 1.11 non-square and the tracer's are square, so a consumer applying dcss's µm-per-pixel constant to a 640-wide render reads 10% wide. `off` serves the render's own square pixels. Template path resamples in PIL, not `field.to_sensor` (6.7 → 1.3 ms, agrees to 1 level) |
+| `--template-cache` | `auto` | decoded templates held in RAM. `auto` takes as much of the library as half of available memory allows; `off` caps at 8 frames; an integer pins the count. **All-or-nothing per sweep**: if the host cannot hold a full revolution, `auto` **declines** rather than half-filling: LRU against a cyclic sweep evicts each frame just before it comes round again, so a partial cache is worth zero rather than a share |
 | `--supersample` | builder default (4) | *rebuilds library* |
 | `--template-format` | builder default (`png`) | *rebuilds library* |
 | `--template-quality` | builder default (90) | JPEG quality of **stored** templates; ignored for png. *rebuilds library* |
 | `--scene-dir` | repo `scene_files/` | which `*.yaml` are offered for runtime switching on `/scenes` |
 | `--library-root` | repo `frame_library/` | frame-library root to serve from and report on |
-| `--preview-root` | repo `frame_library_preview/` | where on-demand **preview** libraries are written. Separate from `--library-root` deliberately — building into the live root overwrites frames the serving `TemplateSource` is caching by filename |
-| `--xray-library-root` | repo `xray_library/` | X-ray radiograph library root `/xray` and `/xray-stream` both serve from (and prewarm from at boot/switch). **Read-only** — unlike `--library-root`, a missing or stale library here is never built implicitly; both endpoints just keep rendering live (see "X-ray radiograph library" below) |
+| `--preview-root` | repo `frame_library_preview/` | where on-demand **preview** libraries are written. Separate from `--library-root` deliberately: building into the live root overwrites frames the serving `TemplateSource` is caching by filename |
+| `--xray-library-root` | repo `xray_library/` | X-ray radiograph library root `/xray` and `/xray-stream` both serve from (and prewarm from at boot/switch). **Read-only**: unlike `--library-root`, a missing or stale library here is never built implicitly; both endpoints just keep rendering live (see "X-ray radiograph library" above) |
 
-### `python -m loop_sim.library` — build a frame library
+### `python -m loop_sim.library`: build a frame library
 
 | Flag | Default | Effect |
 |---|---|---|
-| `--modality` | `optical` | `xray` builds the radiograph library instead — see "X-ray radiograph library" below. Every flag past this row is optical-only and ignored (with `--modality xray`, only `--scene`/`--all`, `--root`, `--step`, `--supersample`, `--pan-mm`, `--axis`, `--device`, `--force` apply — no `--n-cond`/`--format`/`--psf`/`--quality`, the tracer has none of those) |
-| `--scene` / `--all` | — | one scene, or every `scene_files/*.yaml` |
+| `--modality` | `optical` | `xray` builds the radiograph library instead; see "X-ray radiograph library" above. Every flag past this row is optical-only and ignored: with `--modality xray`, only `--scene`/`--all`, `--root`, `--step`, `--supersample`, `--pan-mm`, `--axis`, `--device`, `--force` apply (no `--n-cond`/`--format`/`--psf`/`--quality`) |
+| `--scene` / `--all` | none | one scene, or every `scene_files/*.yaml` |
 | `--root` | `frame_library/` | output directory |
 | `--step` | 1.0° | degrees between frames → 360 frames. *rebuilds library* |
 | `--supersample` | 4 | render this many times finer than the camera pixel; the hard ceiling on zoom-in. *rebuilds library* |
@@ -514,14 +350,14 @@ server, whose `/motor` endpoint takes all seven axes.
 | `--format` | `png` | stored template format. png is lossless **and** smaller here. *rebuilds library* |
 | `--psf` | `on` | bake the objective diffraction PSF into the templates. *rebuilds library* |
 | `--quality` | 90 | JPEG quality; ignored when `--format png`. *rebuilds library* |
-| `--tile-size` | `auto` | rays per trace pass; `auto` measures the size by trial renders. Does not change pixels. Note `render_torch`'s own default is different and cheaper — it *calculates* the tile from mesh face count and free VRAM with no trial renders (DECISIONS.md §2026-08-07) |
+| `--tile-size` | `auto` | rays per trace pass; `auto` measures the size by trial renders. Does not change pixels. Note `render_torch`'s own default is different and cheaper: it *calculates* the tile from mesh face count and free VRAM with no trial renders (DECISIONS.md §2026-08-07) |
 | `--vram-fraction` | 0.80 | share of free VRAM the auto tile may use. Does not change pixels |
 | `--device` | auto | `cuda` when available |
 | `--force` | off | rebuild even if current |
 | `--preview` | off | build the same coarse library the camera server builds on demand (5° steps, 1× supersample, n_cond 1 → 72 frames) into `frame_library_preview/`. Minutes instead of ~45 min; zoom capped at 1× |
 | `--allow-cpu` | off | permit a build with no CUDA. Without it a CPU build is **refused**: ~179 s/frame is ~3.6 h for a preview and ~18 h for a full library. `--device cpu` needs this flag too |
 
-### Scene YAML — `camera:` block
+### Scene YAML `camera:` block
 
 | Key | Example | Effect |
 |---|---|---|
@@ -531,7 +367,7 @@ server, whose `/motor` endpoint takes all seven axes.
 | `na_condenser` | 0.07 | illumination cone; also drives the template defocus blur |
 
 Per-material properties live on each object: `n` (refractive index), `mu_optical`
-(absorption), and colour. Object **order matters** — the list is priority-ordered and the
+(absorption), and colour. Object **order matters**: the list is priority-ordered and the
 first entry wins at any point in space, so a crystal must precede the droplet that
 contains it, or it renders as solvent.
 
@@ -551,14 +387,12 @@ contains it, or it renders as solvent.
 $PY -m pytest tests/ -q
 ```
 
-**Pass = 213 tests green** (last run 2026-08-11: 213 passed in 121 s on an RTX 4080 SUPER;
-60 warnings are expected — benign `divide by zero`/RuntimeWarnings from the numpy
-reference primitives). On a CPU-only box the CUDA-gated parity tests **skip** rather than
-fail, so a green run there is a weaker check — it does not exercise the GPU engine at all.
-
-The count grows with the work; treat the number here as the figure from the last recorded
-run rather than a constant, and `docs/HANDOFF.md`'s front-matter `last_verified` as the
-authority. A run that comes in *below* it is the signal worth chasing.
+Pass is every test green, about 8 minutes on an RTX 4080 SUPER; the count grows with the
+work, so a run that collects fewer tests than the previous one is the signal worth
+chasing. Benign `divide by zero`/RuntimeWarnings from the numpy reference
+primitives are expected in the output, not a failure. On a CPU-only box the CUDA-gated
+parity tests **skip** rather than fail, so a green run there is a weaker check. It does
+not exercise the GPU engine at all.
 
 The suite covers GPU↔CPU render parity (the correctness fix), torch↔numpy shape parity,
 beam attenuation, the compiled preview path, and the server's settle/single-flight
@@ -566,16 +400,16 @@ behavior.
 
 For a render-level check after touching the renderer or a scene, use the SLURM comparison
 job (`sbatch run_gpu.slurm` renders CPU+GPU at n_cond 1 and 7 and reports diff stats);
-`../CLAUDE.md` "Comparison workflow" carries the acceptable thresholds.
+DECISIONS §2026-05-22 has the thresholds measured on the retired legacy path; a fresh run on the resident engine should read far tighter.
 
-Benchmarking the **serve** path (no GPU, no socket, no display — safe on a busy shared
+Benchmarking the **serve** path (no GPU, no socket, no display, safe on a busy shared
 node, and verified to import torch not at all):
 
 ```bash
 $PY bench_serve.py --scene scene_files/hampton_300um_realistic.yaml --frames 40
 ```
 
-On **voltron**, with all eight cards busy. Use the **stock** interpreter — *not* the
+On **voltron**, with all eight cards busy, use the **stock** interpreter, *not* the
 `~/projects/loopsim-torch26` venv from "Deploy on the TITAN V" below. That venv exists for
 the compiled GPU preview path; this benchmark imports torch not at all, so it needs no
 venv, no `CC`/`CXX` and no devtoolset:
@@ -587,185 +421,90 @@ cd ~/projects/loop_sim_MINE/xtal-loop-sim
 
 It prints the three regimes, a per-stage split, a comparison against the recorded
 pre-crop numbers for that host, and a **GO/NO-GO against the 10 fps goal** (exit 0 / 1).
-If the host's libraries still store the full window it says so and points at
-`--recrop`, because otherwise a host that has not picked up the cropped libraries just
-reads ~7x slower on the decode with nothing to explain why.
+If the host's libraries still store the full window it says so and points at `--recrop`;
+otherwise decode reads ~7x slower with nothing to explain why.
 
 **slew** = spindle turning, every frame a fresh decode (the worst case, and what grades
 the host); **pan** = fixed angle, decode served from cache; **hold** = the floor.
+**Read `slew_warm`, not `slew`.** The server pre-warms the whole library at boot, so a
+spindle slew never touches disk once it is up; `slew_warm` is what an operator gets and
+what the GO/NO-GO verdict grades. `slew` benchmarks a cold decode, which the server pays
+once at startup instead. It is the noisier number, not the one to read.
 
-Dev box, 40 frames, `hampton_300um_realistic`, before and after the 2026-08-14 crop
-(`--mono off` and `--template-cache auto` in the "after" column, matching the server):
-
-| | before (2026-08-13) | **after (2026-08-14)** | gain |
-|---|---|---|---|
-| slew (cold) | 91.1 ms / 11.0 fps | **27.0 ms / 37.1 fps** | 3.4x |
-| slew (warm) | 27.1 ms / 36.9 fps | **13.4 ms / 74.8 fps** | 2.0x |
-| pan | 32.4 ms / 30.9 fps | 10.5 ms / 95.2 fps | 3.1x |
-| decode | 66.6 ms | **11.8 ms** | 5.7x |
-| crop+scale | 15.3 ms | **1.9 ms** | 8.0x |
-| camera model | 12.3 ms | **5.8 ms** | 2.1x |
-| jpeg encode | 2.7 ms | 2.4 ms | 1.1x |
-| RAM to hold the sweep | 20.4 GiB | **2.32 GiB** | 8.8x |
-
-### Which host can serve the viewer — all three, measured 2026-08-14
-
-One run each, graded on the pre-warmed regime (`slew_warm`), 40 frames,
-`hampton_300um_realistic`, stock `/programs/pytorch/envs/pt/bin/python`:
-
-| Host | CPUs | slew (pre-warmed) | in a browser | pan | verdict |
-|---|---|---|---|---|---|
-| **dataserver3** | 40 | **29.5 ms / 33.9 fps** | ~16.9 fps | 43.0 fps | GO |
-| **voltron** | 48 | **33.4 ms / 30.0 fps** | ~15.0 fps | 45.2 fps | GO |
-| **gateway** (bl831) | 16 | **36.0 ms / 27.7 fps** | ~13.9 fps | 31.1 fps | GO |
-
-Per-stage (ms) — decode / crop+scale / camera / jpeg: voltron 23.8 / 3.9 / 12.5 / 5.4,
-dataserver3 25.0 / 3.9 / 14.1 / 5.5, gateway 33.3 / 5.8 / 18.6 / 7.6.
-
-**Core count does not decide it.** dataserver3's 40 beat voltron's 48 and gateway's 16
-still cleared by 2.8x — the serve path is single-threaded, so single-core speed is what
-matters and a smaller newer box can win. **Treat cross-host gaps under ~15% as noise:**
-voltron measured 33.4 ms here against 37.7 ms an hour earlier with no relevant code change,
-which is shared-node load. dataserver3 runs the DCSS stack (the DHSs, `touch_tcp`), so it
-is a control host rather than a compute box — that is a placement question, not a
-performance one.
-
-**voltron, MEASURED 2026-08-14** (second run; see the first-run caveat below):
-
-| | before (2026-08-13) | **after (2026-08-14)** | gain |
-|---|---|---|---|
-| slew (cold) | 265.5 ms / 3.77 fps | **71.4 ms / 14.01 fps** | 3.7x |
-| slew (warm) | 67.3 ms / 14.87 fps | **37.7 ms / 26.53 fps** | 1.8x |
-| pan | 67.3 ms / 14.86 fps | 25.6 ms / 39.1 fps | 2.6x |
-| decode | 180.7 ms | **28.2 ms** | 6.4x |
-| crop+scale | 32.6 ms | **4.5 ms** | 7.3x |
-| camera model | 33.0 ms | **14.0 ms** | 2.4x |
-| jpeg encode | 5.9 ms | 6.1 ms | 0.97x |
-| RAM to hold the sweep | 14.4 GiB | **1.64 GiB** | 8.8x |
-
-**One run is enough — read `slew_warm`, not `slew`.** The server pre-warms the whole
-library at boot, so a spindle slew never touches disk once it is up; `slew_warm` is what an
-operator gets, and it is what the verdict grades. `slew` is the benchmark decoding from
-scratch, which the server pays once at startup instead.
-
-`slew` is also the noisy one, which is why it is the wrong thing to read: run one measured
-94.3 ms with p10 71.7 / p90 130.0 (a 1.8x spread), run two 71.4 ms with p10 67.7 / p90 77.3
-(1.14x), p10 essentially unchanged — first-touch I/O off the shared ZFS pool on files
-rsynced minutes earlier, ~23 ms a frame, paid once. Over the same two runs **`slew_warm`
-held to 0.1%: 37.73 then 37.69 ms.** Page cache is per host, so the first-touch cost recurs
-on each new machine even though `/home` is the same mount everywhere — which is exactly why
-the stable regime is the one to grade.
-
-**The stage split under-reports a slew here, and that is not measurement error.** The four
-stages sum to 52.8 ms against a 71.4 ms slew. The missing ~19 ms is memory traffic: the
-split re-renders a few angles back to back, so each stage reads what the last one left in
-cache, while a real slew streams a different ~4.9 MB template from DRAM every frame.
-Measured on the dev box, holding ONE template resident costs 10.3 ms/frame and holding
-four costs 14.1 — the step is the L3 boundary. It is also why `pan` (25.6) beats
-`slew_warm` (37.7) on voltron when neither decodes, and why that 12 ms gap is only 2.9 ms
-on the newer dev box: this is a DDR4-2400-era memory subsystem, not a CPU difference.
-`bench_serve` now prints the gap rather than leaving it to be noticed.
-
-**As of 2026-08-13, voltron missed the 10 fps goal on a COLD slew by 3x and cleared it
-warm at 14.87 fps** — the viewer was usable there only with `--template-cache auto` and
-its 14.4 GiB. **That condition is gone as of 2026-08-14: voltron now clears the goal COLD
-at 14.01 fps and runs 26.53 fps warm, on 2.32 GiB.** The measured warm slew (67.25 ms) and
-pan (67.30 ms) agreed to
-**0.05 ms** -- with the library resident a rotating frame costs exactly what a translating
-one costs, i.e. the decode is gone rather than reduced. All 360 frames fit voltron's RAM,
-so a full revolution stays warm; see the LRU caveat below for hosts where they do not.
-The cold figure remains the number to design against for a first revolution — it is the likely viewer host, and the beamline node is never idle, so a
-figure taken under load is the deployment figure rather than a degraded one. The p90/p10
-spread is 1.34 there against 1.31 on the dev box, i.e. the same distribution shape, so
-this is systematic CPU speed and not contention noise; re-measuring on a quiet node would
-not move it much.
-
-**Addressable 2026-08-13 by holding the library in RAM, not by threading.** Warm, a slew
-becomes a pan: measured on the dev box **27.1 ms / 37.0 fps against a cold 106.1 ms**. No
-threads, no prefetch, no direction prediction — which also makes it the right answer for
-the AXIS consumer, whose `/motor` is instant and absolute and therefore has no predictable
-slew to prefetch along.
-
-**Opt-in until 2026-08-14, when the tight crop made it cheap enough to default.** A decoded
-template used to be the whole `width*height*3` = 41 MiB window, so the sweep was 14.4 GiB —
-nothing against voltron's 251 GB and a great deal on a workstation, hence opt-in. Templates
-now store only their content (~4.7 MiB a frame, **1.76 GiB** for the sweep), so
-`--template-cache` defaults to **`auto`**. Two consequences worth knowing: the 16 GB dev box
-now holds a full revolution where it previously held 182 of 360 and thrashed to zero
-benefit; and `auto` **declines rather than half-filling** — see the LRU caveat immediately
-below, which is why a partial cache is not worth the memory it costs.
-
-**The caveat, and it is a real one: LRU thrashes on a cyclic sweep.** If the cache is
-smaller than a revolution, each frame is evicted just before it comes round again and the
-benefit is *zero*, not proportional. Measured:
-
-```
-  cache=64 cycle=32   lap1 89.2 ms  lap2 12.9 ms   warm
-  cache=16 cycle=32   lap1 76.1 ms  lap2 69.8 ms   thrash
-  cache=64 cycle=128  lap1 81.4 ms  lap2 71.0 ms   thrash
-```
-
-So the flag is all-or-nothing per sweep length. voltron holds all 360 and is fine. A 16 GB
-WSL2 dev box gets 182 frames (7.3 GiB) and so stays cold on a *full* revolution while
-benefiting on any sweep under 182 frames — which is what centring actually does.
-`bench_serve.py` prints a warning naming both numbers when the cache cannot hold the
-library.
-
-Decode is 73% of a cold slew on both machines. Warmup deliberately uses angles the timed run never
-revisits: warming on the timed poses reads 78 ms with a p10 of 25.8, and that p10 is the
-pan number leaking in.
+All three beamline hosts (dataserver3, voltron, gateway) clear the 10 fps goal warm; see
+DECISIONS §2026-08-14.
 
 Benchmarking the **render** path: `bench_frame.py` (flags `--compiled`, `--fp32`;
-`--modality xray` times `render_xray_torch`/`render_xray_numpy` instead — no
+`--modality xray` times `render_xray_torch`/`render_xray_numpy` instead (no
 n_cond/PSF/compiled sweep, since the X-ray tracer has none of those); soak the live server with
 `soak_server.py`, which lives **outside this repo** in the analysis tree at
 `/home/jadoughty/projects/loop_sim_MINE/investigation/2026-07_scene_and_perf_harnesses/`.
 That tree is mirrored to the gateway alongside the repo but is **not versioned**, so it
-will not come with a `git clone` — the repo is complete without it.
+will not come with a `git clone`; the repo is complete without it.
+
+## Other scripts
+
+Root-level scripts, run from the repo checkout with `$PY`:
+
+- **`test_gpu.bash`**: renders `hampton_300um` on CPU then GPU (`--device cpu` /
+  `--device cuda`), timed. The base A/B smoke test.
+- **`test_optim.bash`**: renders on GPU, timed, and diffs the JPEG against a prior
+  `scene_gpu.jpg` to catch a GPU-path regression.
+- **`debug_optim.bash`**: renders CPU (`n_cond=7`, reference) then GPU, and reports
+  max/mean pixel difference and the count of pixels off by more than 10.
+- **`check_diff.bash`**: three-way diff of `scene_ref.jpg` / `scene_gpu.jpg` /
+  `scene_optim.jpg` (CPU vs. GPU-original vs. GPU-new); run after the scripts above have
+  produced those files.
+- **`profile_render.py`** / **`profile_render.bash`**: cProfile the CPU renderer on
+  `hampton_300um.yaml` to find hotspots. The `.bash` wrapper installs missing deps first,
+  then runs the `.py`.
+- **`profile_gpu.py`** / **`profile_gpu.bash`**: same profiling on the GPU path
+  (`device='cuda'`), with a warm-up render discarded before timing.
+- **`make_beam_image.py`**: generates a synthetic 16-bit PNG beam-profile image
+  (Gaussian FWHM, optional pinhole mask) for the X-ray beam entity, with pixel size
+  embedded as a PNG text chunk.
 
 ## Deploy
 
-There is no install step and no service. loop-sim is run in place from a checkout —
-either as a CLI (`render.py`), a SLURM job (`run_gpu.slurm`), or the camera server, which
-you start on a host reachable by whatever consumes the stream. To "deploy" a change:
+There is no install step and no service: loop-sim runs in place from a checkout, as a
+CLI (`render.py`), a SLURM job (`run_gpu.slurm`), or the camera server started on a host
+reachable by whatever consumes the stream. To "deploy" a change:
 
 1. Confirm `pytest tests/` green on a CUDA box (a CPU-only run skips the GPU tests).
 2. Land the code on the target checkout (git, or a copy).
 3. Restart the camera server if one is running (it holds the scene + compiled kernels in
    memory; there is no reload).
 
-**Note on branch state:** this work lives on `performance-correctness-optimizations`, **61
-commits ahead of `master`** (measured 2026-08-11) and not pushed to GitHub — James owns
-that decision (see HANDOFF "Current state"). Measure it rather than quoting this line:
-`git rev-list --count master..HEAD`. Work from `master`/this branch; the GitHub default
-`main` is a stale divergent "Initial commit".
+**Note on branch state:** this work lives on branch `performance-correctness-optimizations`,
+not pushed to GitHub. James owns that decision (see HANDOFF "Current state"). Measure how
+far ahead of `master` with `git rev-list --count master..HEAD`; don't quote a number here.
+Work from `master` or this branch: the GitHub default `main` is a stale, divergent "Initial
+commit".
 
 ### Deploy on the TITAN V (voltron)
 
-**Read this first: the VIEWER does not need any of it.** Serving from templates imports
-torch *not at all* — verified 2026-08-14 by constructing a `CameraServer` and serving a
-frame with `torch` absent from `sys.modules` throughout. So to run the viewer on voltron:
+**The viewer does not need any of this**: serving from templates imports torch *not at
+all*. To run the viewer on voltron:
 
 ```tcsh
 cd ~/projects/loop_sim_MINE/xtal-loop-sim
 /programs/pytorch/envs/pt/bin/python -m loop_sim.server.camera_server --scene scene_files/hampton_300um_realistic.yaml --port 8080
 ```
 
-No venv, no `CC`/`CXX`, no devtoolset, no GPU pinned, no compile warmup, and nothing that
-conflicts with someone else holding all eight cards. Same for `bench_serve.py`.
+No venv, no `CC`/`CXX`, no devtoolset, no GPU pinned, no compile warmup. Same for
+`bench_serve.py`.
 
-Everything below is for **rendering** on the GPU — building libraries, `--templates off`,
-and `acceptance_voltron.py`. The 10 fps *live-render* path is **measured on the real
-TITAN V — 11.9 fps** — but only with the stack below. The beamline's default environment
-(the pt env's torch 2.0.1, system gcc 4.8.5) cannot run `torch.compile` and silently falls
-back to eager at ~6.3 fps. Build a dedicated environment once. Voltron's login shell is
-**tcsh** (`setenv`, not `export`); call the venv's python by full path because venv
-`activate` is a bash script:
+Everything below is for **rendering** on the GPU: building libraries, `--templates off`,
+and `acceptance_voltron.py`. The 10 fps live-render path is **measured on the real TITAN
+V at 11.9 fps**, but only with the stack below. The beamline's default environment (the pt
+env's torch 2.0.1, system gcc 4.8.5) cannot run `torch.compile` and falls back to eager at
+~6.3 fps. Voltron's login shell is **tcsh** (`setenv`, not `export`); call the venv's
+python by full path because venv `activate` is a bash script.
 
-**Scripted as of 2026-08-18:** `setup_titan_v_env.bash` (repo root) runs steps 1–3 below
-as one idempotent command — `bash setup_titan_v_env.bash` on voltron, `--force` to rebuild
-the venv, `--skip-verify` to skip the `acceptance_voltron.py` run at the end. The manual
-steps stay here for reference and troubleshooting.
+**Scripted:** `setup_titan_v_env.bash` (repo root) runs steps 1–3 below as one idempotent
+command: `bash setup_titan_v_env.bash` on voltron, `--force` to rebuild the venv,
+`--skip-verify` to skip the final `acceptance_voltron.py` run. Manual steps below for
+reference and troubleshooting.
 
 ```tcsh
 # 1) a torch-2.6 venv (the pt env's torch 2.0.1 has an Inductor pkg_resources bug)
@@ -788,7 +527,7 @@ cd ~/projects/loop_sim_MINE/xtal-loop-sim        # the repo's location on voltro
 `acceptance_voltron.py` prints a GO/NO-GO and writes `acceptance_report.json`; a GO means
 compile actually engaged and beat eager. To launch the camera server on the **live-render**
 path (`--templates off`, or a scene with no library yet), use the same venv with `CC`/`CXX`
-still set and a free GPU pinned — for the template path use the stock interpreter above
+still set and a free GPU pinned; for the template path use the stock interpreter above
 instead:
 
 ```tcsh
@@ -798,15 +537,12 @@ setenv CUDA_VISIBLE_DEVICES 6      # a free card (check nvidia-smi first)
 
 Operational notes:
 
-- **~1–2 min compile warmup** at server start — Inductor compiles the preview kernels once.
-- **Mesh scenes (`mitegen_200um`) are a knife's-edge VRAM fit** on the 12 GB card — fine on a
-  free GPU with torch 2.6, but see HANDOFF risk A / DECISIONS.md for the tiling safety fix.
-- **Pin `CUDA_VISIBLE_DEVICES` to a free GPU** — a busy card OOMs the mesh scene on arrival.
+- **~1-2 min compile warmup** at server start: Inductor compiles the preview kernels once.
+- **A build sizes itself to free VRAM and refuses rather than OOMing** (the preflight under
+  "Frame libraries"); the droplet scene fits a 12 GB card (DECISIONS §2026-08-13 12 GB).
+- **Pin `CUDA_VISIBLE_DEVICES` to a free GPU**: a busy card OOMs the mesh scene on arrival.
 - If a run fails at *import* with `GLIBCXX...not found` (not a compile error), wrap the
   command in `scl enable devtoolset-7 "<command>"` so the runtime libraries match.
-
-This whole recipe is the current cost of the 10 fps path on RHEL7; a lighter stack silently
-gets you 6.3 fps. DECISIONS.md "TITAN V measured" records why each step is load-bearing.
 
 ## Rollback
 
@@ -817,10 +553,10 @@ just running older code:
   and re-run. `master` is the pre-Jacob baseline: correct on CPU, "hairy" fiber artifact
   on the GPU, no GPU-resident engine.
 - **The compiled preview path misbehaves** (silent failure, or wrong frames during
-  motion): start the server with `--compile-preview off` — preview frames then render
+  motion): start the server with `--compile-preview off`: preview frames then render
   eagerly. `--preview-mode off` goes further: every frame is exact full quality (slow,
   but no preview path at all).
-- **Suspect the torch engine entirely:** force the numpy reference —
+- **Suspect the torch engine entirely:** force the numpy reference:
   `--engine numpy` on the server, or `--device cpu` for `render.py`. Slow (minutes/frame)
   but it is the reference implementation everything else is checked against.
 
@@ -828,7 +564,7 @@ just running older code:
 
 If a run on a WSL2 box slows 10–50× instead of failing, suspect **VRAM spill**: past the
 card's VRAM the Windows NVIDIA driver silently spills into system RAM rather than raising
-CUDA OOM — the job crawls and the whole desktop drags. Tell: `nvidia-smi` `memory.used`
+CUDA OOM; the job crawls and the whole desktop drags. Tell: `nvidia-smi` `memory.used`
 pinned near the ceiling (≳15.5 GB on a 16 GB card) plus per-item time *degrading* over the
 run. Fix by shrinking the working set (resolution, batch, `n_cond`) until it fits. This is
 a Windows/WSL2 driver behavior, not a loop-sim bug; it matters here because the mesh scene

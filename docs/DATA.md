@@ -1,99 +1,62 @@
-# DATA — loop-sim (xtal-loop-sim)
+# DATA: loop-sim (xtal-loop-sim)
 
-<!-- loop-sim is a generator, not a learner: it has no training set and no model weights.
-     It does have data in the sense that matters here — the scene and camera/material
-     definitions it renders from, and the baselines used to judge correctness and speed.
-     Paths are relative to the repo root. -->
-
-**This project has no training data and no model artifacts.** What it does have is scene /
-calibration input and performance-and-correctness baselines, below.
+This project has no training data and no model artifacts. What follows is the scene and
+calibration input it renders from, and the performance/correctness baselines it is judged
+against. Paths are relative to the repo root.
 
 ## Artifact inventory
 
-| Artifact | Class | Location | Owner | How to rebuild |
-|---|---|---|---|---|
-| Camera + material properties (`template.yaml`) | reference, **not authoritative** | in-repo, tracked | this repo (originally James Holton) | — cannot be rebuilt. **Reclassified 2026-08-10:** it encodes the hi zoom stop's HORIZONTAL pitch as a square pixel, which makes its vertical field of view 9.91% short, and no shipped scene reads it. The real calibration is `sample_camera_constant` in `wash_pin/claude/BL-831.dat` (1.110 non-square pixels at both stops), and the photographs it describes are in `real_images/`. |
-| Bundled scenes (`scene_files/hampton_300um.yaml`, `scene_files/mitegen_200um.yaml`) | **authoritative** | in-repo, tracked | this repo | — complete, hand-built scenes; `hampton` is the tube-based scene, `mitegen` the mesh-based one. |
-| Pipeline part-files (`hoop.yaml`, `crystal.yaml`, `droplet.yaml`) | **authoritative** | in-repo, tracked | this repo | Regenerable in principle via `digitize_fiber.py` / `add_*.py` from a real loop photo, but `digitize_fiber.py` needs a human clicking waypoints — treat the committed ones as the record. |
-| Assembled scene (`scene.yaml`, `loop.yaml`) | regenerable | **not shipped** — gitignored | — | `generate_scene.py loop.yaml crystal.yaml droplet.yaml --template template.yaml --output scene.yaml` (see ../README.md). |
-| Rendered images (`*.png`, `*.jpg`) | regenerable | **not shipped** — gitignored | — | `render.py <scene>.yaml …`. Deterministic given scene + pose + code. |
-| **Frame libraries** (`frame_library/<scene>/*.png` + `manifest.json`) | **shipped, tracked** | in-repo, tracked (explicit `.gitignore` re-includes for both `*.png` and `*.jpg`, since both are ignored repo-wide) | this repo | `python -m loop_sim.library --all`. Regenerable but **deliberately committed** — a library is what the camera server replays, so it ships with the code rather than being rebuilt on each host. Each manifest stores a SHA-256 of its scene YAML *and* the build parameters (now including `format` and `psf`); changing either rebuilds on first use. **Stored losslessly as PNG since 2026-08-06** — a real AXIS camera applies exactly one JPEG compression, and storing JPEG templates then re-encoding on the wire applied two. PNG is also *smaller* for these near-binary frames: measured 0.10 MB vs 0.25 MB per hampton frame, **28.7 MB vs 84.9 MB** for the rebuilt hampton sweep, at the cost of a dearer decode (~55 vs 36 ms, which bites only on a spindle slew: 14.7 fps vs 21.6 fps through a spin). Templates also carry the objective PSF baked in; `psf_sigma_px` in the manifest records how much. |
-| **Reference photographs** (`real_images/**/*.jpg` + `MANIFEST.tsv`) | **shipped, tracked** | in-repo, tracked (explicit `.gitignore` re-include, `*.jpg` is ignored repo-wide) | this repo, sampled 2026-08-10 | **Not regenerable from anything in this repo** — 44 real BL831 sample-camera frames sampled from six trees on the beamline mirror, 5.6 MB. This is the only ground truth the renderer's *appearance* is judged against, and losing it means losing the ability to falsify a fidelity claim. `MANIFEST.tsv` records each file's source path so the set could be re-sampled; `build_refs.py` was session scratch and is not shipped. **Use it to falsify, not to fit** — `real_images/README.md` has the three limits. |
-| **X-ray radiograph library** (`xray_library/<scene>/*.png` + `manifest.json`) | **shipped, not yet committed** | on disk, 39 MB, all three scenes `current` (built 2026-08-19; explicit `.gitignore` re-includes for `*.png`/`manifest.json` added the same day — without them the frames matched the repo-wide `*.png` ignore and `git add` would have dropped them) | this repo | `python -m loop_sim.library --modality xray --scene <scene>.yaml`; measured 2026-08-19: 365 s (`mitegen_200um`), 783 s (`hampton_300um`), 4890 s / 81.5 min (`hampton_300um_realistic`, the flagship mesh scene at `--supersample 4`) — see docs/DECISIONS.md. Same rationale as the optical frame libraries (below), separate module/root/render_sha. 16-bit greyscale PNG, not 8-bit — see docs/DECISIONS.md 2026-08-18. Built against the shipped illustrative `mu_xray` values (owner decision, docs/DECISIONS.md 2026-08-18); a switch to literature-calibrated coefficients would need a rebuild. |
-| Benchmark baselines (`bench_results/`) | regenerable | **not shipped** — gitignored | — | `bench_frame.py` (`--compiled`, `--fp32`, or `--modality xray`). See the gap below. |
+| Artifact | Tracked | Location | Rebuild command |
+|---|---|---|---|
+| Camera calibration (`template.yaml`) | yes | repo root | not rebuildable; not authoritative, no shipped scene reads it (see Known gaps) |
+| Bundled scenes (`scene_files/hampton_300um.yaml`, `scene_files/mitegen_200um.yaml`) | yes | `scene_files/` | hand-built, frozen; no rebuild command |
+| Generated fidelity scene (`scene_files/hampton_300um_realistic.yaml`) | yes | `scene_files/` | `python -m crystal_harvester.cli --loop-type hampton --loop-size 300 --crystal hexagonal -o scene_files/hampton_300um_realistic.yaml` |
+| Pipeline part-files (`hoop.yaml`, `crystal.yaml`, `droplet.yaml`) | yes | repo root | `digitize_fiber.py` + `add_*.py` from a loop photo (needs manual waypoints) |
+| Assembled scene (`scene.yaml`, `loop.yaml`) | no | not shipped | `generate_scene.py loop.yaml crystal.yaml droplet.yaml --template template.yaml --output scene.yaml` |
+| Rendered images (`*.png`, `*.jpg`) | no | not shipped | `render.py <scene>.yaml …` |
+| Frame libraries (`frame_library/<scene>/*.png` + `manifest.json`) | yes | in-repo, ~37 MB (`hampton_300um` 15 MB, `hampton_300um_realistic` 14 MB, `mitegen_200um` 9 MB) | `python -m loop_sim.library --all` |
+| Reference photographs (`real_images/**/*.jpg` + `MANIFEST.tsv`) | yes | in-repo, ~6 MB, 44 jpg | not regenerable from this repo, see `real_images/README.md` |
+| X-ray radiograph library (`xray_library/<scene>/*.png` + `manifest.json`) | yes | in-repo, ~39 MB (`hampton_300um` 12 MB, `hampton_300um_realistic` 10 MB, `mitegen_200um` 18 MB) | `python -m loop_sim.library --modality xray --scene <scene>.yaml` |
+| Benchmark baselines (`bench_results/`) | no | not shipped | `bench_frame.py` (`--compiled`, `--fp32`, or `--modality xray`) |
 
 ## External dependencies & succession
 
 **None.** Nothing this project needs lives in another person's homedir or on external
-infrastructure — the authoritative inputs are all tracked in this repo. (Contrast the
-sibling CV projects, whose training data lives under `/home/jamesh/projects`.) The only
-external dependency is the runtime itself: a torch+CUDA interpreter, unpinned — see the
-`requirements.txt` note in `docs/HANDOFF.md` Hazards (B).
+infrastructure; the authoritative inputs are all tracked in this repo. The only external
+dependency is the runtime itself: a torch+CUDA interpreter, unpinned, see
+`docs/HANDOFF.md` Open items (torch 2.6 as a hard requirement).
 
 ## Known gaps
 
-- **Supersampled frame libraries are large, and every scene adds another one.** The 1×
-  library was 5.3 MB; `hampton_300um` at the `--supersample 4` default is **29.3 MB**
-  (360 frames of 5578×2570). It is tracked in git, so each rebuild writes a fresh copy
-  into history and every `push-all` moves it. Options if this becomes a problem: drop to
-  `--supersample 2` (4× cheaper, still resolves the fiber), track only the reference
-  `hampton_300um` library and let the rest build on first use, or stop tracking them and
-  accept a slow first launch per scene. **The repo ships three, all PNG and all current**
-  (re-measured 2026-08-14, after the tight crop): `hampton_300um` **14.4 MB** at
-  `--supersample 4`, `mitegen_200um` **8.3 MB** at `--supersample 1`, and
-  `hampton_300um_realistic` **12.9 MB at `--supersample 4`** — **~37 MB
-  together**, down from ~72 MB. Since 2026-08-14 each frame stores a tight crop
-  of its content rather than the whole rendered window, which also took the
-  DECODED size — the one that decides the RAM cache — from 15.5 GB to 1.7 GB per
-  hampton sweep. The crop is lossless (templates hold raw transmittance, so what
-  is omitted is background exactly) and needed no re-render; see DECISIONS
-  2026-08-14 — **~72 MB together**, 361 files each. Note PNG came out smaller than the JPEG it replaced in every case, so the
-  rebuilds roughly halved this figure rather than growing it.
-  **Being tracked is also the recovery path:** an accidental rebuild is undone by
-  `git checkout -- frame_library/<scene>/`, which is how the 2026-08-10 incident was
-  recovered. See HANDOFF Hazards for the launch path that causes those accidents.
-  **Rebuild cost stopped being the constraint on 2026-08-11** (the mesh AABB
-  cull: the droplet library went 8.06 h -> 11.2 min), so library SIZE is now the
-  binding cost rather than build time. **That trade was taken on 2026-08-12:**
-  `hampton_300um_realistic` was rebuilt at the optically-correct
-  `--supersample 4` with a Rayleigh-matched droplet mesh, going **2.1 -> 27.6 MB**
-  and taking the tracked total to **~72 MB**. It buys 4x zoom and facets below
-  the resolution limit. Every rebuild of it writes a fresh ~28 MB into git
-  history, which is now the main reason not to rebuild casually.
+- **Frame libraries.** ~37 MB tracked: `hampton_300um` 15 MB, `hampton_300um_realistic` 14
+  MB (both `--supersample 4`), `mitegen_200um` 9 MB (`--supersample 1`); 360 PNG frames
+  each, all `current`. Each rebuild writes a fresh copy into git history, roughly 15 MB per
+  library, so rebuilding is not free. `git checkout -- frame_library/<scene>/` undoes an
+  accidental rebuild.
 - **Benchmark baselines don't travel.** `bench_results/` is gitignored, so the numbers a
   perf claim rests on exist only on the machine that produced them. Comparing this
   machine's results against the beamline's TITAN V (voltron) requires committing a
-  baseline set — which needs a `.gitignore` exception, since the current rules ignore
-  `bench_results/` outright.
-- **There is no golden reference image, and the current gates can't catch an
-  architecture-specific error.** The parity tests compare GPU against a CPU reference
-  computed *on the same machine*, so they are architecture-blind: a Volta box could pass
-  every test while producing wrong images. A numpy-anchored golden image, committed and
-  compared against, would close this. That also needs a `.gitignore` exception, because
-  `*.png` is ignored repo-wide — `frame_library/**/*.png` is now re-included and sets the
-  precedent for how to write one. See `docs/DECISIONS.md` §"TITAN V deployment".
-  **A cheaper partial answer now exists:** a *dimensional* assertion needs no committed
-  image at all. A feature of known physical size must span `size / pixel_size` pixels; the
-  pin measures 703.0 µm against a ground truth of 700.0 µm. That check is
-  architecture-independent and would catch a class of error the parity gates cannot. See
-  `scene_dimcheck.py` (in the analysis tree outside this repo,
-  `/home/jadoughty/projects/loop_sim_MINE/investigation/2026-07_scene_and_perf_harnesses/`)
-  and `docs/HANDOFF.md` "Scene fidelity".
-
-- **The scene inputs themselves were never validated until 2026-07-28, and two are wrong.**
-  `scene_files/hampton_300um.yaml` carries a zero-radius solvent sphere (no droplet) and a
-  loop whose waypoints span 69 × 200 µm despite its `300um` name; `template.yaml` is
-  described here as the authoritative calibration but no shipped scene uses its pixel size
-  or NA. Treat `crystal_harvester` output as the dimensionally-trustworthy source and the
-  hand-built bundled scenes as unverified. See `docs/HANDOFF.md` "Scene fidelity".
-  **ANSWERED 2026-08-11 — both halves.** Pixels on 2026-08-10: `template.yaml` is the hi
-  stop's horizontal pitch used as a square pixel, and the Hampton scenes' square
-  640 × 7.4 µm is the mid stop rendered correctly, to under 1%. NA on 2026-08-11:
-  **0.28**, from camera-space crystal/background of 0.677 against `real_images/D01`'s
-  0.691 (NA 0.10 gives 0.421). The shipped scenes still carry NA 0.10/0.07 — switching
-  rebuilds all three frame libraries and is an owner's decision. See `docs/HANDOFF.md`
-  "Open questions" and `docs/DECISIONS.md` §2026-08-11 (later).
+  baseline set, which needs a `.gitignore` exception.
+- **No golden reference image; parity gates are architecture-blind.** The parity tests
+  compare GPU against a CPU reference computed on the same machine, so a different
+  architecture, such as the beamline's Volta TITAN V (RUNBOOK "Deploy on the TITAN V"),
+  could pass every test while producing wrong images. A numpy-anchored golden image,
+  committed and compared against, would close this; it needs the kind of `.gitignore`
+  exception `frame_library/**/*.png` already has. A cheaper partial answer needs no
+  committed image at all: a feature of known physical size must span `size / pixel_size`
+  pixels, and the pin measures 703.0 µm against a ground truth of 700.0 µm, an
+  architecture-independent check the parity gates can't do. See `scene_dimcheck.py`
+  (`/home/jadoughty/projects/loop_sim_MINE/investigation/2026-07_scene_and_perf_harnesses/`)
+  and `docs/HANDOFF.md` Open items.
+- **Scene calibration: pixels settled, NA still open.** Pixels: the Hampton scenes' square
+  640×7.4 µm rendition matches the real camera to under 1% (`docs/DECISIONS.md`
+  §2026-08-10). NA: measured at 0.28 against `real_images/D01` (`docs/DECISIONS.md`
+  §2026-08-11 NA fork), but the shipped scenes still carry NA 0.10/0.07; switching rebuilds
+  all three frame libraries and is an owner's decision.
+- **`hampton_300um` is a bare performance scene.** Its solvent sphere has zero radius (no
+  droplet), and its loop waypoints span 69×200 µm despite the `300um` name. See
+  `docs/HANDOFF.md` Open items.
 - **The gateway mirror carries gitignored scratch.** `TEST_*.png` / `out_*.png` at the repo
   root are untracked scratch renders that happen to sit in the working tree, so the file
-  mirror includes them while a `git clone` will not. Don't treat them as references —
-  regenerate instead.
+  mirror includes them while a `git clone` will not. Regenerate instead of treating them as
+  references.
