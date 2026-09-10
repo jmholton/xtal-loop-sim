@@ -4,24 +4,24 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:1
-#SBATCH --output=/home/jamesh/projects/loop_sim/claude/slurm_%j.log
+#SBATCH --output=slurm_%j.log
 
 PT=/programs/pytorch/envs/pt/bin/python
-cd /home/jamesh/projects/loop_sim/claude
+cd "$(dirname "$0")"
 
 echo "=== Node: $SLURMD_NODENAME  GPU: $CUDA_VISIBLE_DEVICES ===" >&2
 
 echo "=== CPU render n_cond=1 (fast reference) ===" >&2
-time $PT render.py scene.yaml --device cpu --n-cond 1 --output scene_ref1.png
+time $PT render.py scene_files/hampton_300um.yaml --device cpu --n-cond 1 --output scene_ref1.png
 
 echo "=== GPU render n_cond=1 ===" >&2
-time $PT render.py scene.yaml --device cuda --n-cond 1 --output scene_optim1.png
+time $PT render.py scene_files/hampton_300um.yaml --device cuda --n-cond 1 --output scene_optim1.png
 
 echo "=== CPU render n_cond=7 (reference) ===" >&2
-time $PT render.py scene.yaml --device cpu --n-cond 7 --output scene_ref.png
+time $PT render.py scene_files/hampton_300um.yaml --device cpu --n-cond 7 --output scene_ref.png
 
 echo "=== GPU render n_cond=7 ===" >&2
-time $PT render.py scene.yaml --device cuda --n-cond 7 --output scene_optim.png
+time $PT render.py scene_files/hampton_300um.yaml --device cuda --n-cond 7 --output scene_optim.png
 
 echo "=== Compare (PNG, lossless) ===" >&2
 $PT - <<'PYEOF'

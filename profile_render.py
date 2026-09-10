@@ -7,7 +7,7 @@ from loop_sim.scene.scene       import load
 from loop_sim.motors.goniometer import Goniometer
 from loop_sim.renderer.microscope import render
 
-scene  = load("scene.yaml")
+scene  = load("scene_files/hampton_300um.yaml")
 gonio  = Goniometer(scene.geometry)
 
 # Warm-up (scene is already loaded, just time render)

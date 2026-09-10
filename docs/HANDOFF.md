@@ -754,8 +754,7 @@ those numbers don't have to be re-derived.
   `acceptance_voltron.py` — self-contained TITAN V acceptance test (fps + VRAM + compile
   check → GO/NO-GO + `acceptance_report.json`; auto-picks a free GPU); its scenes are
   hard-coded, so it cannot be pointed at the droplet scene. `run_gpu.slurm` — voltron GPU
-  job (no `--time`!), **stale**: it targets `/home/jamesh/...` and the gitignored
-  `scene.yaml`. `tests/` — 222 tests (the verify command).
+  job (no `--time`!); renders `scene_files/hampton_300um.yaml` CPU vs GPU. `tests/` — 222 tests (the verify command).
 - `README.md` — user guide (repo root). `CLAUDE.md` — deep engineering notes (repo root:
   architecture, precision, concurrency, the recentre bug). `docs/` — the handoff docs
   (this file + `RUNBOOK.md`, `DECISIONS.md`, `DATA.md`). `scratch/` — git-ignored,

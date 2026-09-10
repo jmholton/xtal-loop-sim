@@ -73,8 +73,7 @@ Notes that save time:
   mesh path on it, but `render.py`'s legacy path never hands the shell a device, so there
   `--device cuda` really is a no-op and CPU/GPU agreement is byte-identical by construction
   rather than evidence the GPU ran. See docs/HANDOFF.md "Other traps".
-- `render.py` inserts `/home/jamesh/projects/loop_sim/claude` on `sys.path`; harmless when
-  absent. Run from the repo root.
+- Run from the repo root.
 - Which motor is the spindle is scene-dependent: `rotx` for the bundled scenes.
 
 ### Frame libraries (pre-computed rotation sweeps)

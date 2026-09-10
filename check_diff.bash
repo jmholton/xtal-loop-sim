@@ -1,6 +1,6 @@
 #!/bin/bash
 PT=/programs/pytorch/envs/pt/bin/python
-cd /home/jamesh/projects/loop_sim/claude
+cd "$(dirname "$0")"
 
 $PT - <<'EOF'
 from PIL import Image

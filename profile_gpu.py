@@ -7,7 +7,7 @@ from loop_sim.scene.scene       import load
 from loop_sim.motors.goniometer import Goniometer
 from loop_sim.renderer.microscope import render
 
-scene  = load("scene.yaml", device='cuda')
+scene  = load("scene_files/hampton_300um.yaml", device='cuda')
 gonio  = Goniometer(scene.geometry)
 
 # Warm-up

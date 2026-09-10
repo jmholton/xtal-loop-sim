@@ -9,8 +9,6 @@ Motor settings (tx, ty) are read from the YAML 'motor:' section if present,
 and can be overridden on the command line.
 """
 import sys, os, argparse
-sys.path.insert(0, '/home/jamesh/projects/loop_sim/claude')
-# This repo's own packages must win over the legacy path above.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import numpy as np
