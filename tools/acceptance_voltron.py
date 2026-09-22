@@ -18,7 +18,7 @@ WHAT IT ANSWERS
      here is comparable to a run on the dev box.
 
 HOW TO RUN
-    /programs/pytorch/envs/pt/bin/python acceptance_voltron.py
+    .venv/bin/python tools/acceptance_voltron.py      # from the repo root
   On a shared multi-GPU box it auto-selects the freest GPU (pin explicitly
   with --gpu N or CUDA_VISIBLE_DEVICES).  Writes acceptance_report.json and
   prints a GO / NO-GO verdict.
@@ -36,17 +36,19 @@ import sys
 import time
 
 TARGET_FPS = 10.0
-REPO = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO not in sys.path:
+    sys.path.insert(0, REPO)
 
 # The 10 fps path is torch.compile (torch >= 2.0 -> Python >= 3.9). The legacy
 # system python (2.7 / 3.6 on the beamline) cannot run it. Fail early and clearly
-# rather than crash cryptically, and point at the interpreter the GPU jobs use.
+# rather than crash cryptically, and point at the repo's venv (setup_venv.bash).
 if sys.version_info < (3, 9):
     sys.stderr.write(
         "\nloop-sim acceptance needs Python >= 3.9 with torch 2.x (torch.compile is\n"
         "the 10 fps path). You are on Python %s.\n"
-        "On voltron use the python3.10 interpreter the GPU jobs already run, e.g.:\n"
-        "  /programs/pytorch/envs/pt/bin/python3.10 %s\n\n"
+        "Build the repo's venv with setup_venv.bash and run, from the repo root:\n"
+        "  .venv/bin/python %s\n\n"
         % (platform.python_version(), sys.argv[0]))
     raise SystemExit(3)
 
@@ -161,7 +163,7 @@ def main():
     report["is_titan_v"] = "TITAN V" in props.name.upper()
 
     def build(scene_name):
-        return TorchScene(load(os.path.join(REPO, "scene_files", scene_name)), dev, torch.float64)
+        return TorchScene(load(os.path.join(REPO, "data", "scene_files", scene_name)), dev, torch.float64)
 
     def moving_poses(ts, n):
         # A /motor stream: a fresh centred-loop pose each frame (the worst case for

@@ -1,12 +1,12 @@
 #!/bin/bash
-PT=/programs/pytorch/envs/pt/bin/python
-cd "$(dirname "$0")"
+PT=.venv/bin/python
+cd "$(dirname "$0")/.."
 
 echo "=== CPU render n_cond=7 (reference) ===" >&2
-time $PT render.py scene_files/hampton_300um.yaml --device cpu --n-cond 7 --output scene_ref.jpg
+time $PT render.py data/scene_files/hampton_300um.yaml --device cpu --n-cond 7 --output scene_ref.jpg
 
 echo "=== GPU render n_cond=7 ===" >&2
-time $PT render.py scene_files/hampton_300um.yaml --device cuda --n-cond 7 --output scene_optim.jpg
+time $PT render.py data/scene_files/hampton_300um.yaml --device cuda --n-cond 7 --output scene_optim.jpg
 
 echo "=== Compare ===" >&2
 $PT - <<'EOF'

@@ -1,5 +1,5 @@
 {
-  "scene": "scene_files/hampton_300um_realistic.yaml",
+  "scene": "data/scene_files/hampton_300um_realistic.yaml",
   "scene_sha256": "c10954d029d4b9b75354d62ba76f63660e594634a938c4cd1fe3edb4c219cf6d",
   "built_utc": "2026-08-12T13:24:51Z",
   "axis": "rotx",

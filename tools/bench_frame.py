@@ -7,17 +7,17 @@ median/p10/p90 wall ms per frame, the server-side encode tail (uint8 + D2H +
 PIL JPEG), torch op-invocation count (CPU profiler; CUPTI kernel timings are
 unavailable under WSL2, so op count is the dispatch proxy), GPU utilisation
 via nvidia-smi, and peak CUDA memory (watch the WSL2 ~15.5 GB spill cliff at
-high zoom).  Every run writes a JSON record to bench_results/.
+high zoom).  Every run writes a JSON record to tools/bench_results/.
 
-    ~/miniconda3/envs/loopsim/bin/python bench_frame.py --label baseline
-    ~/miniconda3/envs/loopsim/bin/python bench_frame.py --quick
+    .venv/bin/python tools/bench_frame.py --label baseline
+    .venv/bin/python tools/bench_frame.py --quick
 
 --modality xray times render_xray_torch (GPU) and render_xray_numpy (CPU,
 the path --templates on actually serves from; see docs/DECISIONS.md
 2026-08-18) instead, with no n_cond/PSF/compiled sweep: the X-ray tracer has
 none of those.
 
-    ~/miniconda3/envs/loopsim/bin/python bench_frame.py --modality xray --quick
+    .venv/bin/python tools/bench_frame.py --modality xray --quick
 """
 import argparse
 import io
@@ -29,7 +29,7 @@ import sys
 import threading
 import time
 
-REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
@@ -203,7 +203,7 @@ def bench_config(tscene, pose, n_cond, frames, warmup, compiled=False):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
-    ap.add_argument("--scene", default=os.path.join(REPO_ROOT, "scene_files",
+    ap.add_argument("--scene", default=os.path.join(REPO_ROOT, "data", "scene_files",
                                                     "hampton_300um.yaml"))
     ap.add_argument("--n-cond", default="1,7")
     ap.add_argument("--poses", default="id,rotx45,zoom2,mix,zoom4")
@@ -238,7 +238,7 @@ def main():
 
     dev = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     if dev.type != "cuda":
-        print("WARNING: CUDA unavailable — timings will not match the GPU baseline.")
+        print("WARNING: CUDA unavailable: timings will not match the GPU baseline.")
     compiled = args.compiled and dev.type == "cuda"
     if args.compiled and not compiled:
         print("WARNING: --compiled ignored (compilation is CUDA-only here).")
@@ -293,7 +293,7 @@ def main():
         "compiled": compiled,
         "results": results,
     }
-    outdir = os.path.join(REPO_ROOT, "bench_results")
+    outdir = os.path.join(REPO_ROOT, "tools", "bench_results")
     os.makedirs(outdir, exist_ok=True)
     path = os.path.join(outdir, f"{time.strftime('%Y%m%d_%H%M%S')}_{sha}_{args.label}.json")
     with open(path, "w") as f:

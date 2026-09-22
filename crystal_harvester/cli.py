@@ -78,7 +78,7 @@ def _parse_args(argv=None):
     pg.add_argument("--pin-bevel", type=float, default=None, metavar="DEG",
                     help="Pin bevel angle in degrees (default: 0, a flat cut). "
                          "The reference photos settle this: the pins in "
-                         "real_images/A01 and E02 end square, not chiselled. "
+                         "data/real_images/mid_mag/A01 and E02 end square, not chiselled. "
                          "pin_geometry.py still models a scored-and-snapped "
                          "tube, so pass 45 to get the old tip back")
 

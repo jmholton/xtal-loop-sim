@@ -15,7 +15,7 @@ revolution, since the server pre-warms at boot; otherwise it grades cold
 `slew`.  See docs/DECISIONS.md 2026-08-14 for the crop/cache measurements
 behind these numbers.
 
-    python bench_serve.py --scene scene_files/hampton_300um_realistic.yaml
+    .venv/bin/python tools/bench_serve.py --scene data/scene_files/hampton_300um_realistic.yaml
 """
 import argparse
 import io
@@ -26,7 +26,7 @@ import statistics
 import sys
 import time
 
-REPO = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO not in sys.path:
     sys.path.insert(0, REPO)
 
@@ -179,7 +179,7 @@ def _stage_split(src, angles):  # noqa: C901
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--scene", default=os.path.join(REPO, "scene_files",
+    ap.add_argument("--scene", default=os.path.join(REPO, "data", "scene_files",
                                                     "hampton_300um_realistic.yaml"))
     ap.add_argument("--root", default=None, help="library root (default: repo's)")
     ap.add_argument("--frames", type=int, default=40)

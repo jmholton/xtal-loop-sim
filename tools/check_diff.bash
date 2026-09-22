@@ -1,6 +1,6 @@
 #!/bin/bash
-PT=/programs/pytorch/envs/pt/bin/python
-cd "$(dirname "$0")"
+PT=.venv/bin/python
+cd "$(dirname "$0")/.."
 
 $PT - <<'EOF'
 from PIL import Image

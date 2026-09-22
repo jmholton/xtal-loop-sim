@@ -1,5 +1,18 @@
-numpy>=1.24
-scipy>=1.11
-Pillow>=10.0
-pyyaml>=6.0
-tifffile>=2023.1
+# Build the environment with setup_venv.bash (it adds --only-binary=:all: and the
+# PyTorch wheel index this file needs). Python 3.10 or newer.
+#
+# torch: the cu124 wheel from https://download.pytorch.org/whl/cu124. 2.6.0 is the last
+# release with a wheel for voltron's glibc 2.17 (CentOS 7) and it runs on the TITAN V's
+# 525 driver; the same wheel runs on a current dev box. torch is only needed to render
+# (building a frame library, --templates off, render.py --device cuda); serving from
+# templates never imports it.
+torch==2.6.0
+# pillow 12 has no glibc-2.17 wheel and does not build with gcc 4.8.5.
+pillow==10.4.0
+numpy
+scipy
+pyyaml
+tifffile
+# digitize_fiber.py opens an interactive TkAgg window; nothing else imports it.
+matplotlib
+pytest

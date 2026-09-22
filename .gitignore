@@ -7,15 +7,9 @@
 
 # ...except the pre-computed frame libraries, which ARE a deliverable
 # (rotation sweeps replayed by the camera server; see loop_sim/library/).
-!frame_library/**/*.png
-!frame_library/**/*.jpg
-!frame_library/**/manifest.json
-
-# ...and the X-ray radiograph libraries, the same deliverable for /xray
-# (loop_sim/library/xray_library.py). Always PNG (16-bit greyscale, no lossy
-# format offered) so no *.jpg re-include is needed here.
-!xray_library/**/*.png
-!xray_library/**/manifest.json
+!data/frame_library/**/*.png
+!data/frame_library/**/*.jpg
+!data/frame_library/**/manifest.json
 
 # ...and except the real reference photographs, which are ground truth rather
 # than output: 44 real BL831 sample-camera frames the renders are judged
@@ -23,38 +17,44 @@
 # each.  5.6 MB.  They are irreplaceable (the 2020 session that calibrated the
 # illumination field cannot be re-shot) and MANIFEST.tsv is useless without
 # them, so tracking one and ignoring the other would ship a manifest pointing
-# at nothing.  Same re-include shape as frame_library above.
-!real_images/**/*.jpg
+# at nothing.  Same re-include shape as data/frame_library above.
+!data/real_images/**/*.jpg
 
 # Coarse PREVIEW libraries the camera server builds on demand when you switch
 # it to a scene that has none.  Disposable build output, NOT a deliverable --
-# the opposite of frame_library/ above.  Their images are already ignored by
+# the opposite of data/frame_library/ above.  Their images are already ignored by
 # the *.png / *.jpg rules, but manifest.json matches no rule at all, so without
 # this line every preview manifest would be tracked while its frames were not.
 # Deliberately a file pattern rather than a `frame_library_preview/` directory
 # rule: git does not descend into an excluded directory, so a directory rule
 # would make any later `!` re-include beneath it silently impossible.
-frame_library_preview/**/manifest.json
+data/frame_library_preview/**/manifest.json
 
-# Generated scene files (built by the pipeline)
-scene.yaml
-loop.yaml
+# Pipeline outputs: the default --output of digitize_fiber.py, add_*.py,
+# generate_scene.py and make_beam_image.py lands at the repo root. Anchored so
+# data/scene_files/examples/hoop.yaml stays tracked.
+/hoop.yaml
+/loop.yaml
+/droplet.yaml
+/crystal.yaml
+/scene.yaml
+/beam.png
 
 # Backup files
-*.04-12-26*
 *~
+
+# Python environments (setup_venv.bash, xtalLoopSimDHS/)
+.venv/
 
 # Claude internal state
 .claude/
 
-# Benchmark output (bench_frame.py)
-bench_results/
+# Benchmark output (tools/bench_frame.py)
+tools/bench_results/
 
-# Local scratch: renders, screenshots, one-off outputs. Kept out of git only --
-# it IS mirrored to the gateway, as its own ungated pair in push-all.sh, so the
-# team can see working output without it entering this repo's history. Directory
-# rule on purpose -- nothing under it should ever be tracked, so there is nothing
-# to re-include.
+# Local scratch: renders, screenshots, one-off outputs. Local only: never
+# tracked and not mirrored anywhere. Directory rule on purpose -- nothing under
+# it should ever be tracked, so there is nothing to re-include.
 scratch/
 
 # Misc
@@ -65,10 +65,6 @@ __pycache__/
 .eggs/
 dist/
 build/
-notes.com
-peak.txt
-this.yaml
-old/
 
 .omc/
 .slot-machine/

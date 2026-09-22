@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Profile the renderer to find bottlenecks."""
 import sys, os, cProfile, pstats, io, time
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from loop_sim.scene.scene       import load
 from loop_sim.motors.goniometer import Goniometer
 from loop_sim.renderer.microscope import render
 
-scene  = load("scene_files/hampton_300um.yaml")
+scene  = load("data/scene_files/hampton_300um.yaml")
 gonio  = Goniometer(scene.geometry)
 
 # Warm-up (scene is already loaded, just time render)

@@ -1,9 +1,9 @@
 #!/bin/bash
-PT=/programs/pytorch/envs/pt/bin/python
-cd "$(dirname "$0")"
+PT=.venv/bin/python
+cd "$(dirname "$0")/.."
 
 echo "=== GPU render (optimized) ===" >&2
-time $PT render.py scene_files/hampton_300um.yaml --device cuda --output scene_optim.jpg
+time $PT render.py data/scene_files/hampton_300um.yaml --device cuda --output scene_optim.jpg
 
 echo "=== Compare with previous GPU output ===" >&2
 if [ -f scene_gpu.jpg ]; then
