@@ -2,6 +2,15 @@
 
 Dated history, newest first. The reasoning behind each change is in DECISIONS.md under the same date; live state is in HANDOFF.md.
 
+## 2026-09-22
+
+- X-ray radiograph library retired: `xray_library/`, `xray_library.py`, the `/xray-stream` push stream, and the Microscope/Radiograph toggle deleted; `GET /xray` renders the live pose on every request instead. New `render.py --xray` writes a radiograph PNG beside a scene, a flag James's master never had. DECISIONS §2026-09-22.
+- Frame-library staleness reworked: `render_sha` dropped out of `_BUILD_KEYS`, so a renderer edit no longer grades a library stale on its own; builds are now atomic (`.new`/`.old` swap); the CLI gained `--status`, `--verify`, and `--force`. A bare server launch never rebuilds: it serves a stale library with a warning, or renders live. DECISIONS §2026-09-22.
+- `xtalLoopSimDHS/` added: a pydhsfw hardware DHS that drives the goniometer's real motors over dcss and talks to the camera server over localhost HTTP; `camera_server.py` gained `GET /status`, `/move?duration=`, `/video-trigger`, and per-camera zoom-stop serving for it to use. 27 offline tests green; not yet exercised against a running dcss/BluIce. DECISIONS §2026-09-22.
+- Repo reorganized: scenes, frame libraries, and reference photos moved under `data/`; benchmark tooling moved under `tools/`; James's seven root scripts stay at the root. Conda retired; `setup_venv.bash` now builds one `.venv/` from `requirements.txt` on any host. DECISIONS §2026-09-22.
+- Test suite: 274 tests across 21 files, all green in the root `.venv`.
+- Everything above is uncommitted; Jacob commits separately.
+
 ## 2026-09-10
 
 - Root scripts (`test_optim`/`test_gpu`/`debug_optim`/`check_diff` .bash, `run_gpu.slurm`, `profile_render`/`profile_gpu` .py/.bash, `make_beam_image.py`) repointed at this checkout instead of the legacy `/home/jamesh` tree. `2af1cef`.

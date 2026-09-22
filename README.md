@@ -24,8 +24,9 @@ real beamline camera.
   - [Pre-computed templates (the default)](#pre-computed-templates-the-default)
   - [Interactive control page](#interactive-control-page)
   - [HTTP endpoints](#http-endpoints)
+- [Driving it from dcss and BluIce](#driving-it-from-dcss-and-bluice)
 - [Scene template](#scene-template)
-- [Python interpreter](#python-interpreter)
+- [Environment](#environment)
 
 Every CLI flag, scene key and environment variable is tabulated in
 [`docs/RUNBOOK.md`](docs/RUNBOOK.md#every-lever).
@@ -57,7 +58,7 @@ through the scene:
   produces edges sharper than any real objective can form; without this the picture
   is visibly blocky at higher zoom. See `loop_sim/renderer/optics.py`.
 
-**X-ray path** (`/beam`, `/xray`) is a separate modality: the beam is grid-cast
+**X-ray path** (`/beam`, `/xray`, `render.py --xray`) is a separate modality: the beam is grid-cast
 through the scene as straight lines, and per-material path lengths give illuminated
 volume, absorbed dose and a transmission radiograph via Beer-Lambert. The objective
 PSF does not apply; there is no objective.
@@ -85,18 +86,20 @@ Rationale and the measurements behind each choice are in
 
 ## Quick start (pre-built scene)
 
-Use the interpreter in [Python interpreter](#python-interpreter) below; the system
-`python3` has none of the packages this needs.
+Build the env: `bash setup_venv.bash` (see [Environment](#environment)).
 
 ```bash
 # Render the default scene at rest position
-python3 render.py scene_files/hampton_300um.yaml --n-cond 7
+.venv/bin/python render.py data/scene_files/hampton_300um.yaml --n-cond 7
 
 # Rotate the sample 45° about the goniometer spindle and render
-python3 render.py scene_files/hampton_300um.yaml --rotx 45 --n-cond 7
+.venv/bin/python render.py data/scene_files/hampton_300um.yaml --rotx 45 --n-cond 7
 
 # Translate the loop so the crystal is off-center
-python3 render.py scene_files/hampton_300um.yaml --tx 0.05 --ty -0.02 --n-cond 7
+.venv/bin/python render.py data/scene_files/hampton_300um.yaml --tx 0.05 --ty -0.02 --n-cond 7
+
+# Single-shot X-ray radiograph at the same pose
+.venv/bin/python render.py data/scene_files/hampton_300um.yaml --xray
 ```
 
 `--n-cond 7` uses one centre + six-point hex ring of condenser rays per pixel,
@@ -106,14 +109,21 @@ reference and both produce the same image.
 
 Which motor is the spindle (φ) depends on the scene: it is whichever of
 `rotx`/`roty`/`rotz` matches the scene's rotation-axis config and the pin's
-mounting direction. For the bundled `scene_files/` scenes the spindle is
+mounting direction. For the bundled `data/scene_files/` scenes the spindle is
 `rotx`; `roty`/`rotz` tilt the sample out of that plane.
 
-Output is written to `scene_files/hampton_300um.jpg` (or `--output myfile.jpg`).
+Output is written to `data/scene_files/hampton_300um.jpg` (or `--output myfile.jpg`).
+`--xray` writes `data/scene_files/hampton_300um_xray.png` instead.
 
 ---
 
 ## Full pipeline from a real loop image
+
+Each step writes its output beside itself at the repo root (`hoop.yaml`,
+`loop.yaml`, `droplet.yaml`, `crystal.yaml`, `scene.yaml`); those outputs are
+gitignored. No real loop photo to digitize? `data/scene_files/examples/hoop.yaml`
+is a sample digitized hoop: pass it to step 2 in place of `hoop.yaml` and skip
+step 1.
 
 ### 1. Digitize the fiber
 
@@ -185,7 +195,7 @@ beamline camera in any software that speaks AXIS (MxCuBE, EPICS areaDetector,
 browser, VLC, etc.).
 
 ```bash
-python -m loop_sim.server.camera_server --scene scene_files/hampton_300um.yaml --port 8080
+.venv/bin/python -m loop_sim.server.camera_server --scene data/scene_files/hampton_300um.yaml --port 8080
 ```
 
 A new server needs five flags:
@@ -212,7 +222,7 @@ Or from Python:
 from loop_sim.scene.scene       import load
 from loop_sim.server.camera_server import CameraServer
 
-scene  = load("scene_files/hampton_300um.yaml")
+scene  = load("data/scene_files/hampton_300um.yaml")
 server = CameraServer(scene, host="0.0.0.0", port=8080, n_cond=7)
 server.start()   # blocks; Ctrl-C to stop
 ```
@@ -221,15 +231,19 @@ server.start()   # blocks; Ctrl-C to stop
 
 The camera is orthographic, so the spindle is the only motor that changes
 image content: everything else is an image-space transform. The server
-therefore renders one 360° sweep per scene, stores it in `frame_library/`, and
-serves every frame by cropping, scaling and blurring a template. On startup it
-checks for a current library and builds one if it is missing or stale, so the
-first launch for a new scene is slow and every launch after it is instant.
+therefore renders one 360° sweep per scene ahead of time, stores it in
+`data/frame_library/`, and serves every frame by cropping, scaling and
+blurring a template.
+
+The server itself never builds a library. `--templates on` (the default)
+serves whatever is on disk, current or stale, warning once when it is stale;
+a scene with no library at all renders live and the server prints the exact
+build command to run. `--templates off` raytraces every frame live regardless.
+Building is `.venv/bin/python -m loop_sim.library --scene <scene.yaml>`; see
+`docs/RUNBOOK.md` "Frame libraries" for the build flags.
 
 Frames are served in **single-digit milliseconds** and **no GPU is needed at
-runtime**: a GPU only accelerates building the library. Pass `--templates off`
-to raytrace every frame live instead. See `docs/RUNBOOK.md` "Frame libraries"
-for the build flags.
+runtime**: a GPU only accelerates building a library.
 
 ### Interactive control page
 
@@ -247,15 +261,15 @@ dial.
 | Endpoint | Description |
 |---|---|
 | `GET /` | Interactive control page (HTML) |
-| `GET /axis-cgi/mjpg/video.cgi` | MJPEG stream |
-| `GET /axis-cgi/jpg/image.cgi` | Single JPEG snapshot |
+| `GET /axis-cgi/mjpg/video.cgi` | MJPEG stream; `camera=N` serves that request at a zoom stop from `--camera-zoom` (default `1:1.0,2:0.5,3:0.25`) |
+| `GET /axis-cgi/jpg/image.cgi` | Single JPEG snapshot; same `camera=N` zoom-stop override |
 | `GET /motor?tx=0.05&roty=45` | Set motors instantly, returns JSON state |
-| `GET /move?drotx=90&speed=2` | **Animated** move; returns target JSON state |
+| `GET /move?drotx=90&speed=2` | **Animated** move; returns target JSON state (see below) |
 | `GET /recenter?px=400&py=300` | Animated move bringing a pixel to the centre |
+| `GET /status` | `{"positions": {...}, "target": {...}, "moving": bool}`: live pose, last commanded target, whether an animated move is running |
+| `GET/POST /video-trigger?state=open\|closed` | While open, every newly published frame is POSTed to `--jpeg-receiver`; `GET` returns `{"state": ...}` |
 | `GET /beam` | X-ray illuminated volumes + Beer-Lambert attenuation (JSON) |
-| `GET /xray` | X-ray transmission map / radiograph, single-shot (grayscale PNG) |
-| `GET /xray-stream` | X-ray radiograph MJPEG-style push stream (~28 fps in motion); only runs once a producer starts via `POST /stream-mode` |
-| `POST /stream-mode?mode=microscope\|radiograph` | Start (`radiograph`) or stop (`microscope`) the X-ray stream producer; the optical MJPEG stream is unaffected |
+| `GET /xray` | X-ray transmission radiograph, single-shot, rendered live (grayscale PNG) |
 | `GET /scenes` | Switchable scenes and the state of each one's frame library (JSON) |
 | `GET /scene` | The scene being served, plus progress/errors of any switch in flight |
 | `POST /scene?path=<scene>&build=preview\|full` | Switch scenes at runtime (see below) |
@@ -264,12 +278,14 @@ dial.
 `zoom` (dimensionless; `zoom=2` halves pixel size).
 
 **`/move` parameters:** any absolute motor key, relative deltas (`dtx`, `drotx`,
-`dzoom`, …), screen-fraction pan (`panx`, `pany`; ±1 = one field of view), and
-`speed` (`>1` faster, `<1` slow-motion).
+`dzoom`, …), screen-fraction pan (`panx`, `pany`; ±1 = one field of view),
+`speed` (`>1` faster, `<1` slow-motion), and `duration=<s>` to fix the move's
+wall time instead of `speed` (`duration=0` commits the target at once, like
+`/motor`).
 
 ### Switching scenes without restarting
 
-The control page has a **tab per scene** in `scene_files/`; clicking one swaps
+The control page has a **tab per scene** in `data/scene_files/`; clicking one swaps
 the served sample live without restarting or dropping the stream. The pose
 resets to home on a switch: a millimetre does not mean the same thing in two
 scenes with different pixel sizes.
@@ -316,6 +332,19 @@ the fraction of the whole beam that exits the sample; Σ `absorbed_dose` +
 
 ---
 
+## Driving it from dcss and BluIce
+
+`xtalLoopSimDHS/` is a DCSS hardware server that owns the goniometer motors in
+a sandbox database and drives this camera server over HTTP, so BluIce's motor
+widgets and centering scripts move the simulated sample the way they move the
+real goniometer. It announces itself to dcss as `xtalLoopSimDHS`, never
+`pmac2`. See [`xtalLoopSimDHS/README.md`](xtalLoopSimDHS/README.md) for the
+wire contract and
+[`sandbox/README.md`](xtalLoopSimDHS/sandbox/README.md) for the sandbox
+database and BluIce setup.
+
+---
+
 ## Scene template
 
 `template.yaml` controls camera geometry, NA, pixel size, beam profile, and
@@ -326,7 +355,7 @@ material optical/X-ray properties.  Key fields:
 > pitch (0.8233 µm) as a square pixel, but the BL831 sample camera's pixels are
 > 1.110 non-square, so its vertical field of view comes out 9.91% short. The scenes
 > that ship use 640 × 7.4 µm square, which is the *mid* stop rendered correctly on
-> square pixels (same field of view to under 1%). See `real_images/README.md`.
+> square pixels (same field of view to under 1%). See `data/real_images/README.md`.
 
 ```yaml
 camera:
@@ -348,12 +377,16 @@ an absorbing one. Keep water-like solvents near-white.
 
 ---
 
-## Python interpreter
+## Environment
 
-On the beamline, use the fixed interpreter path below; it carries the torch
-build this project needs. On a dev box, build your own env: see
+Build the environment once:
+
+```bash
+bash setup_venv.bash
+```
+
+This creates `.venv/` from `requirements.txt` and runs the test suite;
+`--force` rebuilds it. Every command in this README is `.venv/bin/python ...`
+from the repo root. Details, including the beamline base interpreter and the
+DHS's own separate `.venv`, are in
 [`docs/RUNBOOK.md`](docs/RUNBOOK.md#environment-from-nothing).
-
-```
-/programs/pytorch/envs/pt/bin/python
-```

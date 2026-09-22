@@ -4,9 +4,12 @@ Bright-field microscope simulator for protein crystals mounted in nylon cryo-loo
 
 ## Interpreter and verify
 
-Beamline: `/programs/pytorch/envs/pt/bin/python`, never the system `python3`.
-Dev box: conda env `loopsim`.
-Verify: `python -m pytest tests/ -q` from the repo root. GPU tests skip on CPU-only boxes.
+`.venv/bin/python`, built by `bash setup_venv.bash` (same recipe on a dev box, voltron,
+and dataserver3). Never the system `python3` or a conda python.
+Verify: `.venv/bin/python -m pytest tests/ -q` from the repo root. GPU tests skip on
+CPU-only boxes. On a 17 GB WSL2 box the full-suite invocation can exhaust RAM; run one
+file at a time instead (`for f in tests/test_*.py; do .venv/bin/python -m pytest $f -q; done`),
+see docs/RUNBOOK.md "Verify".
 
 ## Invariants
 
@@ -15,19 +18,14 @@ Verify: `python -m pytest tests/ -q` from the repo root. GPU tests skip on CPU-o
 - Crystal must come before droplet in a scene's object list.
 - The stem is two tube objects, never one.
 - Material `color` is an absorption spectrum, not just display RGB.
-- `loop_sim/library/frame_library.py`'s `_RENDER_SOURCES` hashes `renderer/microscope.py`,
-  `engine_torch.py`, `optics.py`, `motors/goniometer.py`, and `scene/*.py` into `render_sha`.
-  An edit to any of them grades the three optical libraries stale, and a bare server
-  launch rebuilds them. The X-ray libraries hash their own list (`xray_torch.py`,
-  `engine_torch.py`, `beam.py`, `scene/*.py`, `motors/goniometer.py`). Re-stamp the manifests only after proving pixels unchanged.
-- `renderer/` is enumerated file by file and `scene/*.py` is globbed. A new module that
-  changes template pixels must be added to `_RENDER_SOURCES` by name or its edits never
-  grade a library stale; a serve-time module (`field.py`, `pin_projection.py`,
-  `torch_compat.py`) must stay out of the hash, which is why those live in `renderer/`.
-- Never set `--time` in `run_gpu.slurm`.
 - `n_cond` above 7 buys nothing.
-- Only `mitegen_200um` needs `--supersample 1` on a bare launch; the other two libraries
-  are safe bare.
+- Never set `--time` in `tools/run_gpu.slurm`.
+- `loop_sim/library/frame_library.py`'s `_RENDER_SOURCES` hashes `renderer/microscope.py`,
+  `engine_torch.py`, `optics.py`, `motors/goniometer.py`, and `scene/*.py`: that list is
+  still the one whose edits change template pixels. Editing one of them no longer
+  rebuilds anything: it makes `tests/test_render_sha_frozen.py` red, and
+  `python -m loop_sim.library --verify --scene <s>` is how you find out whether pixels
+  actually moved. Nothing rebuilds a library except `--force`; the server never builds.
 
 ## Where things are
 
@@ -37,6 +35,9 @@ Verify: `python -m pytest tests/ -q` from the repo root. GPU tests skip on CPU-o
 - docs/DECISIONS.md: rationale and dead ends. Add an entry; never correct one in place.
 - docs/DATA.md: artifact tables (paths, sizes, provenance).
 - docs/WORK_LOG.md: dated history, newest first.
+- data/: scene_files/, frame_library/, real_images/.
+- tools/: benchmarks, profilers, the SLURM job.
+- xtalLoopSimDHS/README.md: the DCSS hardware server, its own venv.
 
 ## Docs rules
 

@@ -7,6 +7,89 @@ never append a dated correction beside the old sentence.
 
 ## Decisions
 
+### 2026-09-22: the X-ray radiograph library is retired; radiographs render live
+
+Deleted: `xray_library/` (1083 files), `loop_sim/library/xray_library.py`, `--modality`, `XrayTemplateSource`, the `/xray-stream` push stream, `POST /stream-mode`, `--xray-library-root`, and the control page's Microscope/Radiograph toggle. `GET /xray` stays and renders the live goniometer pose on every request (torch when the engine is loaded, else numpy, one-slot memo per pose); `GET /beam` and `make_beam_image.py` are unchanged.
+
+Reason, the team's finding rather than a measurement made in this repo: the X-ray detector sits at a finite distance from the sample, so translating along the beam changes magnification and the view is not an orthographic projection. The optical library's whole design rests on lateral translation being an exact pixel roll (§2026-07-28 "deliver a pre-computed rotation sweep"); a radiograph sweep can't be replayed as crops the same way, so a library was paying a build's cost for none of a library's benefit.
+
+New: `render.py --xray`, the same pose flags as the optical path, writes an 8-bit greyscale PNG to `--output` or `<scene_stem>_xray.png` beside the scene (CPU via `render_xray_numpy`, `--device cuda` via `render_xray_torch`, sharing the `beam.transmission_png` encoder with `/xray`). James's master had no radiograph output at all, only `/beam` and `make_beam_image.py`; this flag is new, not restored. `tools/bench_frame.py` keeps `--modality xray`, timing the live tracers rather than a library.
+
+Supersedes, in full: §2026-08-19 "radiograph ships as a push stream", §2026-08-19 "three X-ray radiograph libraries built", §2026-08-19 "Microscope/Radiograph toggle and /beam panel ship", §2026-08-18 "X-ray radiograph frame library module (xray_library.py)".
+
+### 2026-09-22: a frame library is never rebuilt without being asked: the renderer digest becomes advisory
+
+`render_sha` is no longer a build key. `_BUILD_KEYS` is now `axis, step_deg, n_cond, supersample, pan_mm, jpeg_quality, format, psf`; a `scene_sha256` mismatch is the only thing that grades a library "missing". `render_sha` and `built_utc` are still written, plus a new manifest field `built_commit` (`git describe --always --dirty`, "unknown" outside git).
+
+Why: `render_sha` hashed the renderer source files by name (§2026-08-10), so any renderer edit, including one that changed no pixel-deciding line, graded a library stale and the launch path rebuilt it before the socket bound, 47 min to 9.5 h depending on the scene (the 2026-08-10 hazard, and HANDOFF open item 2). The digest measured whether a file changed, not whether the output did: too sharp a signal for a build key.
+
+The camera server never builds now. Launch grades through `_pick_library`, the same function the tab strip and the switch path already used: current serves; stale serves plus one warning naming what differs; no library renders live and prints the exact build command. This closes HANDOFF open item 2 (launch-vs-switch grading disagreement).
+
+Builds are atomic: `build_library` renders into `<lib>.new`, then swaps (old to `.old`, `.new` to the live path, `.old` removed). A crash or Ctrl-C during a build never removes a working library; the old "delete the manifest first" behaviour is gone.
+
+CLI surface: `python -m loop_sim.library --scene X` builds only when the library is missing; current or stale is reported and skipped. `--force` is the only way to rebuild. `--status [--scene X | --all]` prints status, `library_provenance()` (for example "built 2026-08-11 21:30 UTC, supersample 4, n_cond 7, step 1.0 deg, png", appending "; renderer source changed since the build (run --verify or rebuild)" when the stored `render_sha` differs from the code's), and the differences against today's `_BUILD_KEYS`. `--verify --scene X [--verify-angle DEG]` re-renders one stored frame live (CUDA unless `--allow-cpu`) and reports worst and mean grey-level difference: PASS at ≤1 level, exit 1 on FAIL. Verified today: mitegen angle 0 and hampton angle 37 both PASS at 0.
+
+Two graders can disagree and both be right: the CLI's `--status` grades against the build defaults (supersample 4), so `mitegen_200um` reads stale; the server grades against the flags it was launched with, and a launch that passed no `--supersample` doesn't care about it, so the same library reads current in `/scenes` and carries no badge. Passing `--supersample 4` at launch makes the server report it stale too, and it still serves it.
+
+Current state: `hampton_300um` and `hampton_300um_realistic` are current; `mitegen_200um` is stale (built at supersample 1, the default asks 4, served as-is). All three manifests changed only in the informational `scene` path (`data/scene_files/...`); pixels and `scene_sha256` are untouched, `render_sha` (`db3a7ad5...`) is unchanged, and `tests/test_render_sha_frozen.py` pins that digest as a tripwire: red means a hashed tracer file was edited, run `--verify`. `tests/test_cli_surface.py` freezes the flag set and default output names of James's seven root scripts as captured from master; HEAD must stay a superset.
+
+Rejected: a `RENDER_VERSION` constant bumped by hand on a renderer edit (the council's proposal), overkill against the actual failure, since a human still has to remember to bump it, and a forgotten bump is silently wrong the same way the old hash was silently right. The one-frame `--verify` replaces the hash as the guard: it measures whether a stored frame still matches a live render, instead of proxying that through source bytes.
+
+Supersedes 2026-08-06 "a stale frame library is served as-is, never silently rebuilt" only in part: the stale/missing split that entry introduced still stands; what changes here is what counts as stale (`render_sha` dropped out of `_BUILD_KEYS`) and what a bare launch does about it (serve with a warning, never rebuild).
+
+### 2026-09-22: the goniometer is driven over the DCS protocol by xtalLoopSimDHS, a separate process
+
+`xtalLoopSimDHS/` is a pydhsfw hardware DHS that drives the simulator's goniometer as one of dcss's real hardware devices, not as a scripted stand-in inside the camera server. In a sandbox database re-pointed at it, it owns the devices the real `pmac2DHS` owns on the beamline: `gonio_phi`, `absolute_phi`, `sample_x/y/z`, and the shutters `shutter`/`detector_trigger`/`video_trigger`. It renders nothing; it drives the camera server over localhost HTTP (`/status`, `/move duration=`, `/motor`, `/video-trigger`), mirroring the beamline's own split, where `pmac2` moves the motors and the AXIS box serves the pixels, meeting only at the `video_trigger` line.
+
+Never named `pmac2`: `pmac2` is the real Delta Tau DHS (`bl831-dhs-tcl/pmac2DHS.tcl`), and naming the simulator after it would make a database row or a log line ambiguous about which process actually moved a motor.
+
+`camera_zoom` is deliberately not registered as a device: it is a dcss-internal pseudo-motor with no hardware behind it on the real beamline either, so there is no motor for a DHS to own.
+
+The camera server pushes JPEGs to the receiver (`--jpeg-receiver`, `--push-fps`), not the DHS: the camera server holds the frames, the same way the real AXIS box does, so the push has to start from where the pixels already live. The DHS never sees a frame.
+
+Motor table (from BL-831.dat): `gonio_phi` maps to `rotx` in degrees, scale 8385, speed 9e6, accel 2e4, circle 0..360; `absolute_phi` is the same spindle unwrapped; `sample_x/y/z` map to `tx/ty/tz` in mm, scale 16968, speed 5000, accel 100, sign per axis in config. Move duration is `|delta| * scale / speed` (floor 0.05 s), position updates every 0.1 s, positions sent as `%g` strings.
+
+Two modes, `real` and `pretend`, two configs: `config/LOCAL.config` (dcss on localhost:14242) and `config/SIM831.config` (localhost:15242); a config naming the production dcss host is refused unless the beamline word is `SIM831`. Launcher: `xtalLoopSimDHS.sh real|pretend [LOCAL|SIM831] [-v...]`. 27 offline tests (`xtalLoopSimDHS/.venv/bin/python -m pytest tests -q`, ~20 s).
+
+pydhsfw gaps filled locally rather than upstream: `stoh_start_oscillation` (absent from pydhsfw; `loopFast.tcl`'s centering sends it), `htos_configure_shutter`, and a two-token `htos_report_shutter_state`.
+
+Rejected designs:
+- DCSS operations (the cvGoniSafety pattern: `stoh_start_operation` with the pose as arguments): dcss drives a goniometer with `stoh_start_motor_move` to the motor's own DHS, and BluIce's motor widgets, `moveSample` and `loopFast.tcl` all address the motors by name, so a simulator reachable only through an operation would leave every one of them dead.
+- A passive dcss listener: can't answer `htos_configure_device` before BluIce accepts a move, so BluIce shows the motors offline.
+- A dcss client living inside the camera server: dcss pins a DHS to a host by source IP, the camera server holds a prewarmed cache and torch while a DHS needs to restart alongside dcss, and pydhsfw and torch shouldn't share a venv.
+- A sibling repo, separate from the simulator: meaningless without the simulator it would drive.
+
+Beamline facts behind this design, from the GitLab mirrors: BluIce issues `gtos_start_motor_move <motor> <pos>`; dcss forwards `stoh_start_motor_move` to the device's hardwareHost; a DHS must answer `htos_configure_device` before BluIce accepts a move and end every move with `htos_motor_move_completed`; dcss authenticates a DHS by its database host row plus source IP. BluIce's Sample video comes from the tomcat VideoSystem proxy (dataserver3:8080), which pulls `/axis-cgi/mjpg/video.cgi` from the AXIS server; `loopFast` fetches `image.cgi?camera=1` from axis6, and `start_oscillation gonio_phi video_trigger` makes the AXIS push JPEGs to loopDHS's jpeg_receiver (dataserver3:9000).
+
+### 2026-09-22: layout: data/, tools/, one .venv, James's seven scripts stay at the root
+
+New top-level layout:
+```
+xtal-loop-sim/
+  render.py digitize_fiber.py add_stem.py add_droplet.py add_crystal.py generate_scene.py
+  make_beam_image.py                      # James's seven scripts, flags unchanged since master
+  template.yaml requirements.txt setup_venv.bash README.md CLAUDE.md .gitignore
+  loop_sim/  crystal_harvester/  tests/  docs/
+  data/scene_files/{hampton_300um,hampton_300um_realistic,mitegen_200um}.yaml
+  data/scene_files/examples/hoop.yaml     # the one pipeline sample kept
+  data/frame_library/<scene>/             # 3 tracked optical libraries, unchanged pixels
+  data/real_images/                       # 44 BL831 photos + MANIFEST.tsv + README
+  tools/  bench_frame.py bench_serve.py acceptance_voltron.py profile_gpu.py profile_render.py
+          profile_gpu.bash profile_render.bash test_gpu.bash test_optim.bash debug_optim.bash
+          check_diff.bash run_gpu.slurm
+  xtalLoopSimDHS/                         # own README, own .venv
+  scratch/                                # gitignored, local only, not mirrored
+```
+`tools/` scripts run from the repo root (`bash tools/test_gpu.bash`, `sbatch tools/run_gpu.slurm`); they `cd` there themselves. James's seven scripts stay at the root with their flags unchanged since master, which `tests/test_cli_surface.py` freezes.
+
+Deleted: `xray_library/` (see the entry above), `loop_sim/library/xray_library.py`, `crystal.yaml`, `droplet.yaml` (both regenerable pipeline outputs, not source), `setup_titan_v_env.bash` (folded into `setup_venv.bash`), `tests/test_xray_library.py`, `tests/test_xray_stream.py`, the root one-off PNGs, `bench_results/`, `.omc/`, `.slot-machine/`, `.claude/`. The pipeline's root outputs (`/hoop.yaml`, `/loop.yaml`, `/droplet.yaml`, `/crystal.yaml`, `/scene.yaml`, `/beam.png`) are gitignored at the root; the scripts still write beside themselves the way James's did. `tools/bench_frame.py` now writes `tools/bench_results/`, also gitignored.
+
+Conda is retired; one `.venv` per project. `bash setup_venv.bash` creates `.venv/` from `requirements.txt` (`--only-binary=:all:`), prints the torch/CUDA it found, and runs `pytest tests/`; `--force` rebuilds, `--skip-tests` skips the run, `--acceptance` also runs `tools/acceptance_voltron.py`. It picks `/home/programs/pytorch/envs/pt/bin/python3.10` as the base interpreter when present (the beamline), else `/usr/bin/python3`, never a conda python (pillow 10.4 has no 3.13 wheel), and exports devtoolset-7's `CC`/`CXX` when present, for `torch.compile` on voltron. Retired because one script now builds the same `.venv/` on the dev box, voltron, and dataserver3, where conda needed a separately maintained environment per host. The old `~/projects/loopsim-torch26` venv and using the `pt` env as the interpreter directly are both gone from the docs; the `pt` env is now only the venv's base interpreter on the beamline. The DHS keeps its own `xtalLoopSimDHS/.venv` (pydhsfw, PyYAML, verboselogs, coloredlogs, no torch), recipe in `xtalLoopSimDHS/README.md`; serving from templates never imports torch, only building or rendering does.
+
+Known drift against James's master, stated plainly: `render.py --device cuda` now routes to `engine_torch` (measured byte-identical) and falls back to CPU when no CUDA is present; `CameraServer`'s Python API default `fps_limit` changed from 5 to 30; the five root helper scripts render `data/scene_files/hampton_300um.yaml`, where James's rendered his own untracked `scene.yaml`.
+
+`data/real_images/` (44 BL831 photographs, `MANIFEST.tsv`, its own README) is kept, not deleted with the other non-source artifacts: the camera model and the pin's specular streak (both §2026-08-10) are calibrated against these photographs, not derived from anything this repo can regenerate.
+
 ### 2026-09-10: cleanup pass, and the helpers kept apart on purpose
 
 The code cleanup (commits 2af1cef, 0565816, 5dc7f16) deleted 362 lines of dead code,
@@ -628,6 +711,14 @@ independent condenser rays can each flip a different set of edge pixels.
 - Crystal must be listed before droplet in scene priority. A crystal voxel is also inside the droplet; if droplet is listed first, every crystal voxel is assigned `solvent` and the crystal renders invisible.
 
 ## Already Tried
+
+### numpy mesh parity at 96x72 on the 50,976-face droplet
+
+Measured 2026-09-22: the numpy mesh reference in `tests/test_torch_render_parity` at the
+original 96x72 resolution needs more than 17 GB to build for the flagship mesh scene;
+running the full test suite as one invocation on a 17 GB WSL2 box exhausted RAM and
+crashed it. Those tests now run at 24x18, 2.1 GB. Reopen at 96x72 only on a box with real
+headroom past 17 GB.
 
 ### probe-ray material lookup after an interface (`_obj_index_at_points_batch`)
 
