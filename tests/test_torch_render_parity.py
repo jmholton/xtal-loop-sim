@@ -22,9 +22,10 @@ from loop_sim.motors.goniometer import Goniometer
 from loop_sim.renderer.microscope import render as np_render
 from loop_sim.renderer.engine_torch import TorchScene, render_torch
 
-HAMPTON = os.path.join(REPO_ROOT, "scene_files", "hampton_300um.yaml")
-MITEGEN = os.path.join(REPO_ROOT, "scene_files", "mitegen_200um.yaml")
-REALISTIC = os.path.join(REPO_ROOT, "scene_files", "hampton_300um_realistic.yaml")
+SCENE_DIR = os.path.join(REPO_ROOT, "data", "scene_files")
+HAMPTON = os.path.join(SCENE_DIR, "hampton_300um.yaml")
+MITEGEN = os.path.join(SCENE_DIR, "mitegen_200um.yaml")
+REALISTIC = os.path.join(SCENE_DIR, "hampton_300um_realistic.yaml")
 
 
 def _u8(img):
@@ -63,14 +64,22 @@ def test_render_parity_cpu_f64_mitegen_thinshell():
     assert int(np.abs(a - b).max()) == 0
 
 
-# The mesh path at full scale: `hampton_300um_realistic` (5472 faces, a
-# real SurfaceMesh, the scene whose library build dominates every timing
+# The mesh path at full scale: `hampton_300um_realistic` (a 50,976-face
+# SurfaceMesh droplet, the scene whose library build dominates every timing
 # in the docs) must be pinned here, not just mitegen's 234-face ThinShell.
 # rotx=45 puts the droplet, the loop fiber and the pin CSG all in frame at
 # once.
+#
+# Resolution is the memory knob: the numpy reference intersects every mesh ray
+# against every face as (B, F, 3) float64 arrays, ~1.2 MB per ray on this
+# droplet, and several of them are live at once. 96x72 needed more than the
+# 17 GB of a WSL2 dev box; 24x18 fits in a few GB and pins the same code paths.
+MESH_RES = (24, 18)
+
+
 @pytest.mark.parametrize("pose", [{}, {"rotx": 45}])
 def test_render_parity_cpu_f64_realistic_droplet_mesh(pose):
-    a, b = _render_pair(REALISTIC, CPU, pose, res=(96, 72))
+    a, b = _render_pair(REALISTIC, CPU, pose, res=MESH_RES)
     assert int(np.abs(a - b).max()) == 0
 
 
@@ -81,10 +90,10 @@ def test_render_parity_cuda_realistic_droplet_mesh(pose):
 
     `TSurfaceMesh` is a different implementation from the numpy `SurfaceMesh`
     (brute-force vs culled), so CPU parity alone does not prove the CUDA mesh
-    path.  Reduced resolution keeps this affordable -- full res on this scene is
-    ~30 s -- while still running the real kernel over the real 5472 faces.
+    path. The numpy reference sets the resolution (see MESH_RES); the CUDA
+    kernel still runs over all 50,976 faces.
     """
-    a, b = _render_pair(REALISTIC, torch.device("cuda"), pose, res=(320, 240))
+    a, b = _render_pair(REALISTIC, torch.device("cuda"), pose, res=MESH_RES)
     assert int(np.abs(a - b).max()) == 0
 
 

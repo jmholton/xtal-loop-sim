@@ -15,6 +15,8 @@ import pytest
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
+SCENE_DIR = os.path.join(REPO_ROOT, "data", "scene_files")
+LIB_ROOT = os.path.join(REPO_ROOT, "data", "frame_library")
 
 from loop_sim.renderer import field as F
 
@@ -401,13 +403,13 @@ def test_streak_refuses_mitegen_at_every_angle():
     from loop_sim.renderer.pin_projection import project_pin, template_mapper
     from loop_sim.scene.scene import load as load_scene
 
-    lib = os.path.join(REPO_ROOT, "frame_library", "mitegen_200um")
+    lib = os.path.join(LIB_ROOT, "mitegen_200um")
     man_path = os.path.join(lib, "manifest.json")
     if not os.path.exists(man_path):
         pytest.skip("mitegen_200um library not present")
     with open(man_path) as fh:
         man = json.load(fh)
-    scene = load_scene(os.path.join(REPO_ROOT, "scene_files", "mitegen_200um.yaml"))
+    scene = load_scene(os.path.join(SCENE_DIR, "mitegen_200um.yaml"))
 
     fired = []
     for ang in range(0, 360, 15):
@@ -442,14 +444,13 @@ def test_streak_never_lands_on_the_droplet():
     from loop_sim.renderer.pin_projection import project_pin, template_mapper
     from loop_sim.scene.scene import load as load_scene
 
-    lib = os.path.join(REPO_ROOT, "frame_library", "hampton_300um_realistic")
+    lib = os.path.join(LIB_ROOT, "hampton_300um_realistic")
     man_path = os.path.join(lib, "manifest.json")
     if not os.path.exists(man_path):
         pytest.skip("hampton_300um_realistic library not present")
     with open(man_path) as fh:
         man = json.load(fh)
-    scene = load_scene(os.path.join(REPO_ROOT, "scene_files",
-                                    "hampton_300um_realistic.yaml"))
+    scene = load_scene(os.path.join(SCENE_DIR, "hampton_300um_realistic.yaml"))
     win, tw = man["window_mm"], int(man["rendered"]["width"])
     sensor_w = F.SENSOR_WH[0]
 
@@ -498,14 +499,13 @@ def test_projected_pin_matches_the_rendered_silhouette():
     from loop_sim.renderer.pin_projection import project_pin, template_mapper
     from loop_sim.scene.scene import load as load_scene
 
-    lib = os.path.join(REPO_ROOT, "frame_library", "hampton_300um_realistic")
+    lib = os.path.join(LIB_ROOT, "hampton_300um_realistic")
     man_path = os.path.join(lib, "manifest.json")
     if not os.path.exists(man_path):
         pytest.skip("hampton_300um_realistic library not present")
     with open(man_path) as fh:
         man = json.load(fh)
-    scene = load_scene(os.path.join(REPO_ROOT, "scene_files",
-                                    "hampton_300um_realistic.yaml"))
+    scene = load_scene(os.path.join(SCENE_DIR, "hampton_300um_realistic.yaml"))
 
     for zoom, col in ((1.0, 660), (1.5, 660), (2.0, 690)):
         rec = frame_for_angle(man, 0.0)

@@ -319,3 +319,18 @@ def render_xray_numpy(scene, goniometer):
     tau = np.array([sum(mat.mu_xray * length for mat, length in d.items())
                     for d in pls])
     return np.exp(-tau).reshape(H, W)
+
+
+def transmission_png(T):
+    """8-bit greyscale PNG bytes for an (H, W) transmission map.
+
+    The one transmission-to-grey mapping: GET /xray and `render.py --xray`
+    both encode through here, so the two agree byte for byte.
+    """
+    import io
+    from PIL import Image
+
+    img8 = (np.clip(np.asarray(T, dtype=np.float64), 0.0, 1.0) * 255).astype(np.uint8)
+    buf = io.BytesIO()
+    Image.fromarray(img8, mode="L").save(buf, format="PNG")
+    return buf.getvalue()

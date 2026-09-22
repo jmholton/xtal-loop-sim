@@ -28,7 +28,7 @@ from loop_sim.renderer import engine_torch
 from loop_sim.renderer.engine_torch import TorchScene, render_torch
 from loop_sim.server.camera_server import CameraServer
 
-HAMPTON = os.path.join(REPO_ROOT, "scene_files", "hampton_300um.yaml")
+HAMPTON = os.path.join(REPO_ROOT, "data", "scene_files", "hampton_300um.yaml")
 
 cuda_only = pytest.mark.skipif(not torch.cuda.is_available(),
                                reason="CUDA not available")

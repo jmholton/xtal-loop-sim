@@ -6,14 +6,21 @@ Endpoints
 GET /axis-cgi/mjpg/video.cgi
     MJPEG stream  (multipart/x-mixed-replace).
     Client connects and receives a continuous stream of JPEG frames.
+    `camera=N` picks a zoom stop from the --camera-zoom table (see
+    `_Handler._camera_zoom`); other VAPIX parameters are ignored.
 
 GET /axis-cgi/jpg/image.cgi
-    Single JPEG snapshot of the current view.
+    Single JPEG snapshot of the current view.  Takes `camera=N` like the
+    stream.
 
 GET/POST /motor
     Set motor positions.  Parameters: tx, ty, tz, rotx, roty, rotz, zoom.
     All are optional; unspecified motors keep their current values.
     Returns JSON with current motor state.
+
+GET /status
+    {"positions": {...}, "target": {...}, "moving": bool}: the live pose,
+    the last commanded target, and whether an animated move is running.
 
 GET /beam
     Compute and return X-ray beam illuminated volumes + attenuation as JSON.
@@ -21,6 +28,7 @@ GET /beam
 GET /xray
     Per-pixel X-ray transmission map (radiograph) as a grayscale PNG,
     registered to the optical view (bright = transmitted, dark = absorbed).
+    Rendered live on every new pose.
 
 GET / , /index.html
     Interactive control page (live MJPEG view + pan/rotate/zoom buttons,
@@ -29,19 +37,17 @@ GET / , /index.html
 GET/POST /move
     Animated move.  Absolute motor keys (tx, ty, ...), relative deltas
     (dtx, drotx, ...), screen-fraction pan (panx, pany), and `speed`
-    (>1 faster, <1 slow-motion).  The sample interpolates to the target
-    instead of teleporting.  Returns the target motor state as JSON.
+    (>1 faster, <1 slow-motion).  `duration=<s>` instead fixes the move's
+    wall time; `duration=0` commits the target at once, like /motor.  The
+    sample interpolates to the target instead of teleporting.  Returns the
+    target motor state as JSON.
 
 GET /recenter?px=COL&py=ROW
     Animated move that brings the clicked pixel to the image centre.
 
-GET /xray-stream
-    Push stream of X-ray radiograph frames (multipart/x-mixed-replace,
-    PNG per part).  Idle until started by POST /stream-mode.
-
-POST /stream-mode
-    Start or stop the X-ray radiograph push stream.  Parameter: mode
-    ("radiograph" to start, "microscope" to stop).
+GET/POST /video-trigger?state=open|closed
+    While open, every newly published frame is POSTed as image/jpeg to the
+    --jpeg-receiver URL, at most --push-fps a second.  Returns {"state": ...}.
 
 GET /scenes
     Every switchable scene plus the build state of its frame libraries,
@@ -58,7 +64,7 @@ Usage
 -----
 Command line (preferred):
 
-    python -m loop_sim.server.camera_server --scene scene_files/hampton_300um.yaml
+    python -m loop_sim.server.camera_server --scene data/scene_files/hampton_300um.yaml
     python -m loop_sim.server.camera_server --preview-mode off   # every frame exact
 
 Or from Python:
@@ -67,7 +73,7 @@ Or from Python:
     from loop_sim.scene.scene import load
     from loop_sim.motors.goniometer import Goniometer
 
-    scene = load("scene_files/hampton_300um.yaml")
+    scene = load("data/scene_files/hampton_300um.yaml")
     server = CameraServer(scene, host="0.0.0.0", port=8080)
     server.start()   # blocks; Ctrl-C to stop
 """
@@ -94,12 +100,34 @@ from ..library.frame_library import (CPU_BUILD_REFUSAL,
                                      DEFAULT_PREVIEW_ROOT as _LIB_PREVIEW_ROOT,
                                      DEFAULT_ROOT as _LIB_DEFAULT_ROOT,
                                      PREVIEW_BUILD, build_params, cuda_available,
-                                     frame_for_angle, library_diff, library_dir,
-                                     library_status, pose_crop, servable_pose)
-from ..library.xray_library import DEFAULT_ROOT as _XRAY_LIB_DEFAULT_ROOT
+                                     describe_differences, frame_for_angle,
+                                     library_diff, library_dir,
+                                     library_provenance, library_status,
+                                     pose_crop, servable_pose)
 
 _MJPEG_BOUNDARY = b"--myboundary"
 _MOTOR_KEYS = ("tx", "ty", "tz", "rotx", "roty", "rotz", "zoom")
+
+# AXIS camera number -> zoom stop.  The beamline's three sample cameras are
+# zoom stops on one AXIS server (camera = 3 - 2*zoom).
+_CAMERA_ZOOM_DEFAULT = "1:1.0,2:0.5,3:0.25"
+
+
+def parse_camera_zoom(spec):
+    """`"1:1.0,2:0.5"` -> {1: 1.0, 2: 0.5}.  Raises ValueError on a bad entry."""
+    table = {}
+    for item in str(spec).split(","):
+        item = item.strip()
+        if not item:
+            continue
+        cam, sep, zoom = item.partition(":")
+        if not sep:
+            raise ValueError(f"camera-zoom entry {item!r} is not N:ZOOM")
+        z = float(zoom)
+        if z <= 0.0:
+            raise ValueError(f"camera-zoom entry {item!r}: zoom must be > 0")
+        table[int(cam)] = z
+    return table
 
 # Scenes offered for runtime switching. Anchored to the repo, like the frame
 # library root, so the answer does not depend on the directory the server was
@@ -107,7 +135,7 @@ _MOTOR_KEYS = ("tx", "ty", "tz", "rotx", "roty", "rotz", "zoom")
 # it pairs with still resolved.
 _SCENE_DIR_DEFAULT = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "scene_files")
+    "data", "scene_files")
 
 
 # ---------------------------------------------------------------------------
@@ -254,8 +282,8 @@ def plan_template_cache(manifest, fraction=_CACHE_RAM_FRACTION, avail=None):
     try:
         rnd = manifest["rendered"]
         frames = manifest["frames"]
-        # The size of what is CACHED, which since templates became tight crops
-        # is no longer the virtual window.  Using `rendered` here over-estimates
+        # The size of what is CACHED is the frame's stored content crop, not
+        # the manifest's virtual window (`rendered`).  Using `rendered` here over-estimates
         # by ~9x on a cropped library, and the error is silent: the cache comes
         # out nine times smaller than the host could afford, so a spindle slew
         # keeps missing and keeps paying the decode this function exists to
@@ -282,9 +310,9 @@ def plan_template_cache(manifest, fraction=_CACHE_RAM_FRACTION, avail=None):
 def _cached_frame(source, name, convert=None):
     """One template frame, decoded through `source`'s LRU cache.
 
-    Shared by TemplateSource and XrayTemplateSource, which hold the same
-    `_lock` / `_cache` / `_order` / `_cache_size` / `lib_dir` set.  `convert`
-    is the PIL mode to decode into, or None to keep the file's own.
+    `source` holds the `_lock` / `_cache` / `_order` / `_cache_size` /
+    `lib_dir` set TemplateSource carries.  `convert` is the PIL mode to decode
+    into, or None to keep the file's own.
     """
     from PIL import Image
     with source._lock:
@@ -344,9 +372,7 @@ def _compose_from_content(src, rec, box, out_size, rendered, mode, background):
     which resolves to the full window and this reduces to the single
     `resize` it replaced.
 
-    `mode` and `background` are the canvas's: RGB for the optical library,
-    16-bit greyscale ("I;16") for the X-ray one.  Everything else -- the
-    half-pixel registration above -- is identical for both.
+    `mode` and `background` are the canvas's PIL mode and fill.
     """
     from PIL import Image
 
@@ -384,10 +410,9 @@ class TemplateSource:
     window the pose asks for, scaling it to the camera resolution, and blurring
     by the defocus the depth component implies.  No raytracing, no GPU.
 
-    Decoded templates are cached; since 2026-08-13 the cache is sized to hold
-    the whole library when the host can afford it (`plan_template_cache`),
-    turning a cyclic slew into a pan.  See docs/DECISIONS.md 2026-08-13
-    voltron measured on both halves.
+    Decoded templates are cached, sized to hold the whole library when the
+    host can afford it (`plan_template_cache`), turning a cyclic slew into a
+    pan.  See docs/DECISIONS.md 2026-08-13 voltron measured on both halves.
     """
 
     def __init__(self, manifest, lib_dir, jpeg_quality=85, cache_size=8,
@@ -576,131 +601,6 @@ class TemplateSource:
         return project_pin(self.scene, gono, to_px, frame_wh)
 
 
-class XrayTemplateSource:
-    """Serves X-ray radiographs from a pre-rendered spindle sweep -- the
-    xray_library.py analogue of TemplateSource, simplified throughout: no
-    RGB (16-bit greyscale), no PSF/defocus blur (a collimated beam's
-    Beer-Lambert integral does not change with depth -- see
-    loop_sim/library/xray_library.py's module docstring), no pin streak, no
-    sensor stretch.
-
-    Two cache regimes: the lazy default (`cache_size=8`, an on-demand LRU for
-    the plain /xray snapshot path) and `cache_size="all"` with `prewarm()`
-    (for the /xray-stream producer, which needs every frame already decoded
-    -- see prewarm()'s docstring for why and CameraServer's boot/scene-switch
-    prewarm wiring). No RAM-fraction-aware "auto" sizing like TemplateSource's
-    -- its per-pixel byte constant is measured for RGBX-padded 8-bit
-    templates and does not apply to 16-bit greyscale, and a full X-ray sweep
-    is small enough (measured 256 MB-1.2 GB per scene) that a budget is not
-    worth building.
-    """
-
-    def __init__(self, manifest, lib_dir, cache_size=8):
-        self.manifest = manifest
-        self.lib_dir = lib_dir
-        if isinstance(cache_size, str):
-            if cache_size != "all":
-                raise ValueError(f"cache_size must be an int or 'all', "
-                                 f"got {cache_size!r}")
-            cache_size = len(manifest.get("frames") or ()) or 1
-        self._cache_size = cache_size
-        self._cache = {}
-        self._order = []
-        self._lock = threading.Lock()
-        self._warned_clamp = False
-        self._background = int((manifest.get("background_i16") or [65535])[0])
-
-    def prewarm(self, progress=None):
-        """Decode the whole library up front. Returns (frames, bytes) held.
-
-        Direct adaptation of TemplateSource.prewarm() -- same
-        refuse-unless-the-cache-can-hold-everything guard (LRU against a
-        cyclic sweep evicts each frame just before it comes round again, so
-        pre-warming a too-small cache would spend the decode and throw the
-        result away), same NOT-called-from-__init__ reasoning (a constructor
-        that quietly decoded 360 frames would break any caller measuring cold
-        costs). 2 bytes/px here (16-bit greyscale, "I;16"), not
-        TemplateSource's 4.25 (RGBX-padded 8-bit).
-        """
-        frames = self.manifest.get("frames") or ()
-        if not frames or self._cache_size < len(frames):
-            return 0, 0
-        t0 = time.monotonic()
-        for i, rec in enumerate(frames):
-            self._frame(rec["file"])
-            if progress and (i + 1) % max(1, len(frames) // 4) == 0:
-                progress(f"[xray-templates] pre-warming {i + 1}/{len(frames)}")
-        held = sum(im.size[0] * im.size[1] * 2 for im in self._cache.values())
-        if progress:
-            progress(f"[xray-templates] pre-warmed {len(self._cache)} frames "
-                     f"({held / 2**20:.1f} MB) in {time.monotonic() - t0:.1f}s")
-        return len(self._cache), held
-
-    def _frame(self, name):
-        return _cached_frame(self, name)
-
-    def _compose(self, rec, box, out_size):
-        return _compose_from_content(self._frame(rec["file"]), rec, box,
-                                     out_size, self.manifest["rendered"],
-                                     "I;16", self._background)
-
-    def render_png(self, pose):
-        """8-bit grayscale PNG bytes for a motor pose dict -- the SAME wire
-        format _render_xray_png's live-render fallback produces, so switching
-        between library and live is invisible to any consumer of /xray.
-        """
-        from PIL import Image
-
-        man = self.manifest
-        angle = float(pose.get(man["axis"], 0.0))
-        rec = frame_for_angle(man, angle)
-        box, out_size, _sigma, note = pose_crop(
-            man, tx=float(pose.get("tx", 0.0)), ty=float(pose.get("ty", 0.0)),
-            tz=float(pose.get("tz", 0.0)), angle_deg=angle,
-            zoom=float(pose.get("zoom", 1.0)), clamp=True)
-        if note and not self._warned_clamp:
-            self._warned_clamp = True
-            print(f"[xray-templates] request clamped to what the library can "
-                 f"serve: {note}")
-
-        img16 = self._compose(rec, box, out_size)
-        arr16 = np.asarray(img16, dtype=np.uint16)
-        img8 = (arr16.astype(np.float64) / 65535.0 * 255.0).astype(np.uint8)
-        buf = io.BytesIO()
-        Image.fromarray(img8, mode="L").save(buf, format="PNG")
-        return buf.getvalue()
-
-
-def _load_xray_templates(scene_path, xray_library_root, cache_size=8):
-    """XrayTemplateSource for one scene, or None if no usable library exists.
-
-    Shared by both consumers so they can never silently disagree about what
-    counts as a usable library: _get_xray_templates's lazy per-scene_gen memo
-    (cache_size=8, the plain /xray snapshot fallback) and the PREWARMED source
-    CameraServer builds at boot and on every scene switch (cache_size="all",
-    read by the /xray-stream producer).
-
-    Accepts a `current` OR `stale` library (only `missing` is refused) -- same
-    convention the optical side already established (RUNBOOK "Frame
-    libraries": "A stale library is served as-is, never rebuilt behind your
-    back"). No build-parameter grading: unlike the optical side there is no
-    --xray-supersample/--xray-step flag for an operator to have asked
-    something specific with, so there is nothing to grade "stale" against.
-    Never builds -- a missing library just means the caller falls back to
-    live rendering, exactly as /xray always has.
-    """
-    if scene_path is None:
-        return None
-    from ..library.xray_library import library_dir, load_manifest, xray_library_status
-    lib_dir = library_dir(scene_path, xray_library_root)
-    if xray_library_status(scene_path, lib_dir) == "missing":
-        return None
-    man = load_manifest(lib_dir)
-    if man is None:
-        return None
-    return XrayTemplateSource(man, lib_dir, cache_size=cache_size)
-
-
 # ---------------------------------------------------------------------------
 # Move resolution + animation geometry (pure functions -- unit-tested directly)
 # ---------------------------------------------------------------------------
@@ -860,8 +760,7 @@ def recenter_target(col, row, state, geometry, camera_cfg):
 
 _SceneBundle = namedtuple("_SceneBundle",
                           "scene_path scene goniometer templates tscene "
-                          "want_templates library_kwargs serving_from warning "
-                          "xray_templates")
+                          "want_templates library_kwargs serving_from warning")
 _SceneBundle.__doc__ = """Everything a scene contributes to the server, as one value.
 
 Built entirely off-lock by `_build_bundle` and consumed by `_install_bundle`.
@@ -877,8 +776,9 @@ def _want_torch_engine(engine, want_templates):
     Templates never call the renderer -- they crop pre-rendered frames -- and
     the library builder makes its own TorchScene, so a second one here pins GPU
     memory for nothing and makes "no GPU needed at runtime" untrue.  That is
-    true for ANY engine: the guard used to also test `engine == "auto"`, so
-    `--engine torch --templates on` built a TorchScene nothing would ever call.
+    true for ANY engine, so this check must run before the engine dispatch
+    below rather than be folded into the `engine == "auto"` branch --
+    `--engine torch --templates on` must also build no TorchScene.
     """
     if want_templates:
         return False
@@ -891,42 +791,6 @@ def _want_torch_engine(engine, want_templates):
         return torch.cuda.is_available()
     except Exception:
         return False
-
-
-_DIFF_PHRASES = {
-    "format":       lambda d: f"stored as {d['have']}, not {d['want']}",
-    "psf":          lambda d: ("built without the objective PSF" if not d["have"]
-                               else "built with the objective PSF"),
-    "supersample":  lambda d: (f"{d['have']}x supersample, so zoom is capped at "
-                               f"{d['have']}x rather than {d['want']}x"),
-    "step_deg":     lambda d: f"{d['have']:g}deg rotation steps, not {d['want']:g}",
-    "n_cond":       lambda d: f"{d['have']} condenser rays, not {d['want']}",
-    "pan_mm":       lambda d: f"{d['have']} mm pan margin, not {d['want']}",
-    "jpeg_quality": lambda d: f"JPEG quality {d['have']}, not {d['want']}",
-    "axis":         lambda d: f"swept about {d['have']}, not {d['want']}",
-    # Never print the digests: 64 hex characters tell an operator nothing, and
-    # two of them tell them less.  What matters is that the frames were traced
-    # by code that no longer exists.
-    "render_sha":   lambda d: ("built by a different version of the renderer"
-                               if d["have"] else
-                               "built before the renderer was fingerprinted"),
-}
-
-
-def describe_differences(differs):
-    """One operator-readable sentence naming what a stale library differs in.
-
-    "stale" on its own tells nobody whether to care.  Generated server-side so
-    the log line, the tab tooltip and the control-page banner cannot disagree.
-    """
-    if not differs:
-        return None
-    parts = [_DIFF_PHRASES.get(k, lambda d, k=k: f"{k} is {d['have']}, not {d['want']}")(v)
-             for k, v in sorted(differs.items())]
-    return ("this frame library was built with different settings: "
-            + "; ".join(parts)
-            + ". It is complete and is being served as-is -- rebuild it only if "
-              "you need those settings.")
 
 
 # A switch in one of these states owns the slot; anything else is finished and
@@ -970,21 +834,23 @@ class _Handler(BaseHTTPRequestHandler):
         params = dict(urllib.parse.parse_qsl(parsed.query))
 
         if path in ("/axis-cgi/mjpg/video.cgi", "/mjpg/video.cgi"):
-            self._handle_mjpeg()
+            self._handle_mjpeg(params)
         elif path in ("/axis-cgi/jpg/image.cgi", "/jpg/image.cgi"):
-            self._handle_snapshot()
+            self._handle_snapshot(params)
         elif path == "/motor":
             self._handle_motor(params)
         elif path == "/move":
             self._handle_move(params)
+        elif path == "/status":
+            self._send_json(self.server._status_json())
+        elif path == "/video-trigger":
+            self._handle_video_trigger(params)
         elif path == "/recenter":
             self._handle_recenter(params)
         elif path == "/beam":
             self._handle_beam()
         elif path == "/xray":
             self._handle_xray()
-        elif path == "/xray-stream":
-            self._handle_xray_stream()
         elif path == "/scenes":
             self._send_json(self.server._scenes_json())
         elif path == "/scene":
@@ -1006,8 +872,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._handle_motor(params)
         elif parsed.path == "/move":
             self._handle_move(params)
-        elif parsed.path == "/stream-mode":
-            self._handle_stream_mode(params)
+        elif parsed.path == "/video-trigger":
+            self._handle_video_trigger(params)
         else:
             self.send_error(404)
 
@@ -1015,8 +881,38 @@ class _Handler(BaseHTTPRequestHandler):
     # Handlers
     # ------------------------------------------------------------------
 
-    def _handle_snapshot(self):
-        jpeg = self.server._get_jpeg()
+    def _camera_zoom(self, params):
+        """(ok, zoom) for a VAPIX request's `camera=N`.
+
+        zoom is None when no camera is named, so the request is served the
+        shared frame.  An unknown or malformed N answers 400 here and returns
+        ok=False.  Every other VAPIX parameter (resolution, compression,
+        clock, date, text, fps) is ignored.
+        """
+        if "camera" not in params:
+            return True, None
+        table = self.server._camera_zoom
+        try:
+            zoom = table[int(params["camera"])]
+        except (KeyError, ValueError):
+            self._send_json({"error": f"unknown camera {params['camera']!r}",
+                             "cameras": sorted(table)}, status=400)
+            return False, None
+        return True, zoom
+
+    def _handle_snapshot(self, params):
+        """One JPEG, at the zoom `camera=N` names if it names one.
+
+        A camera whose zoom differs from the goniometer's is a render of the
+        live pose at that zoom, made for this request alone; the goniometer
+        and every other client are untouched.  On the template path that is
+        a crop (milliseconds).  On the live path it is one extra full render
+        per request, serialised with the producer on _scene_lock.
+        """
+        ok, zoom = self._camera_zoom(params)
+        if not ok:
+            return
+        jpeg = self.server._jpeg_for_camera(zoom)
         self.send_response(200)
         self.send_header("Content-Type", "image/jpeg")
         self.send_header("Content-Length", str(len(jpeg)))
@@ -1024,7 +920,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(jpeg)
 
-    def _handle_mjpeg(self):
+    def _handle_mjpeg(self, params):
         """Pure consumer of the background producer's published frames.
 
         Waits on _frame_cv for a frame generation newer than the last one
@@ -1032,7 +928,14 @@ class _Handler(BaseHTTPRequestHandler):
         ceiling, and resends the cached frame after ~1 s idle so browsers /
         AXIS clients don't time out.  Socket writes happen outside the lock,
         so a slow client never blocks the producer or other clients.
+
+        `camera=N` at a zoom other than the goniometer's re-renders each new
+        generation at that zoom for this client (see _handle_snapshot for the
+        cost); the idle resend reuses the last such frame.
         """
+        ok, zoom = self._camera_zoom(params)
+        if not ok:
+            return
         srv = self.server
         self.send_response(200)
         self.send_header(
@@ -1054,6 +957,7 @@ class _Handler(BaseHTTPRequestHandler):
         last_gen  = 0
         last_send = 0.0
         fresh     = False   # the last send carried new content
+        own       = None    # (gen, jpeg) rendered for this client's camera
         try:
             while True:
                 # Wait for a frame newer than the last one sent (or keepalive).
@@ -1075,6 +979,10 @@ class _Handler(BaseHTTPRequestHandler):
                     gen  = srv._frame_gen
                 if jpeg is None:
                     continue                  # nothing rendered yet
+                if zoom is not None:
+                    if own is None or own[0] != gen:
+                        own = (gen, srv._jpeg_for_camera(zoom, jpeg))
+                    jpeg = own[1]
                 frame = (
                     b"Content-Type: image/jpeg\r\n"
                     + f"Content-Length: {len(jpeg)}\r\n".encode()
@@ -1091,77 +999,15 @@ class _Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
 
-    def _handle_xray_stream(self):
-        """Pure consumer of the X-ray producer's published frames -- a
-        near-verbatim mirror of _handle_mjpeg reading _xray_frame_cv /
-        _xray_jpeg_cache / _xray_frame_gen instead, PNG per part rather than
-        JPEG. multipart/x-mixed-replace doesn't care what each part's own
-        Content-Type says, so _MJPEG_BOUNDARY and srv._frame_interval are
-        reused unchanged.
-
-        Does NOT start the producer -- connecting here before a
-        POST /stream-mode?mode=radiograph just waits (silently, same as an
-        MJPEG client connecting before the first frame renders) until one
-        starts publishing. Starting the producer is _set_stream_mode's job
-        alone, so there is exactly one place that ever spawns
-        _xray_bg_render_loop.
-        """
-        srv = self.server
-        self.send_response(200)
-        self.send_header(
-            "Content-Type",
-            "multipart/x-mixed-replace; boundary=myboundary"
-        )
-        self.send_header("Cache-Control", "no-cache")
-        self.end_headers()
-        keepalive = 1.0
-        self.wfile.write(_MJPEG_BOUNDARY + b"\r\n")
-        flush_delay = srv._frame_interval
-        last_gen  = 0
-        last_send = 0.0
-        fresh     = False
-        try:
-            while True:
-                with srv._xray_frame_cv:
-                    deadline = time.monotonic() + (
-                        flush_delay if fresh else keepalive)
-                    while srv._xray_frame_gen == last_gen:
-                        remaining = deadline - time.monotonic()
-                        if remaining <= 0.0:
-                            break
-                        srv._xray_frame_cv.wait(remaining)
-                delay = last_send + srv._frame_interval - time.monotonic()
-                if delay > 0.0:
-                    time.sleep(delay)
-                with srv._xray_frame_cv:
-                    png = srv._xray_jpeg_cache
-                    gen = srv._xray_frame_gen
-                if png is None:
-                    continue
-                frame = (
-                    b"Content-Type: image/png\r\n"
-                    + f"Content-Length: {len(png)}\r\n".encode()
-                    + b"\r\n"
-                    + png
-                    + b"\r\n"
-                    + _MJPEG_BOUNDARY + b"\r\n"
-                )
-                self.wfile.write(frame)
-                self.wfile.flush()
-                fresh     = gen != last_gen
-                last_gen  = gen
-                last_send = time.monotonic()
-        except (BrokenPipeError, ConnectionResetError):
-            pass
-
-    def _handle_stream_mode(self, params):
-        mode = params.get("mode", "")
-        try:
-            self.server._set_stream_mode(mode)
-        except ValueError as exc:
-            self._send_json({"error": str(exc)}, status=400)
-            return
-        self._send_json({"active_stream": mode})
+    def _handle_video_trigger(self, params):
+        """Open or close the JPEG push; without `state`, report it."""
+        if "state" in params:
+            try:
+                self.server._set_video_trigger(params["state"])
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, status=400)
+                return
+        self._send_json({"state": self.server._video_trigger_state()})
 
     def _send_json(self, obj, status=200):
         # Errors from the scene endpoints go out as JSON, not via send_error:
@@ -1189,7 +1035,12 @@ class _Handler(BaseHTTPRequestHandler):
     def _handle_move(self, params):
         try:
             speed  = float(params.get("speed", 1.0))
-            target = self.server._command_move(params, speed)
+            duration = None
+            if "duration" in params:
+                duration = float(params["duration"])
+                if not math.isfinite(duration) or duration < 0.0:
+                    raise ValueError(f"duration must be >= 0, got {duration}")
+            target = self.server._command_move(params, speed, duration=duration)
         except (ValueError, KeyError):
             self.send_error(400)
             return
@@ -1200,7 +1051,7 @@ class _Handler(BaseHTTPRequestHandler):
 
         Preferred: fx/fy -- the click as a fraction (0..1) of the *displayed*
         image; the server scales them by the true camera resolution, so the
-        client need not know native dimensions (robust to CSS scaling / the
+        client need not know native dimensions (unaffected by CSS scaling / the
         unreliable MJPEG <img>.naturalWidth).  px/py also work, and are pixels
         of the frame that was DELIVERED -- which the sensor raster makes wider
         than the render grid, so they are converted (`_command_recenter`).
@@ -1303,9 +1154,15 @@ class CameraServer(ThreadingHTTPServer):
     scene_path : str | None -- YAML the scene was loaded from. Required to serve
                  from a pre-computed frame library; without it every frame is a
                  live render.
-    templates  : bool -- serve from the frame library (building it first if it is
-                 absent or stale). This is the low-latency path and needs no GPU
-                 at runtime.
+    templates  : bool -- serve from the frame library when one exists, stale or
+                 not. Never builds: a scene with no library is rendered live.
+                 This is the low-latency path and needs no GPU at runtime.
+    jpeg_receiver : str | None -- URL /video-trigger?state=open pushes frames
+                 to, as HTTP POSTs of image/jpeg.  None records the state only.
+    push_fps   : float -- ceiling on that push rate.
+    camera_zoom : dict | str | None -- AXIS camera number -> zoom stop for
+                 `camera=N`; a "1:1.0,2:0.5" string is parsed.  None is
+                 _CAMERA_ZOOM_DEFAULT.
     """
 
     def __init__(self, scene, host="0.0.0.0", port=8080,
@@ -1314,7 +1171,8 @@ class CameraServer(ThreadingHTTPServer):
                  scene_path=None, templates=True, library_kwargs=None,
                  scene_dir=None, preview_root=None, camera_emulation=True,
                  mono=False, sensor_pitch=True, pin_streak=True,
-                 template_cache="auto", prewarm=True, xray_library_root=None):
+                 template_cache="auto", prewarm=True, jpeg_receiver=None,
+                 push_fps=30.0, camera_zoom=None):
         # Camera emulation: the illumination field, black floor and tone
         # response the tracer does not model (loop_sim/renderer/field.py).
         # Default ON -- the raw transmittance a tracer produces is 85% pure
@@ -1349,20 +1207,12 @@ class CameraServer(ThreadingHTTPServer):
             self._library_kwargs.get("root", _LIB_DEFAULT_ROOT))
         self._preview_root   = os.path.abspath(preview_root or _LIB_PREVIEW_ROOT)
         self._scene_dir      = os.path.abspath(scene_dir or _SCENE_DIR_DEFAULT)
-        # X-ray library: a READ-ONLY lookup -- never builds; a missing/stale
-        # library just means /xray (and the stream, below) keep rendering
-        # live. Two consumers share one lookup (_load_xray_templates):
-        # _get_xray_templates's lazy per-scene_gen memo (cache_size=8, the
-        # plain /xray snapshot path) and the PREWARMED source built at boot
-        # and on every scene switch (cache_size="all", see the prewarm block
-        # below and _build_bundle/_install_bundle) that the /xray-stream
-        # producer reads. _xray_templates_cache is still keyed on scene_gen
-        # and read the same way for both -- see _get_xray_templates.
-        self._xray_library_root = os.path.abspath(xray_library_root or
-                                                   _XRAY_LIB_DEFAULT_ROOT)
-        self._xray_templates = None   # the PREWARMED source; None if none exists
-        self._xray_templates_cache = None   # (scene_gen, XrayTemplateSource|None)
-        self._xray_status_cache = {}   # scene_path -> status string, see _scenes_json
+        # Read-only after construction, so handlers use it without a lock.
+        if camera_zoom is None:
+            camera_zoom = _CAMERA_ZOOM_DEFAULT
+        self._camera_zoom    = (parse_camera_zoom(camera_zoom)
+                                if isinstance(camera_zoom, str)
+                                else {int(k): float(v) for k, v in camera_zoom.items()})
         self._serving_from   = None    # "full" | "preview" | None
         self._scene_warning  = None    # set when a stale library is served
         # Single-slot memo for /beam and /xray, keyed on (scene_gen, pose_phase).
@@ -1374,14 +1224,36 @@ class CameraServer(ThreadingHTTPServer):
         self._beam_cache     = None    # (key, json_str) | None
         self._xray_cache     = None    # (key, png_bytes) | None
 
-        # Build BEFORE binding the socket. A cold build is tens of minutes; a
-        # bound-but-unresponsive port leaves clients waiting in the backlog
-        # instead of failing to connect, which reads as a hung server.
+        # Grade BEFORE binding the socket, and NEVER build here.  Grading is a
+        # manifest read and one stat per frame, so the port is bound a moment
+        # later either way; building is hours, and a launch that starts one
+        # leaves clients queued in the backlog against a library nobody asked
+        # to have replaced.  Graded through _pick_library, the same machinery
+        # the tab strip and the switch path use, so the launch banner and the
+        # control page cannot reach different verdicts about the same library.
         manifest = None
+        lib_root = None
         if self._want_templates:
-            from ..library.frame_library import ensure_library
-            manifest = ensure_library(scene_path, **self._library_kwargs)
-            self._serving_from = "full"
+            from ..library.frame_library import load_manifest
+            lib_root, self._serving_from, _status, _diff = \
+                self._pick_library(scene_path)
+            if lib_root is None:
+                # Nothing servable in either root.  Run this scene live rather
+                # than refusing to start or building unasked: it is exactly
+                # what --templates off does, and the operator gets the command
+                # that fixes it.
+                self._want_templates = False
+                self._serving_from = None
+                print(f"[templates] no frame library for "
+                      f"{os.path.splitext(os.path.basename(scene_path))[0]} in "
+                      f"{self._library_root} or {self._preview_root} -- "
+                      f"rendering this scene live. Build one with: "
+                      f"python -m loop_sim.library --scene {scene_path}",
+                      file=sys.stderr)
+            else:
+                manifest = load_manifest(library_dir(scene_path, lib_root))
+                self._scene_warning = self._serving_note(self._serving_from,
+                                                         _status, _diff)
 
         super().__init__((host, port), _Handler)
         self._scene          = scene
@@ -1424,23 +1296,15 @@ class CameraServer(ThreadingHTTPServer):
         self._frame_cv       = threading.Condition()
         self._bg_thread      = None
 
-        # X-ray stream frame slot, structurally identical to the optical one
-        # above but with entirely separate state -- see docs/DECISIONS.md
-        # 2026-07-06 10 fps interactive via torch.compile (a shared unlocked
-        # flag caused a real cross-thread data race). _xray_frame_cv is a
-        # second, independent LEAF like _frame_cv. Unlike the optical producer
-        # (started once, never stopped), the X-ray producer has an explicit
-        # start/stop lifecycle driven by the Microscope/Radiograph toggle
-        # (_set_stream_mode) -- the optical producer keeps running regardless,
-        # since other consumers (a second tab, an AXIS poller) have no notion
-        # of this UI's toggle.
-        self._xray_jpeg_cache   = None
-        self._xray_cache_dirty  = False
-        self._xray_frame_gen    = 0
-        self._xray_frame_cv     = threading.Condition()
-        self._xray_bg_thread    = None
-        self._xray_stream_token = 0   # cooperative-stop generation, the _anim_gen idiom
-        self._active_stream     = "microscope"   # guarded by _xray_frame_cv
+        # /video-trigger: the simulated AXIS push.  _push_lock guards the
+        # state, token and thread handle below and is a LEAF like _frame_cv.
+        # A pusher exits once its token is superseded, the _anim_gen idiom.
+        self._jpeg_receiver  = jpeg_receiver or None
+        self._push_interval  = 1.0 / max(float(push_fps), 1e-3)
+        self._push_lock      = threading.Lock()
+        self._push_state     = "closed"
+        self._push_token     = 0
+        self._push_thread    = None
 
         # Animation: a daemon thread linearly interpolates the goniometer
         # toward a target pose so moves glide instead of teleporting.
@@ -1483,7 +1347,9 @@ class CameraServer(ThreadingHTTPServer):
         self._anim_delta  = None
         self._anim_target = None             # pending target dict (consumed by animator)
         self._anim_speed  = 1.0
+        self._anim_duration = None           # pending target's fixed wall time (s), or None
         self._anim_gen    = 0                # bumped on every new command (preempt signal)
+        self._anim_run_gen = -1              # gen of the animation the animator took last
         self._anim_active = False           # True while interpolating → preview n_cond
         self._anim_thread = None
         self._target_pose = self._goniometer.get()   # last commanded target (running base)
@@ -1523,7 +1389,7 @@ class CameraServer(ThreadingHTTPServer):
         # not, so a GPU is a build-time accelerator, not a runtime requirement.
         if manifest is not None:
             self._templates = TemplateSource(
-                manifest, library_dir(scene_path, self._library_root),
+                manifest, library_dir(scene_path, lib_root),
                 jpeg_quality=jpeg_quality, camera=self._camera,
                 sensor=self._sensor, scene=scene,
                 cache_size=self._template_cache)
@@ -1536,16 +1402,6 @@ class CameraServer(ThreadingHTTPServer):
             if self._prewarm:
                 self._templates.prewarm(progress=print)
 
-        # X-ray: prewarmed (cache_size="all") like the optical block above,
-        # for the same reason (XrayTemplateSource docstring); a missing
-        # library falls back to live rendering, same as /xray always has.
-        # See docs/DECISIONS.md 2026-08-19 radiograph ships as a push stream.
-        self._xray_templates = _load_xray_templates(
-            scene_path, self._xray_library_root, cache_size="all")
-        if self._xray_templates is not None and self._prewarm:
-            self._xray_templates.prewarm(progress=print)
-        self._xray_templates_cache = (self._scene_gen, self._xray_templates)
-
     # ------------------------------------------------------------------
     # Cache management
     # ------------------------------------------------------------------
@@ -1554,21 +1410,6 @@ class CameraServer(ThreadingHTTPServer):
         with self._frame_cv:
             self._cache_dirty = True
             self._frame_cv.notify_all()   # wake the producer (and any waiters)
-
-    def _invalidate_xray(self):
-        with self._xray_frame_cv:
-            self._xray_cache_dirty = True
-            self._xray_frame_cv.notify_all()
-
-    def _invalidate_all(self):
-        """Both producers. The pose-changing call sites (an instant /motor
-        set, an animator tick, a scene-switch install) don't know or care
-        which view is on screen, so they invalidate both -- cheap when the
-        X-ray producer isn't running (a notify with no waiter under an
-        uncontended lock), and correct when it is.
-        """
-        self._invalidate()
-        self._invalidate_xray()
 
     def _snapshot_gonio(self):
         """A thread-safe, fresh Goniometer at the live pose.
@@ -1587,14 +1428,22 @@ class CameraServer(ThreadingHTTPServer):
                 state = self._goniometer.get()
             return Goniometer(self._scene.geometry).set(**state)
 
-    def _render_frame(self):
-        """Produce + JPEG-encode the current pose (no cache bookkeeping)."""
+    def _render_frame(self, zoom=None):
+        """Produce + JPEG-encode the current pose (no cache bookkeeping).
+
+        `zoom` renders the live pose at that zoom instead, for one request's
+        `camera=N`.  Such a frame is never published, so it leaves
+        _last_render_preview (the producer's settle bookkeeping) alone.
+        """
         gono   = self._snapshot_gonio()
+        if zoom is not None:
+            gono.set(zoom=float(zoom))
         # Templates serve every frame when a library is loaded: the preview /
         # settle split exists to trade quality for speed during motion, and a
         # template crop is already both.
         if self._templates is not None:
-            self._last_render_preview = False
+            if zoom is None:
+                self._last_render_preview = False
             return self._templates.render(gono.get())
         # Fast preview while the pose is moving (an animated /move, or an
         # instant /motor set within the last settle_delay seconds); full
@@ -1602,7 +1451,8 @@ class CameraServer(ThreadingHTTPServer):
         moving = self._anim_active or (
             time.monotonic() - self._last_pose_change < self._settle_delay)
         preview = moving and self._preview_mode
-        self._last_render_preview = preview
+        if zoom is None:
+            self._last_render_preview = preview
         n_cond = 1 if preview else self._n_cond
         if self._tscene is not None:
             import torch
@@ -1704,6 +1554,45 @@ class CameraServer(ThreadingHTTPServer):
                     return self._jpeg_cache
         return self._render_now()
 
+    def _jpeg_for_camera(self, zoom, shared=None):
+        """The frame one `camera=N` request sees.
+
+        `shared` (or the published frame) when `zoom` is None or already the
+        goniometer's zoom; otherwise the live pose rendered at `zoom` for this
+        request alone.  _scene_lock is held across that render for the same
+        reason _render_now holds it.
+        """
+        if zoom is not None:
+            with self._gonio_lock:
+                live = float(self._goniometer.get().get("zoom", 1.0))
+            if abs(live - float(zoom)) > 1e-9:
+                with self._scene_lock:
+                    return self._render_frame(zoom=zoom)
+        return shared if shared is not None else self._get_jpeg()
+
+    def _status_json(self):
+        """GET /status: live pose, commanded target, and whether a move runs.
+
+        `moving` is True from the moment a /move is committed until its
+        animation settles or is cancelled, and never for an instant /motor
+        set: the DHS completes a move when it turns False.  A pending target
+        counts, so the gap before the animator picks a command up never reads
+        as "arrived"; `_anim_run_gen` against `_anim_gen` keeps an animation
+        that was preempted without clearing `_anim_active` from reading as
+        still running.
+        """
+        with self._anim_cv:
+            with self._scene_lock:
+                with self._gonio_lock:
+                    positions = self._goniometer.get()
+                target = dict(self._target_pose)
+            moving = (self._anim_target is not None
+                      or (self._anim_active
+                          and self._anim_run_gen == self._anim_gen))
+        return {"positions": {k: float(positions[k]) for k in _MOTOR_KEYS},
+                "target": {k: float(target[k]) for k in _MOTOR_KEYS},
+                "moving": bool(moving)}
+
     def _beam_json(self):
         """X-ray volumes/dose for the live pose, as a JSON string.
 
@@ -1712,7 +1601,7 @@ class CameraServer(ThreadingHTTPServer):
         OFF-lock. `compute_beam_volumes` is a per-material Beer-Lambert walk
         that can run tens of seconds on a mesh scene with no GPU (--templates
         on never builds a _tscene -- see _want_torch_engine), and holding
-        _scene_lock across that used to stall the optical MJPEG producer
+        _scene_lock across that would stall the optical MJPEG producer
         (_render_now takes the same lock) for the whole computation. Safe
         off-lock because `_install_bundle` SWAPS `self._scene` by reference on
         a switch rather than mutating it in place, so this local `scene` stays
@@ -1733,59 +1622,26 @@ class CameraServer(ThreadingHTTPServer):
         self._beam_cache = (key, result)
         return result
 
-    def _get_xray_templates(self, scene_path, scene_gen):
-        """XrayTemplateSource for the current scene (cache_size=8, lazy), or
-        None if no usable X-ray library exists for it -- see
-        _load_xray_templates for what "usable" means; this is a thin
-        scene_gen-memoized wrapper around it.
-
-        This is the LAZY path, used by the plain /xray snapshot fallback when
-        the PREWARMED source (self._xray_templates, built at boot and on every
-        scene switch -- see __init__ and _install_bundle) is unavailable, e.g.
-        `--prewarm off`. The two share one cache slot (_xray_templates_cache)
-        keyed on scene_gen, since a prewarmed and a lazily-loaded source for
-        the same scene_gen are interchangeable -- whichever got there first
-        is cached and reused.
-
-        Cached per scene_gen so a naturally-invalidating cache needs no
-        explicit reset on a scene switch (a stale cache entry's scene_gen
-        just stops matching) -- unlike the frame-slot caches, this cache slot
-        IS written by _install_bundle now (with the freshly prewarmed source,
-        paired with the post-increment scene_gen inside the same critical
-        section that bumps it -- see _install_bundle), so a lookup here after
-        a switch almost always hits without recomputing. A benign race
-        between two request threads both missing the cache just builds the
-        lookup twice; both answers agree, so it costs a redundant manifest
-        read, never a wrong one.
-        """
-        cached = self._xray_templates_cache
-        if cached is not None and cached[0] == scene_gen:
-            return cached[1]
-        templates = _load_xray_templates(scene_path, self._xray_library_root)
-        self._xray_templates_cache = (scene_gen, templates)
-        return templates
-
     def _render_xray_png(self):
         """Render the X-ray transmission map (radiograph) as a grayscale PNG.
 
-        Bright = transmitted, dark = absorbed. Serves from a pre-computed
-        X-ray frame library when a current one exists for this scene
-        (single-digit ms, no GPU); otherwise the GPU-resident engine when
-        present, else the numpy reference (slow at full resolution --
+        Bright = transmitted, dark = absorbed.  Always a live render: the
+        X-ray detector is not an orthographic camera, so a pre-rendered sweep
+        cannot be cropped into another pose.  The GPU-resident engine when
+        present, else the numpy reference (slow at full resolution;
         --templates on never builds a _tscene, see _want_torch_engine, so the
-        template-serving server always takes the numpy branch absent a library).
+        template-serving server always takes the numpy branch).
 
         Snapshots (scene, tscene, pose) under one _scene_lock hold, then
         renders OFF-lock -- see _beam_json for why holding the lock across a
-        render that can take tens of seconds to minutes stalled the optical
+        render that can take tens of seconds to minutes would stall the optical
         MJPEG producer, and why releasing it first is safe (`_install_bundle`
         swaps references rather than mutating). Memoized on
         (scene_gen, pose_phase), same rationale as _beam_json.
         """
-        from PIL import Image
+        from ..renderer.beam import transmission_png
         with self._scene_lock:
             scene = self._scene
-            scene_path = self._scene_path
             tscene = self._tscene
             scene_gen = self._scene_gen
             gono = self._snapshot_gonio()
@@ -1793,12 +1649,6 @@ class CameraServer(ThreadingHTTPServer):
         cached = self._xray_cache
         if cached is not None and cached[0] == key:
             return cached[1]
-
-        templates = self._get_xray_templates(scene_path, scene_gen)
-        if templates is not None:
-            result = templates.render_png(gono.get())
-            self._xray_cache = (key, result)
-            return result
 
         if tscene is not None:
             from ..renderer.torch_compat import ensure_dynamo
@@ -1808,10 +1658,7 @@ class CameraServer(ThreadingHTTPServer):
         else:
             from ..renderer.beam import render_xray_numpy
             T = render_xray_numpy(scene, gono)
-        img8 = (np.clip(T, 0.0, 1.0) * 255).astype(np.uint8)
-        buf = io.BytesIO()
-        Image.fromarray(img8, mode="L").save(buf, format="PNG")
-        result = buf.getvalue()
+        result = transmission_png(T)
         self._xray_cache = (key, result)
         return result
 
@@ -1846,101 +1693,78 @@ class CameraServer(ThreadingHTTPServer):
                         self._frame_cv.wait(remaining)
 
     # ------------------------------------------------------------------
-    # X-ray stream: a second, independent single-flight producer, started
-    # and stopped explicitly by _set_stream_mode rather than running for the
-    # server's whole lifetime like _bg_render_loop above. See the state
-    # block in __init__ for why this stays fully separate from the optical
-    # producer's state rather than sharing any of it.
+    # /video-trigger: the simulated AXIS push
     # ------------------------------------------------------------------
 
-    def _xray_render_now(self):
-        """Render the current pose and publish it as the next X-ray frame
-        generation. Structural mirror of _render_now, calling the SAME
-        _render_xray_png() the plain /xray snapshot endpoint uses -- one
-        memoized computation, not two divergent copies (see _render_xray_png's
-        own docstring for why its unlocked single-slot memo is safe to call
-        from a second thread).
+    def _video_trigger_state(self):
+        with self._push_lock:
+            return self._push_state
+
+    def _set_video_trigger(self, state):
+        """Record `state`; with a receiver configured, start or stop the pusher.
+
+        Idempotent.  Thread.start() runs after _push_lock is released, and the
+        token bump is what stops a pusher: it notices on its next wake, which
+        the notify on _frame_cv below makes prompt.
         """
-        with self._xray_frame_cv:
-            self._xray_cache_dirty = False
-        png = self._render_xray_png()   # takes _scene_lock internally; _xray_frame_cv stays a leaf
-        with self._xray_frame_cv:
-            self._xray_jpeg_cache = png
-            self._xray_frame_gen += 1
-            self._xray_frame_cv.notify_all()   # wake /xray-stream consumers
-        return png
-
-    def _xray_bg_render_loop(self, token):
-        """Single-flight X-ray producer. Simpler than _bg_render_loop: no
-        settle-forcing second phase, because the X-ray tracer has no
-        n_cond/preview distinction to converge from (a collimated-beam
-        transmission map is already exact at every pose, moving or not) --
-        every render here is already the one true frame.
-
-        Exits as soon as `token` is superseded, checked right after waking --
-        cooperative, not a hard cancel: a render already in flight when
-        _set_stream_mode stops this token always finishes and publishes
-        (harmless -- a generation bump nobody may be watching any more), and
-        the loop notices the mismatch and returns on its NEXT wake, not
-        mid-render.
-        """
-        while True:
-            with self._xray_frame_cv:
-                while (self._xray_stream_token == token
-                       and not self._xray_cache_dirty):
-                    self._xray_frame_cv.wait()
-                if self._xray_stream_token != token:
-                    return
-            self._xray_render_now()
-
-    def _set_stream_mode(self, mode):
-        """Start the X-ray producer for 'radiograph', stop it for
-        'microscope'. The ONE function that starts/stops the X-ray
-        producer thread, and everything it touches
-        (_active_stream/_xray_stream_token/_xray_bg_thread) lives under
-        _xray_frame_cv -- guarded, not the unlocked-shared-flag pattern the
-        2026-07-06 _active_compiled incident was (docs/DECISIONS.md).
-
-        The optical producer (_bg_render_loop) is never touched here: it
-        started once in start() and runs for the server's whole lifetime,
-        serving other consumers (a second browser tab, an AXIS-protocol
-        poller) that have no notion of this UI's mode toggle.
-
-        Idempotent (same mode twice is a no-op) and race-free under rapid
-        double-toggling: two callers serialize on _xray_frame_cv, whichever
-        runs second is authoritative, and the token bump guarantees a thread
-        from a superseded generation notices and exits regardless of how the
-        calls interleave.
-
-        Thread.start() happens AFTER releasing _xray_frame_cv, not inside the
-        `with` -- not a deadlock risk here (Thread.start() doesn't touch this
-        lock), but _frame_cv's own leaf discipline never starts a thread under
-        itself either (see start()), and _xray_frame_cv stays a leaf in the
-        same strict sense _acquired_within checks statically: never held
-        while anything else -- including spawning a thread whose target will
-        later acquire other locks -- happens. The dirty flag is set and the
-        thread object assigned to self._xray_bg_thread before release, so a
-        concurrent reader never sees a "started" thread that isn't in
-        self._xray_bg_thread yet.
-        """
-        if mode not in ("microscope", "radiograph"):
-            raise ValueError(f"mode must be 'microscope' or 'radiograph', got {mode!r}")
+        if state not in ("open", "closed"):
+            raise ValueError(f"state must be 'open' or 'closed', got {state!r}")
         t = None
-        with self._xray_frame_cv:
-            if mode == self._active_stream:
+        with self._push_lock:
+            if state == self._push_state:
                 return
-            self._active_stream = mode
-            self._xray_stream_token += 1   # stops any running producer on its next wake
-            if mode == "radiograph":
-                self._xray_cache_dirty = True   # force an immediate first render
-                t = threading.Thread(target=self._xray_bg_render_loop,
-                                     args=(self._xray_stream_token,), daemon=True)
-                self._xray_bg_thread = t
-            else:
-                self._xray_bg_thread = None
-            self._xray_frame_cv.notify_all()   # wake a stopped producer so it exits promptly
+            self._push_state = state
+            self._push_token += 1
+            if state == "open" and self._jpeg_receiver:
+                t = threading.Thread(target=self._push_loop,
+                                     args=(self._push_token,), daemon=True)
+            self._push_thread = t
         if t is not None:
             t.start()
+        with self._frame_cv:
+            self._frame_cv.notify_all()
+
+    def _push_live(self, token):
+        with self._push_lock:
+            return self._push_token == token
+
+    def _push_loop(self, token):
+        """POST each newly published frame to the receiver until `token` ends.
+
+        A pure consumer of the frame slot, like _handle_mjpeg: newest frame
+        only, never a backlog, at most push_fps a second, and the POST happens
+        outside every lock.  The first frame goes out at once, so a receiver
+        sees the current view even when nothing is moving.  A failed POST is
+        logged once per open period and never raised.
+        """
+        import urllib.request
+        url = self._jpeg_receiver
+        last_gen, last_send, warned = 0, 0.0, False
+        while self._push_live(token):
+            with self._frame_cv:
+                if self._frame_gen == last_gen:
+                    self._frame_cv.wait(0.5)
+                jpeg, gen = self._jpeg_cache, self._frame_gen
+            if jpeg is None or gen == last_gen or not self._push_live(token):
+                continue
+            delay = last_send + self._push_interval - time.monotonic()
+            if delay > 0.0:
+                time.sleep(delay)
+                with self._frame_cv:
+                    jpeg, gen = self._jpeg_cache, self._frame_gen
+            req = urllib.request.Request(
+                url, data=jpeg, method="POST",
+                headers={"Content-Type": "image/jpeg"})
+            try:
+                with urllib.request.urlopen(req, timeout=5.0) as resp:
+                    resp.read()
+            except Exception as exc:
+                if not warned:
+                    warned = True
+                    print(f"WARNING: [video-trigger] POST {url} failed ({exc!r}); "
+                          f"further failures this open period are not logged",
+                          file=sys.stderr)
+            last_gen, last_send = gen, time.monotonic()
 
     # ------------------------------------------------------------------
     # Static files
@@ -1988,7 +1812,7 @@ class CameraServer(ThreadingHTTPServer):
 
     def _set_pose_instant(self, updates):
         """Apply an absolute pose immediately, cancelling any running animation
-        (the legacy /motor path).
+        (the /motor path).
 
         _scene_lock is taken OUTSIDE _gonio_lock and is not optional: _servable
         below reads self._templates, and reaching for the scene lock from under
@@ -2005,10 +1829,16 @@ class CameraServer(ThreadingHTTPServer):
                     self._target_pose = self._goniometer.get()
         self._anim_active = False
         self._last_pose_change = time.monotonic()
-        self._invalidate_all()
+        self._invalidate()
 
-    def _command_move(self, params, speed):
-        """Resolve a /move against the running target and animate toward it."""
+    def _command_move(self, params, speed, duration=None):
+        """Resolve a /move against the running target and animate toward it.
+
+        `duration` (s), when given, fixes the move's wall time: > 0 animates
+        at constant velocity for that long (see _run_animation), 0 commits
+        the target at once exactly as /motor does, cancelling any animation.
+        None keeps the speed-dial velocity profile.
+        """
         with self._anim_cv:
             # Camera and geometry read inside the lock, so a target can never
             # be resolved against one scene's pixel size and another's axes.
@@ -2022,7 +1852,18 @@ class CameraServer(ThreadingHTTPServer):
                 target = resolve_target(self._target_pose, params, W, H, pixel_size,
                                         geometry=self._scene.geometry)
                 target = self._servable(target)
-                self._commit_target_locked(target, speed)
+                if duration == 0.0:
+                    self._anim_target = None
+                    self._anim_gen   += 1
+                    with self._gonio_lock:
+                        self._goniometer.set(**target)
+                        self._target_pose = self._goniometer.get()
+                else:
+                    self._commit_target_locked(target, speed, duration)
+        if duration == 0.0:
+            self._anim_active = False
+            self._last_pose_change = time.monotonic()
+            self._invalidate()
         return target
 
     def _command_recenter(self, speed, frac=None, pixel=None):
@@ -2065,11 +1906,12 @@ class CameraServer(ThreadingHTTPServer):
                 self._commit_target_locked(target, speed)
         return target
 
-    def _commit_target_locked(self, target, speed):
+    def _commit_target_locked(self, target, speed, duration=None):
         """Publish a new animation target.  Caller must hold self._anim_cv."""
         self._target_pose = target
         self._anim_target = target
         self._anim_speed  = float(speed)
+        self._anim_duration = duration
         self._anim_gen   += 1
         self._anim_cv.notify()
 
@@ -2081,7 +1923,12 @@ class CameraServer(ThreadingHTTPServer):
                     self._anim_cv.wait()
                 target = self._anim_target
                 speed  = self._anim_speed
+                fixed_s = self._anim_duration
                 gen    = self._anim_gen
+                # Claimed as running in the same critical section that takes
+                # the target, so /status never sees a committed move as idle.
+                self._anim_run_gen = gen
+                self._anim_active  = True
                 # Read the camera WITH the target, under the same lock: the
                 # geometry an animation is planned against must belong to the
                 # same scene as the target it is moving toward.
@@ -2091,12 +1938,22 @@ class CameraServer(ThreadingHTTPServer):
                     pixel_size = float(cam.get("pixel_size", 0.005))
                     scene_gen  = self._scene_gen
                 self._anim_target = None
-            self._run_animation(target, speed, gen, W, pixel_size, scene_gen)
+            self._run_animation(target, speed, gen, W, pixel_size, scene_gen,
+                                fixed_s=fixed_s)
 
-    def _run_animation(self, target, speed, gen, W, pixel_size, scene_gen=None):
+    def _run_animation(self, target, speed, gen, W, pixel_size, scene_gen=None,
+                       fixed_s=None):
+        """Interpolate the goniometer from where it is to `target`.
+
+        `fixed_s` > 0 replaces the speed-dial velocity profile with constant
+        velocity for exactly that wall time (the DHS's `duration`): position
+        is elapsed/fixed_s, no ramp, and no speed is inherited or handed on.
+        """
         with self._gonio_lock:
             start = self._goniometer.get()
-        duration = move_duration(start, target, speed, W, pixel_size)
+        fixed = fixed_s is not None and fixed_s > 0.0
+        duration = (float(fixed_s) if fixed
+                    else move_duration(start, target, speed, W, pixel_size))
 
         delta = {k: target[k] - start[k] for k in start}
         # Inherit the speed of the move this one replaced, so a burst of jog
@@ -2109,13 +1966,14 @@ class CameraServer(ThreadingHTTPServer):
         with self._anim_cv:
             prev_u, prev_delta = self._anim_u, self._anim_delta
             self._anim_u, self._anim_delta = 0.0, None
-        if prev_u > 0.0 and prev_delta:
+        if prev_u > 0.0 and prev_delta and not fixed:
             dot = sum(prev_delta.get(k, 0.0) * delta.get(k, 0.0) for k in delta)
             if dot > 0.0:
                 u = prev_u
 
         self._anim_active = True
         pos = 0.0
+        t0 = time.monotonic()
         while True:
             frac = 1.0 if duration <= 0 else pos
             pose = {k: start[k] + delta[k] * frac for k in start}
@@ -2142,11 +2000,14 @@ class CameraServer(ThreadingHTTPServer):
                     return                    # preempted → touch nothing else
                 with self._gonio_lock:
                     self._goniometer.set(**pose)
-            self._invalidate_all()
+            self._invalidate()
             if frac >= 1.0:
                 break
             time.sleep(ANIM_DT)
-            pos, u = velocity_step(pos, u, ANIM_DT, duration)
+            if fixed:
+                pos = min(1.0, (time.monotonic() - t0) / duration)
+            else:
+                pos, u = velocity_step(pos, u, ANIM_DT, duration)
 
         # Settle: snap exactly to target and request one full-quality frame.
         # Gen-checked like every other write -- without it a preempt in the
@@ -2158,7 +2019,7 @@ class CameraServer(ThreadingHTTPServer):
             self._anim_u, self._anim_delta = 0.0, None   # arrived: at rest
             with self._gonio_lock:
                 self._goniometer.set(**target)
-        self._invalidate_all()
+        self._invalidate()
 
     # ------------------------------------------------------------------
     # Runtime scene switching
@@ -2251,11 +2112,12 @@ class CameraServer(ThreadingHTTPServer):
     def _pick_library(self, scene_path):
         """(root, source, status, diff) for the library to SERVE, or None root.
 
-        NEVER builds.  This is the whole reason the switch path does not call
-        ensure_library: ensure_library rebuilds whenever is_current is false,
-        and `frame_library/mitegen_200um` is false only because its manifest
-        predates the `format` and `psf` keys -- so a switch to it would silently
-        start a ~1.9 h rebuild of 360 frames that are already on disk and fine.
+        NEVER builds.  Launch, switch and the tab strip all grade through here,
+        so the three cannot reach different verdicts about the same library and
+        none of them can turn a verdict into hours of GPU time.
+        `data/frame_library/mitegen_200um` is why that matters: 360 frames that are
+        on disk and fine, graded `stale` only because its manifest predates the
+        `format` and `psf` keys.
 
         A stale-but-complete FULL library beats a current PREVIEW one: the
         preview is a coarse stand-in with a 1x zoom ceiling, and quietly
@@ -2268,6 +2130,23 @@ class CameraServer(ThreadingHTTPServer):
         if pstat != "missing":
             return self._preview_root, "preview", pstat, pdiff
         return None, None, "missing", {}
+
+    def _serving_note(self, serving_from, status, diff):
+        """What an operator needs told about the library being served, or None.
+
+        One definition for the launch path and the switch path.  They answer
+        the same question about the same grading, and a boot banner that
+        disagreed with the tab strip is how a coarse preview gets mistaken for
+        the real templates.
+        """
+        note = describe_differences(diff) if status == "stale" else None
+        if serving_from == "preview":
+            note = ("serving the coarse PREVIEW library "
+                    f"({PREVIEW_BUILD['step_deg']:g}deg steps, "
+                    f"{PREVIEW_BUILD['supersample']}x supersample) -- "
+                    "build the full library for real templates."
+                    + (f" Also: {note}" if note else ""))
+        return note
 
     def _build_bundle(self, scene_path, build=None, progress=print):
         """Load a scene and everything derived from it, OFF-LOCK, as one value.
@@ -2324,6 +2203,9 @@ class CameraServer(ThreadingHTTPServer):
         serving_from = None
         warning = None
         if want_templates:
+            # A library this call just built matches what was asked for by
+            # construction; only the serve-what-exists branch below grades.
+            status, diff = "current", {}
             # NOTE _library_kwargs is NOT rewritten for a preview build. It is
             # the server's configured FULL-build parameter set, and it is what
             # every library is graded against; replacing it with the preview
@@ -2347,13 +2229,8 @@ class CameraServer(ThreadingHTTPServer):
                         f"no frame library for "
                         f"{os.path.splitext(os.path.basename(scene_path))[0]}; "
                         f"build one with build=preview or build=full")
-                # ensure_library is deliberately NOT used: it rebuilds whenever
-                # is_current is false, and mitegen_200um is false only because
-                # its manifest predates two build keys -- so this path would
-                # silently start a ~1.9 h rebuild of frames already on disk.
                 manifest = load_manifest(library_dir(scene_path, root))
-                if status == "stale":
-                    warning = describe_differences(diff)
+            warning = self._serving_note(serving_from, status, diff)
             templates = TemplateSource(manifest,
                                        library_dir(scene_path, root),
                                        jpeg_quality=self._jpeg_quality,
@@ -2368,12 +2245,6 @@ class CameraServer(ThreadingHTTPServer):
             # is slow would look like the switch broke something.
             if self._prewarm:
                 templates.prewarm(progress=progress)
-            if serving_from == "preview":
-                warning = ("serving the coarse PREVIEW library "
-                           f"({PREVIEW_BUILD['step_deg']:g}deg steps, "
-                           f"{PREVIEW_BUILD['supersample']}x supersample) -- "
-                           "build the full library for real templates."
-                           + (f" Also: {warning}" if warning else ""))
 
         # GPU allocation last: it can OOM, and until install the OLD TorchScene
         # is still resident, so peak VRAM is the SUM of the two.  Only reachable
@@ -2388,17 +2259,6 @@ class CameraServer(ThreadingHTTPServer):
                    else torch.device("cpu"))
             tscene = TorchScene(scene, dev, torch.float64)
 
-        # X-ray: PREWARMED (cache_size="all"), same reasoning as the boot-time
-        # block in __init__ -- the /xray-stream producer needs every frame
-        # already decoded. Off-lock and writes nothing to self, exactly like
-        # the optical templates.prewarm() above it; a missing library is not
-        # an error, _load_xray_templates just returns None and the stream
-        # falls back to live rendering, same as the plain /xray endpoint.
-        xray_templates = _load_xray_templates(scene_path, self._xray_library_root,
-                                              cache_size="all")
-        if xray_templates is not None and self._prewarm:
-            xray_templates.prewarm(progress=progress)
-
         # Fresh goniometer, at home, bound to the NEW axes.  Rebuilding is not
         # optional: Goniometer captures scene.geometry BY REFERENCE, so a reused
         # one keeps transforming on the old axes forever -- silent, and visible
@@ -2411,8 +2271,7 @@ class CameraServer(ThreadingHTTPServer):
                             templates=templates, tscene=tscene,
                             want_templates=want_templates,
                             library_kwargs=lib_kwargs,
-                            serving_from=serving_from, warning=warning,
-                            xray_templates=xray_templates)
+                            serving_from=serving_from, warning=warning)
 
     def _install_bundle(self, bundle):
         """Swap the live scene in.  Writes only; provably cannot raise.
@@ -2460,17 +2319,6 @@ class CameraServer(ThreadingHTTPServer):
                 self._scene_warning  = bundle.warning
                 self._scene_gen     += 1
 
-                # Pair the freshly prewarmed X-ray source with the just-bumped
-                # scene_gen, inside the SAME critical section that bumps it --
-                # no separate lock needed, because _switch_lock already
-                # serialises build+install as one unit (see switch_scene), so
-                # no other switch can land between this bundle's build and its
-                # install. _get_xray_templates's lazy path reads this same
-                # slot, so a lookup after a switch hits the prewarmed source
-                # rather than recomputing it.
-                self._xray_templates       = bundle.xray_templates
-                self._xray_templates_cache = (self._scene_gen, bundle.xray_templates)
-
                 # The compiled preview trace was traced against the OLD
                 # TorchScene's tensors.  Back to eager: leaving it set means the
                 # first preview frame either recompiles inside a worker thread
@@ -2492,14 +2340,12 @@ class CameraServer(ThreadingHTTPServer):
                 self._last_render_preview = False
 
         del outgoing        # unlocked: CUDA frees, mesh teardown
-        # Outside every lock.  _frame_cv and _xray_frame_cv are both leaves,
-        # and the producer(s) this wakes immediately want _scene_lock.
-        # Deliberately NOT a _frame_gen/_xray_frame_gen bump: MJPEG consumers
-        # hold no scene state, and the jpeg caches still hold the OLD scene's
-        # frame at this instant, so bumping would push every client one
-        # duplicate stale part for no new information. If the X-ray producer
-        # is running, this wakes it onto the new, already-prewarmed source.
-        self._invalidate_all()
+        # Outside every lock.  _frame_cv is a leaf, and the producer this
+        # wakes immediately wants _scene_lock.  Deliberately NOT a _frame_gen
+        # bump: MJPEG consumers hold no scene state, and the jpeg cache still
+        # holds the OLD scene's frame at this instant, so bumping would push
+        # every client one duplicate stale part for no new information.
+        self._invalidate()
 
     def switch_scene(self, scene_path, build=None, progress=print):
         """Serve a different scene, without restarting.  Synchronous.
@@ -2543,7 +2389,12 @@ class CameraServer(ThreadingHTTPServer):
         # what the template path is for on a machine with no GPU.
         if build and not cuda_available():
             return False, CPU_BUILD_REFUSAL, 503
-        if build is None and self._want_templates and \
+        # _templates_flag, not _want_templates: _build_bundle decides on the raw
+        # flag, and a launch whose own scene had no library serves live with
+        # _want_templates False while still meaning to use templates for any
+        # scene that has one. Grading on the wrong flag answers 202 and then
+        # fails in the worker.
+        if build is None and self._templates_flag and \
                 self._pick_library(scene_path)[0] is None:
             return (False,
                     f"no frame library for "
@@ -2650,31 +2501,17 @@ class CameraServer(ThreadingHTTPServer):
 
     def _scenes_json(self):
         """Every switchable scene, with the library state of both roots."""
-        from ..library.xray_library import library_dir as xray_library_dir
-        from ..library.xray_library import xray_library_status
         with self._scene_lock:
             current = os.path.abspath(self._scene_path) if self._scene_path else None
         out = []
         for path in self._scene_choices():
             fstat, fdiff, pstat, pdiff = self._library_states(path)
             _, source, status, diff = self._pick_library(path)
-            can_serve = source is not None or not self._want_templates
+            # _templates_flag for the same reason _begin_switch uses it: this
+            # answers "can I switch here without a build", and _build_bundle
+            # decides that on the raw flag.
+            can_serve = source is not None or not self._templates_flag
             warning = describe_differences(diff) if status == "stale" else None
-            # Read-only: never builds, never grades "stale" (no build-param
-            # flag to compare against, see XrayTemplateSource's docstring).
-            # Tells the Radiograph tab whether /xray answers in single-digit
-            # ms or falls back to a live render (docs/DECISIONS.md 2026-08-18).
-            #
-            # Cached per scene_path: a full status check walks every frame
-            # file, ~2s/scene on this DrvFs-mounted repo, which /scenes would
-            # otherwise pay on every call. Stale until restart if a library
-            # is rebuilt by a separate process, same tradeoff as
-            # _xray_templates_cache.
-            xray_status = self._xray_status_cache.get(path)
-            if xray_status is None:
-                xray_lib_dir = xray_library_dir(path, self._xray_library_root)
-                xray_status = xray_library_status(path, xray_lib_dir)
-                self._xray_status_cache[path] = xray_status
             out.append({
                 "path": path,
                 "name": os.path.splitext(os.path.basename(path))[0],
@@ -2684,7 +2521,6 @@ class CameraServer(ThreadingHTTPServer):
                 "warning": warning,
                 "library": {"status": fstat, "differs": fdiff},
                 "preview": {"status": pstat, "differs": pdiff},
-                "xray_library": {"status": xray_status},
             })
         return {"current": current,
                 "root": self._library_root,
@@ -2753,7 +2589,7 @@ class CameraServer(ThreadingHTTPServer):
                 torch.cuda.synchronize()
                 self._compiled_ok = True
                 self._compile_error = None
-                print("[compile-preview] warmup ok — preview frames use torch.compile")
+                print("[compile-preview] warmup ok: preview frames use torch.compile")
             except Exception as exc:
                 self._compiled_ok = False
                 self._compile_error = f"warmup failed, using eager preview: {exc}"
@@ -2776,7 +2612,7 @@ class CameraServer(ThreadingHTTPServer):
             man = templates.manifest
             rnd = man["rendered"]
             zmin, zmax = zoom_limits(man)
-            # Report BOTH sizes: they are no longer the same number, and the
+            # Report BOTH sizes: for a cropped library they differ, and the
             # difference is the point -- poses are computed against the window,
             # only the stored crop is ever decoded.
             window = int(rnd["width"]), int(rnd["height"])
@@ -2791,20 +2627,17 @@ class CameraServer(ThreadingHTTPServer):
                   f"({man['supersample']}x), {man['step_deg']}deg steps about "
                   f"{man['axis']}; zoom {zmin:.2f}-{zmax:.0f}x, "
                   f"X/Y/Z pan within the rendered window, no GPU needed")
+            # Provenance, not a verdict: nothing here decides whether to serve.
+            # It is the only place an operator is told that the renderer has
+            # moved on since the build -- render_sha is advisory, not a
+            # staleness gate.
+            print(f"[templates] {library_provenance(man)}")
             print(f"[templates] cache holds {templates._cache_size} of "
                   f"{len(man['frames'])} frames "
                   f"({templates._cache_size * big[0] * big[1] * _DECODED_BYTES_PER_PX / 2**30:.2f} "
                   f"GiB when fully warmed)")
             print(f"[templates] roty/rotz are NOT served from templates "
                   f"(one sweep covers one axis) -- use --templates off for those")
-
-        if self._xray_templates is not None:
-            n = len(self._xray_templates.manifest.get("frames") or ())
-            print(f"[xray-templates] prewarmed {n} frames for /xray-stream "
-                  f"and the plain /xray fallback")
-        else:
-            print(f"[xray-templates] no X-ray library for this scene -- "
-                  f"/xray and /xray-stream fall back to live rendering")
 
         # Single-threaded first compilation of the preview path (if enabled)
         # BEFORE any thread is spawned -- concurrent first-compile crashes dynamo.
@@ -2828,11 +2661,15 @@ class CameraServer(ThreadingHTTPServer):
         print(f"  MJPEG : http://{host}:{port}/axis-cgi/mjpg/video.cgi")
         print(f"  Snap  : http://{host}:{port}/axis-cgi/jpg/image.cgi")
         print(f"  Motor : http://{host}:{port}/motor?tx=0.1&rotz=45&zoom=2")
-        print(f"  Move  : http://{host}:{port}/move?drotx=90&speed=1  (animated)")
+        print(f"  Move  : http://{host}:{port}/move?drotx=90&speed=1  (animated; "
+              f"duration=<s> fixes the wall time)")
+        print(f"  Status: http://{host}:{port}/status")
         print(f"  Beam  : http://{host}:{port}/beam")
-        print(f"  Xray  : http://{host}:{port}/xray")
-        print(f"  XrayStream : http://{host}:{port}/xray-stream  "
-             f"(POST /stream-mode?mode=radiograph to start it)")
+        print(f"  Xray  : http://{host}:{port}/xray  (live render)")
+        cams = ", ".join(f"{n}={z:g}x" for n, z in sorted(self._camera_zoom.items()))
+        print(f"  Camera: ?camera=N on the MJPEG/snapshot URLs ({cams})")
+        print(f"  Video : POST http://{host}:{port}/video-trigger?state=open|closed "
+              f"-> {self._jpeg_receiver or 'no --jpeg-receiver, state recorded only'}")
 
         if background:
             st = threading.Thread(target=self.serve_forever, daemon=True)
@@ -2883,7 +2720,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(
         prog="python -m loop_sim.server.camera_server",
         description="AXIS-compatible camera server for the loop simulator.")
-    ap.add_argument("--scene", default="scene_files/hampton_300um.yaml",
+    ap.add_argument("--scene", default="data/scene_files/hampton_300um.yaml",
                     help="scene YAML to serve (default: %(default)s)")
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=8080)
@@ -2907,9 +2744,11 @@ def main(argv=None):
                          "(default: %(default)s)")
     ap.add_argument("--templates", choices=["on", "off"], default="on",
                     help="on (default): serve from a pre-computed frame "
-                         "library, building it first if absent or stale. This "
-                         "is the low-latency path and needs no GPU at runtime. "
-                         "off: raytrace every frame live")
+                         "library when one exists, stale or not. This is the "
+                         "low-latency path and needs no GPU at runtime. It "
+                         "never builds: a scene with no library is rendered "
+                         "live, and `python -m loop_sim.library --scene <yaml>` "
+                         "is what builds one. off: raytrace every frame live")
     ap.add_argument("--prewarm", choices=["on", "off"], default="on",
                     help="on (default): decode the whole library at startup, so "
                          "the FIRST revolution runs at the cached rate instead "
@@ -2919,10 +2758,7 @@ def main(argv=None):
                          "10-30 s on voltron, longer off a cold pool) and "
                          "nothing after. Skipped automatically when the cache "
                          "cannot hold a whole revolution, since a partial warm "
-                         "is evicted before it is used. Also covers the X-ray "
-                         "radiograph library when one exists for the scene "
-                         "(~5 s measured, always the whole sweep -- /xray-stream "
-                         "needs it fully decoded). off: fill both lazily")
+                         "is evicted before it is used. off: fill lazily")
     ap.add_argument("--template-cache", default="auto",
                     help="how many decoded templates to hold in RAM. "
                          "auto (default): as much of the library as half the "
@@ -2989,11 +2825,11 @@ def main(argv=None):
                          "png). Changing it invalidates an existing library")
     ap.add_argument("--library-root", default=None,
                     help="frame-library root to serve from and report on "
-                         "(default: the repo's frame_library/)")
+                         "(default: the repo's data/frame_library/)")
     ap.add_argument("--preview-root", default=None,
                     help="root for the coarse PREVIEW libraries built on "
                          "demand when you switch to a scene that has none "
-                         "(default: the repo's frame_library_preview/). Kept "
+                         "(default: the repo's data/frame_library_preview/). Kept "
                          "separate from --library-root deliberately: building "
                          "into the live root would overwrite frames the "
                          "serving TemplateSource is decoding and caching by "
@@ -3001,19 +2837,34 @@ def main(argv=None):
     ap.add_argument("--scene-dir", default=None,
                     help="directory whose *.yaml are offered for runtime "
                          "switching via /scenes (default: the repo's "
-                         "scene_files/)")
+                         "data/scene_files/)")
     ap.add_argument("--template-quality", type=int, default=None,
                     help="JPEG quality of the STORED templates when a library "
                          "has to be built. Distinct from --jpeg-quality, which "
                          "is the quality of the frames this server sends. "
                          "Changing it invalidates an existing library")
-    ap.add_argument("--xray-library-root", default=None,
-                    help="X-ray radiograph library root to serve /xray from "
-                         "(default: the repo's xray_library/). Read-only: "
-                         "unlike --library-root/--templates, /xray never "
-                         "builds one implicitly -- a missing or stale library "
-                         "here just means /xray keeps rendering live")
+    ap.add_argument("--jpeg-receiver", default=None, metavar="URL",
+                    help="where POST /video-trigger?state=open pushes frames: "
+                         "each newly published frame goes to URL as an HTTP "
+                         "POST with Content-Type image/jpeg, the way an AXIS "
+                         "camera feeds pydhsfw's jpeg_receiver. Default none: "
+                         "the trigger state is recorded and nothing is sent")
+    ap.add_argument("--push-fps", type=float, default=30.0,
+                    help="ceiling on the --jpeg-receiver push rate "
+                         "(default: %(default)s)")
+    ap.add_argument("--camera-zoom", default=_CAMERA_ZOOM_DEFAULT,
+                    metavar="N:ZOOM,...",
+                    help="AXIS camera number to zoom stop, for `camera=N` on "
+                         "the MJPEG and snapshot URLs (default: %(default)s, "
+                         "the beamline's three sample cameras as zoom stops on "
+                         "one AXIS server). A camera at a zoom other than the "
+                         "goniometer's is rendered for that client alone; "
+                         "an unknown N answers 400")
     args = ap.parse_args(argv)
+    try:
+        camera_zoom = parse_camera_zoom(args.camera_zoom)
+    except ValueError as exc:
+        ap.error(f"--camera-zoom: {exc}")
 
     lib_kwargs = library_kwargs_from_args(args)
 
@@ -3038,7 +2889,9 @@ def main(argv=None):
                                           else args.template_cache
                                           if args.template_cache == "auto"
                                           else int(args.template_cache)),
-                          xray_library_root=args.xray_library_root)
+                          jpeg_receiver=args.jpeg_receiver,
+                          push_fps=args.push_fps,
+                          camera_zoom=camera_zoom)
     server.start()
 
 

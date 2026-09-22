@@ -34,7 +34,7 @@ def _has_cuda():
 
 cuda_only = pytest.mark.skipif(not _has_cuda(), reason="CUDA not available")
 
-HAMPTON = os.path.join(REPO_ROOT, "scene_files", "hampton_300um.yaml")
+HAMPTON = os.path.join(REPO_ROOT, "data", "scene_files", "hampton_300um.yaml")
 
 
 def _render(device, roty=0.0, n_cond=1):

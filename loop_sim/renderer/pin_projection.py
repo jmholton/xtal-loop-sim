@@ -23,7 +23,7 @@ import numpy as np
 from ..motors.goniometer import apply_transform
 
 # Bodies the glint models, as (object name, material name).  The stand-in is
-# calibrated on `real_images/A01` and `E02`, both of which show a machined steel
+# calibrated on `data/real_images/mid_mag/A01` and `E02`, both of which show a machined steel
 # shank; nothing else in these scenes returns a specular highlight.  A kapton
 # micromount is DECLARED not to shine rather than guessed at from its shape,
 # which is what the old `max_width` heuristic was doing.

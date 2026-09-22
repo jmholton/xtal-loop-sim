@@ -74,16 +74,6 @@
   #notice.err  { color:#ff8a7a; }
   #notice.busy { color:var(--accent); }
 
-  /* Microscope/Radiograph toggle -- reuses .tabs/.tab/.badge above verbatim;
-     #modenotice is its own element for the same reason #notice is its own
-     element (see the comment by #notice below): nothing here may be rewritten
-     out from under it by another owner. */
-  #modenotice { font-size:11px; white-space:pre-wrap; line-height:1.5; margin:0 0 8px; }
-  #modenotice:empty { display:none; }
-  #modenotice.warn { color:#e8c46a; }
-  #modenotice.err  { color:#ff8a7a; }
-  #modenotice.busy { color:var(--accent); }
-
   /* /beam readout: a <details> so it costs nothing while closed -- see
      refreshBeam(), only ever called while it is open. */
   #beamdetails { margin-top:16px; border-top:1px solid var(--line); padding-top:12px; }
@@ -99,8 +89,6 @@
     <h1>LOOP-SIM &nbsp;·&nbsp; live view</h1>
     <div class="tabs" id="tabs" role="tablist"></div>
     <div class="ask" id="ask" hidden></div>
-    <div class="tabs" id="modetabs" role="tablist"></div>
-    <div id="modenotice"></div>
     <div class="view" id="view">
       <img id="cam" src="/axis-cgi/mjpg/video.cgi" alt="camera">
       <div class="cross"><div class="dot"></div></div>
@@ -360,13 +348,9 @@ function applyState(s) {
     `X ${(+s.tx).toFixed(3)}  Y ${(+s.ty).toFixed(3)}  Z ${(+s.tz).toFixed(3)}  (mm)\n` +
     `phi ${(+s.rotx).toFixed(1)}°   zoom ${(+s.zoom).toFixed(2)}×`;
 
-  // The radiograph image needs nothing here any more -- it is a genuine
-  // push stream now (see the Microscope/Radiograph section below), so it
-  // updates on the server's own schedule, not on a client-computed pose
-  // signature. /beam stays gated on SETTLE (two consecutive identical
-  // readings): its own computation is not as cheap as a render, and a
-  // numeric readout jittering mid-motion is not useful the way a live image
-  // is.
+  // /beam is gated on SETTLE (two consecutive identical readings): its
+  // computation is not as cheap as a render, and a numeric readout
+  // jittering mid-motion is not useful the way a live image is.
   const sig = poseSig(s);
   if (beamdetails.open && sig === lastPoseSig && sig !== lastBeamSig) { lastBeamSig = sig; refreshBeam(); }
   lastPoseSig = sig;
@@ -500,10 +484,6 @@ function pollSwitch() {
     }
     await refreshScenes();
     poll();                          // re-seed the boxes against the new clamps
-    // Nothing else needed for the Radiograph view here: if its stream is
-    // running, the server's own _install_bundle wakes the producer onto the
-    // new scene's (already prewarmed) source directly -- see
-    // camera_server.py's _invalidate_all -- so the client doesn't have to.
   }, 800);
 }
 
@@ -514,7 +494,6 @@ async function refreshScenes() {
     CAN_BUILD = j.can_build; BUILD_REFUSAL = j.build_refusal || "";
   } catch (e) { return; }
   renderTabs();
-  renderModeTabs();   // the Radiograph tab's "no library" badge is per-scene
 }
 
 // Boot: draw the tabs, and pick up a switch already running (or one that
@@ -530,93 +509,24 @@ async function refreshScenes() {
 })();
 
 // ---------------------------------------------------------------------------
-// Microscope / Radiograph toggle, and the /beam dose-and-volumes panel.
-//
-// Radiograph is now a genuine push stream, /xray-stream, mirroring the
-// microscope's own MJPEG stream (camera_server.py's _xray_bg_render_loop /
-// _handle_xray_stream) -- reversing the original "still, not a stream"
-// decision (docs/DECISIONS.md 2026-08-19) once its stated reason (a second
-// stream needs its own single-flight machinery, risking the class of bug
-// the 2026-07-06 _active_compiled incident was) was addressed directly: the
-// two producers share no state, and only one is ever active, explicitly
-// started/stopped by POST /stream-mode below -- never inferred from a
-// connection count. See docs/DECISIONS.md's later entry for the reasoning
-// and camera_server.py's _set_stream_mode for the mechanism.
-//
-// setMode() below is now just: tell the server which producer to run, then
-// point #cam at that producer's stream URL. No client-side polling drives
-// the image any more -- applyState's old pose-signature-triggered refresh
-// (refreshXray()/lastXraySig) is deleted, not merely inert.
-let MODE = "microscope";
+// The /beam dose-and-volumes panel.
 let lastPoseSig = null, lastBeamSig = null;
 
 function poseSig(s) {
   return ["tx", "ty", "tz", "rotx", "zoom"].map(k => (+s[k]).toFixed(4)).join(",");
 }
 
-function modenotice(text, kind) {
-  $("modenotice").textContent = text || "";
-  $("modenotice").className   = text ? (kind || "") : "";
-}
-
-// Badged the same way a scene tab is (.tab.missing .badge, reused verbatim):
-// tells the operator BEFORE they click whether Radiograph will answer in
-// single-digit ms or fall through to a live render that can take tens of
-// seconds to minutes on a mesh scene with no library (docs/RUNBOOK.md
-// "X-ray radiograph library").
-function xrayLibMissing() {
-  const cur = SCENES.find(s => s.is_current_scene);
-  return !cur || cur.xray_library.status === "missing";
-}
-function renderModeTabs() {
-  const noLib = xrayLibMissing();
-  $("modetabs").innerHTML =
-      `<button class="tab" role="tab" data-mode="microscope"`
-    + ` aria-selected="${MODE === "microscope"}">Microscope</button>`
-    + `<button class="tab${noLib ? " missing" : ""}" role="tab" data-mode="radiograph"`
-    + ` aria-selected="${MODE === "radiograph"}">Radiograph`
-    + (noLib ? `<span class="badge">no library, slow</span>` : "") + `</button>`;
-}
-// Same delegated-listener idiom as #tabs: rendered wholesale, bound once.
-$("modetabs").addEventListener("click", e => {
-  const b = e.target.closest(".tab");
-  if (!b) return;
-  setMode(b.dataset.mode);
-});
-
-// POST the mode to the server BEFORE swapping #cam's src, so the producer
-// the new src depends on already exists (or is already stopping) by the time
-// the browser connects -- avoids a moment where /xray-stream is requested
-// before anything is publishing to it (harmless either way, since the
-// stream handler just waits, but this keeps first-frame latency
-// deterministic rather than racing two separate requests on unordered
-// sockets).
-async function setMode(mode) {
-  if (mode === MODE) return;
-  MODE = mode;
-  renderModeTabs();
-  try { await fetch("/stream-mode?mode=" + mode, { method: "POST" }); } catch (e) {}
-  modenotice("");
-  cam.src = mode === "microscope" ? "/axis-cgi/mjpg/video.cgi" : "/xray-stream";
-}
-cam.addEventListener("load",  () => { if (MODE === "radiograph") modenotice(""); });
-cam.addEventListener("error", () => { if (MODE === "radiograph") modenotice("radiograph stream failed", "err"); });
-
 // /beam: fetched only while the <details> is open, and re-fetched on
-// pose-settle (unlike the radiograph -- its own computation is not as cheap,
-// and a numeric readout jittering mid-motion is not useful) -- never on
-// #state's 600 ms rewrite and never sharing #notice, which the scene-switch
-// code above owns exclusively.
+// pose-settle (its computation is not as cheap as a render, and a numeric
+// readout jittering mid-motion is not useful) -- never on #state's 600 ms
+// rewrite and never sharing #notice, which the scene-switch code above owns
+// exclusively.
 const beamdetails = $("beamdetails");
 
 // The main poll() runs every 600 ms, which is fine for the pose readout but
 // caps how quickly /beam's settle (two consecutive identical readings) can
-// be detected after motion actually stops. The radiograph no longer needs
-// this at all -- it is a push stream now (see above), driven by the
-// server's own producer loop, not by how often this page asks for a new
-// pose. So this only ever speeds up for the beam panel; the main 600 ms
-// poll is untouched otherwise, and Radiograph mode alone no longer changes
-// the poll cadence.
+// be detected after motion actually stops, so the poll speeds up while the
+// beam panel is open and nowhere else.
 let fastPollTimer = null;
 function updateFastPoll() {
   const want = beamdetails.open;
@@ -644,9 +554,6 @@ beamdetails.addEventListener("toggle", () => {
   updateFastPoll();
   if (beamdetails.open) { lastBeamSig = null; refreshBeam(); }
 });
-
-renderModeTabs();   // seed once now (SCENES is still empty); refreshScenes()
-                    // above re-renders it with the real per-scene badge.
 </script>
 </body>
 </html>

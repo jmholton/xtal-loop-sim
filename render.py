@@ -4,9 +4,14 @@ Render a loop-sim scene YAML file.
 
 Usage:
     python3 render.py SCENE.yaml [--tx TX] [--ty TY] [--n-cond N] [--output OUT.jpg]
+    python3 render.py SCENE.yaml --xray [--output OUT.png]
 
 Motor settings (tx, ty) are read from the YAML 'motor:' section if present,
 and can be overridden on the command line.
+
+--xray renders the X-ray transmission radiograph at the same pose instead of
+the optical image: an 8-bit greyscale PNG, encoded exactly as the camera
+server's GET /xray encodes it.
 """
 import sys, os, argparse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -36,8 +41,31 @@ def parse_args():
                         'camera_server uses), byte-identical to the CPU '
                         'reference in float64.')
     p.add_argument('--output', default=None,
-                   help='Output JPEG path (default: <scene_basename>.jpg in same directory)')
+                   help='Output JPEG path (default: <scene_basename>.jpg in same '
+                        'directory, or <scene_basename>_xray.png with --xray)')
+    p.add_argument('--xray', action='store_true',
+                   help='Render the X-ray transmission radiograph instead of '
+                        'the optical image, as an 8-bit greyscale PNG '
+                        '(bright = transmitted, dark = absorbed)')
     return p.parse_args()
+
+
+def render_xray(scene, gonio, device):
+    """PNG bytes of the radiograph, through the same encoder GET /xray uses."""
+    from loop_sim.renderer.beam import render_xray_numpy, transmission_png
+    if device == 'cuda':
+        import torch
+        from loop_sim.renderer.torch_compat import ensure_dynamo
+        ensure_dynamo()
+        from loop_sim.renderer.engine_torch import TorchScene
+        from loop_sim.renderer.xray_torch import render_xray_torch
+        dev = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+        print(f"Device: {dev} (xray_torch)", file=sys.stderr)
+        T = render_xray_torch(TorchScene(scene, dev, torch.float64),
+                              gonio).clamp(0, 1).cpu().numpy()
+    else:
+        T = render_xray_numpy(scene, gonio)
+    return transmission_png(T)
 
 
 def main():
@@ -75,6 +103,14 @@ def main():
     print(f"Motor:  tx={tx:+.5f} mm  ty={ty:+.5f} mm  "
           f"rotx={rotx:.1f}°  roty={roty:.1f}°  rotz={rotz:.1f}°",
           file=sys.stderr)
+    if args.xray:
+        print(f"Rendering X-ray radiograph {W}×{H} ...", file=sys.stderr)
+        out_path = args.output or os.path.splitext(args.scene)[0] + '_xray.png'
+        with open(out_path, 'wb') as f:
+            f.write(render_xray(scene, gonio, args.device))
+        print(f"Saved  → {out_path}", file=sys.stderr)
+        return
+
     print(f"Rendering {W}×{H}, n_cond={args.n_cond} ...", file=sys.stderr)
 
     if args.device == 'cuda':

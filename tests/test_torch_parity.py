@@ -28,7 +28,7 @@ from loop_sim.renderer.engine_torch import build_torch_shape
 
 DEV, DT = torch.device("cpu"), torch.float64
 _RNG = np.random.default_rng(0)
-HAMPTON = os.path.join(REPO_ROOT, "scene_files", "hampton_300um.yaml")
+HAMPTON = os.path.join(REPO_ROOT, "data", "scene_files", "hampton_300um.yaml")
 
 
 def _uniform_rays(n=40000, lo=-2.0, hi=2.0):

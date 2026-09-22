@@ -1,7 +1,7 @@
 """The camera server's lock order, checked statically.
 
     _anim_cv (3) > _scene_lock (2, RLock) > _gonio_lock (1)
-    _frame_cv (0) and _xray_frame_cv (0) share rank 0 as independent leaves.
+    _frame_cv (0) and _push_lock (0) share rank 0 as independent leaves.
 
 Inside `with self._L:`, nothing it calls may acquire rank >= rank(L);
 re-acquiring `_scene_lock` is fine (it is an RLock).
@@ -25,9 +25,9 @@ if REPO_ROOT not in sys.path:
 SRC = os.path.join(REPO_ROOT, "loop_sim", "server", "camera_server.py")
 
 RANK = {"_anim_cv": 3, "_scene_lock": 2, "_gonio_lock": 1,
-        "_frame_cv": 0, "_xray_frame_cv": 0}
+        "_frame_cv": 0, "_push_lock": 0}
 REENTRANT = {"_scene_lock"}
-LEAF_LOCKS = {"_frame_cv", "_xray_frame_cv"}
+LEAF_LOCKS = {"_frame_cv", "_push_lock"}
 
 
 def _lock_name(item):
@@ -94,9 +94,9 @@ def test_frame_cv_is_a_leaf():
     _frame_cv is the one lock a request thread grabs on every streamed
     optical frame, so anything nested under it would put stream latency
     behind scene or goniometer contention -- and _get_jpeg deliberately calls
-    _render_now OUTSIDE its `with` for exactly that reason. _xray_frame_cv is
-    the same guarantee for the X-ray stream (_xray_render_now calls
-    _render_xray_png OUTSIDE its `with`, mirroring _get_jpeg/_render_now).
+    _render_now OUTSIDE its `with` for exactly that reason. _push_lock guards
+    only the /video-trigger state, so the pusher reads its token and the
+    frame slot one lock at a time.
     """
     with open(SRC) as fh:
         tree = ast.parse(fh.read())

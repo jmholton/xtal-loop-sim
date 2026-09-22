@@ -289,7 +289,7 @@ def test_preflight_accepts_a_build_that_fits_and_refuses_one_that_does_not():
     from loop_sim.scene.scene import load
     from loop_sim.renderer.engine_torch import (TorchScene, check_render_fits,
                                                 RenderTooLargeError)
-    scene_path = os.path.join(REPO_ROOT, "scene_files", "hampton_300um.yaml")
+    scene_path = os.path.join(REPO_ROOT, "data", "scene_files", "hampton_300um.yaml")
     ts = None
     try:
         sc = load(scene_path, device="cpu")

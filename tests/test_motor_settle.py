@@ -21,7 +21,7 @@ if REPO_ROOT not in sys.path:
 from loop_sim.scene.scene import load
 from loop_sim.server import camera_server as cs
 
-HAMPTON = os.path.join(REPO_ROOT, "scene_files", "hampton_300um.yaml")
+HAMPTON = os.path.join(REPO_ROOT, "data", "scene_files", "hampton_300um.yaml")
 
 SETTLE = 0.25   # short window so tests stay fast; margins are ~4x below
 

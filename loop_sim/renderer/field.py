@@ -98,7 +98,7 @@ def _fbm(u, v, cell, seed, octaves=MOTTLE_OCTAVES, gain=MOTTLE_GAIN):
 # Rec. 601 luma weights, used only by the `mono` option.
 _LUMA = np.array([0.299, 0.587, 0.114])
 
-# The real sensor's raster.  Every frame in `real_images/` is 704x480, and the
+# The real sensor's raster.  Every frame in `data/real_images/` is 704x480, and the
 # BL831 sample camera's pixels are NOT square: 6.7324 x 7.4729 um at the mid
 # zoom stop and 0.8233 x 0.9139 at the hi stop -- aspect 1.1100 at both.  The
 # renderer has one scalar `pixel_size`, so the shipped scenes model that camera
@@ -234,7 +234,7 @@ def to_sensor(img, size=SENSOR_WH):
 # pin body.
 #
 # Constants were measured off two reference frames at the mid zoom stop
-# (`real_images/A01_nylonloop_pinleft_mid.jpg`,
+# (`data/real_images/mid_mag/A01_nylonloop_pinleft_mid.jpg`,
 # `E02_digitize_source_mid.jpg`); see docs/DECISIONS.md 2026-08-10 the pin's
 # specular streak.  `gain` sits deliberately near the quiet end of the
 # measured range: a blown-out glint on an otherwise flat pin reads worse than

@@ -5,17 +5,24 @@ image content. A library is a directory of PNG (or JPEG) frames around a measure
 render window, one per spindle angle, plus a manifest.json recording the
 scene's SHA-256, the build parameters, and each frame's file name and crop
 offset/size. `library_status` reads a library as `current` (matches the
-request), `stale` (complete and servable, built with older parameters --
-see `library_diff`), or `missing` (unusable); `ensure_library` builds when
-not current and returns the manifest. `pose_crop`/`servable_pose` turn a
-goniometer pose into the crop, size and blur to serve; `frame_for_angle`
-and `zoom_limits` pick a sweep frame and bound the servable zoom.
+requested build parameters), `stale` (complete and servable, built with
+different ones -- see `library_diff` and `describe_differences`) or
+`missing` (unusable).  Only `missing` ever provokes a build: a stale
+library is served as it stands, because rebuilding one is hours of GPU time
+and `python -m loop_sim.library --force` is the only thing entitled to
+spend them.  `library_provenance` says when a library was built and from
+what, and `verify_frame` re-renders one stored frame to measure how far the
+renderer has moved since.  `pose_crop`/`servable_pose` turn a goniometer
+pose into the crop, size and blur to serve; `frame_for_angle` and
+`zoom_limits` pick a sweep frame and bound the servable zoom.
 """
 import glob
 import hashlib
 import json
 import math
 import os
+import shutil
+import subprocess
 import time
 
 import numpy as np
@@ -23,13 +30,13 @@ import numpy as np
 # Anchored to the repo root rather than the caller's cwd: a library written to
 # the wrong directory is a silently missing deliverable, since it has to land in git.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-DEFAULT_ROOT = os.path.join(_REPO_ROOT, "frame_library")
+DEFAULT_ROOT = os.path.join(_REPO_ROOT, "data", "frame_library")
 # Coarse stand-in libraries, built on demand when someone switches the live
 # server to a scene that has none.  They go in a SEPARATE root because building
 # into the live one would overwrite frames the serving TemplateSource is
 # decoding and caching by filename -- the reader would keep serving whichever
 # mixture of old and new bytes its cache happened to hold.  Untracked, unlike
-# frame_library/: these are disposable, not a deliverable.
+# data/frame_library/: these are disposable, not a deliverable.
 DEFAULT_PREVIEW_ROOT = DEFAULT_ROOT + "_preview"
 # ~72 frames instead of 360, at the camera's own pitch and a single condenser
 # ray: minutes rather than the best part of an hour, at the cost of 5deg
@@ -135,11 +142,14 @@ def crop_to_content(arr, margin, background=BACKGROUND_RGB):
 # Build parameters that change the pixels. A library whose manifest disagrees
 # with the requested value of any of these is stale, not merely different.
 _BUILD_KEYS = ("axis", "step_deg", "n_cond", "supersample", "pan_mm",
-               "jpeg_quality", "format", "psf", "render_sha")
+               "jpeg_quality", "format", "psf")
 
-# Modules whose SOURCE decides what a template pixel is; a change to any of
-# them makes every stored template stale.  Deliberately NOT hashed, because
-# over-invalidating costs hours:
+# Modules whose SOURCE decides what a template pixel is.  ADVISORY ONLY: the
+# digest over them is stamped into the manifest and reported by
+# `library_provenance`, and `verify_frame` measures what actually changed, but
+# nothing here grades a library stale.  An edit to a tracer covers every
+# library at once, and a verdict that costs hours to clear has to be earned by
+# a measurement rather than by a hash.  Deliberately NOT hashed at all:
 #   renderer/field.py   camera emulation, applied at SERVE time downstream of
 #                       `pose_crop`, never baked into a template -- see
 #                       docs/DECISIONS.md 2026-08-10 (the renders became
@@ -165,9 +175,10 @@ def scene_fingerprint(scene_path):
 def render_source_paths():
     """`(package_root, sorted_paths)` -- exactly the files `render_sha` hashes.
 
-    Public so a test can assert WHICH files are covered.  Getting that set
-    wrong is silent in both directions: too few and a renderer change ships
-    stale frames, too many and an unrelated edit costs hours of rebuild.
+    Public so a test can assert WHICH files are covered.  The set still has to
+    be right even though it no longer invalidates anything: it is what
+    `library_provenance` advises on and what `--verify` is answering a question
+    about, and a tracer left out of it never raises a flag at all.
     """
     pkg = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     paths = []
@@ -195,8 +206,8 @@ def render_sha():
     """sha256 over the source of every module that decides a template pixel.
 
     Computed once per process: these files cannot change under a running build,
-    and reading a dozen of them on every `library_status` call would make
-    listing scenes on the control page do pointless I/O.
+    and reading a dozen of them every time a provenance line is printed would
+    make listing scenes on the control page do pointless I/O.
     """
     global _render_sha_cache
     if _render_sha_cache is None:
@@ -248,14 +259,17 @@ def build_params(axis="rotx", step_deg=DEFAULT_STEP_DEG, n_cond=DEFAULT_N_COND,
     any key whose requested value is None, so a None default would silently
     disable staleness checking for that parameter.
 
-    `render_sha` takes no argument: it is a property of the code on disk, not
-    a choice a caller gets to make, and letting one be passed would only give
-    a caller a way to declare a stale library current.
+    Every key is a build SETTING, and a caller declaring one declares only what
+    it is asking for, never that a library already satisfies it.  The state of
+    the renderer's own source is not settled here: it is not a setting, it is
+    not something a caller gets to assert, and a digest that graded libraries
+    made one edit to a tracer cost a rebuild of all of them.  `render_sha` is
+    still stamped into the manifest, and `library_provenance` and `verify_frame`
+    are what answer for it.
     """
     return {"axis": axis, "step_deg": step_deg, "n_cond": n_cond,
             "supersample": supersample, "pan_mm": pan_mm,
-            "jpeg_quality": quality, "format": format, "psf": bool(psf),
-            "render_sha": render_sha()}
+            "jpeg_quality": quality, "format": format, "psf": bool(psf)}
 
 
 def _frames_complete(lib_dir, man):
@@ -277,7 +291,7 @@ def _frames_complete(lib_dir, man):
     #
     # This is ALSO the interlock between cropped and uncropped libraries, and it
     # is the only one that bites: a stale library still serves (the server warns
-    # and carries on), but "missing" genuinely refuses.  Comparing against the
+    # and carries on), but "missing" refuses outright.  Comparing against the
     # DECLARED stored size makes it symmetric and free -- cropped frames read by
     # code that ignores `content_size_px` fail the check, and a manifest
     # claiming a crop over full-window frames fails it too.  Absence of the
@@ -320,7 +334,7 @@ def library_diff(scene_path, lib_dir, **params):
     the two would drift apart.
 
     A key absent from the manifest reads as None and so differs from any
-    concrete request -- exactly `frame_library/mitegen_200um`, written before
+    concrete request -- exactly `data/frame_library/mitegen_200um`, written before
     `format` and `psf` existed.  The scene fingerprint is deliberately NOT
     considered here: a changed scene means the frames show a different object,
     which is `library_status`'s "missing", not a difference of degree.
@@ -347,14 +361,16 @@ def library_status(scene_path, lib_dir, **params):
 
       missing -- nothing usable: no manifest, frames absent or damaged, or the
                 scene YAML has changed since the build (those frames are of a
-                different object, so serving them would be a lie).
-      stale   -- a COMPLETE, servable library that simply was not built the way
-                we would build it now.  `frame_library/mitegen_200um` is exactly
-                this: 360 usable frames, ~1.9 h to reproduce, whose only sin is
-                a manifest older than the `format` and `psf` build keys.
-                Refusing to serve it -- or silently rebuilding -- would cost far
-                more than the warning it deserves.  `library_diff` says what
-                differs.
+                different object, so serving them would be a lie).  The only
+                status that provokes a build.
+      stale   -- a COMPLETE, servable library that simply was not built with
+                the parameters being asked for.  `data/frame_library/mitegen_200um`
+                is exactly this: 360 usable frames, ~1.9 h to reproduce, whose
+                only sin is a manifest older than the `format` and `psf` build
+                keys.  Refusing to serve it -- or silently rebuilding -- would
+                cost far more than the warning it deserves.  `library_diff`
+                says what differs and `describe_differences` puts it in
+                English.
     """
     man = load_manifest(lib_dir)
     if man is None:
@@ -375,6 +391,101 @@ def is_current(scene_path, lib_dir, **params):
     indistinguishable from a correct build.
     """
     return library_status(scene_path, lib_dir, **params) == "current"
+
+
+_DIFF_PHRASES = {
+    "format":       lambda d: f"stored as {d['have']}, not {d['want']}",
+    "psf":          lambda d: ("built without the objective PSF" if not d["have"]
+                               else "built with the objective PSF"),
+    "supersample":  lambda d: (f"{d['have']}x supersample, so zoom is capped at "
+                               f"{d['have']}x rather than {d['want']}x"),
+    "step_deg":     lambda d: f"{d['have']:g}deg rotation steps, not {d['want']:g}",
+    "n_cond":       lambda d: f"{d['have']} condenser rays, not {d['want']}",
+    "pan_mm":       lambda d: f"{d['have']} mm pan margin, not {d['want']}",
+    "jpeg_quality": lambda d: f"JPEG quality {d['have']}, not {d['want']}",
+    "axis":         lambda d: f"swept about {d['have']}, not {d['want']}",
+}
+
+
+def describe_differences(differs):
+    """One operator-readable sentence naming what a stale library differs in.
+
+    "stale" on its own tells nobody whether to care.  Lives here rather than in
+    the server so the CLI, the log line, the tab tooltip and the control-page
+    banner cannot disagree.
+    """
+    if not differs:
+        return None
+    parts = [_DIFF_PHRASES.get(k, lambda d, k=k: f"{k} is {d['have']}, not {d['want']}")(v)
+             for k, v in sorted(differs.items())]
+    return ("this frame library was built with different settings: "
+            + "; ".join(parts)
+            + ". It is complete and is being served as-is -- rebuild it only if "
+              "you need those settings.")
+
+
+def library_provenance(manifest):
+    """One line: when a library was built, from what commit, and how.
+
+    The whole of what the manifest's advisory fields are for.  `render_sha` no
+    longer grades anything, so this is the only place an operator learns that
+    the tracer has moved on since the build -- and it says what to do about it
+    rather than declaring hours of rebuild owed.
+
+    Never raises.  It goes in a launch banner and a CLI listing, and a manifest
+    missing a field must not take either down.
+    """
+    if not isinstance(manifest, dict):
+        return "no manifest"
+    try:
+        stamp = str(manifest.get("built_utc") or "")
+        # "2026-08-11T21:30:05Z" -> "2026-08-11 21:30 UTC"; anything else is
+        # printed as it was stored rather than guessed at.
+        if len(stamp) >= 16 and stamp[10] in "T ":
+            parts = [f"built {stamp[:10]} {stamp[11:16]} UTC"]
+        elif stamp:
+            parts = [f"built {stamp}"]
+        else:
+            parts = ["build date unknown"]
+        if manifest.get("built_commit"):
+            parts.append(f"commit {manifest['built_commit']}")
+        for label, key in (("supersample", "supersample"), ("n_cond", "n_cond")):
+            if manifest.get(key) is not None:
+                parts.append(f"{label} {manifest[key]}")
+        if manifest.get("step_deg") is not None:
+            parts.append(f"step {manifest['step_deg']} deg")
+        fmt = manifest.get("format")
+        if not fmt and manifest.get("frames"):
+            fmt = _stored_format(manifest)
+        if fmt:
+            parts.append(str(fmt))
+        line = ", ".join(parts)
+        sha = manifest.get("render_sha")
+        if sha and sha != render_sha():
+            line += ("; renderer source changed since the build "
+                     "(run --verify or rebuild)")
+        return line
+    except Exception:
+        return "provenance unavailable"
+
+
+def _built_commit():
+    """`git describe --always --dirty` in the repo root, or "unknown".
+
+    Provenance, not a gate: a library whose build cannot be tied to a commit is
+    still perfectly servable, so every way this can fail -- no git, no repo, a
+    hung index lock -- reads as "unknown" rather than losing a build that has
+    already run for an hour.
+    """
+    try:
+        out = subprocess.run(["git", "describe", "--always", "--dirty"],
+                             cwd=_REPO_ROOT, capture_output=True, text=True,
+                             timeout=10)
+        if out.returncode == 0 and out.stdout.strip():
+            return out.stdout.strip()
+    except Exception:
+        pass
+    return "unknown"
 
 
 CPU_BUILD_REFUSAL = (
@@ -500,6 +611,34 @@ def plan_window(cam, content, pan_mm=DEFAULT_PAN_MM):
 # ---------------------------------------------------------------------------
 # Build
 # ---------------------------------------------------------------------------
+def render_sweep_frame(scene, tscene, angle_deg, x_win, y_win, axis="rotx",
+                       n_cond=DEFAULT_N_COND, psf=DEFAULT_PSF, tile_size="fit",
+                       vram_fraction=DEFAULT_VRAM_FRACTION):
+    """One sweep frame, as a uint8 HxWx3 array, at the pose the sweep uses.
+
+    The window offset is applied as a sample translation: tx is parallel to the
+    spindle axis so it is rotation-invariant, and ty must be counter-rotated
+    because the stage rides on the spindle.
+
+    `verify_frame` renders through here too, so there is one copy of that
+    arithmetic: a verification that re-derived the pose would be testing its own
+    derivation as much as the renderer.  The caller sets the camera to the
+    template geometry first -- `render_torch` takes width/height/pixel_size off
+    the scene, never from arguments.
+    """
+    import torch
+    from ..motors.goniometer import Goniometer
+    from ..renderer.engine_torch import render_torch
+
+    th = math.radians(angle_deg)
+    gono = Goniometer(scene.geometry).set(
+        **{axis: angle_deg, "tx": -x_win,
+           "ty": -y_win * math.cos(th), "tz": y_win * math.sin(th)})
+    img = render_torch(tscene, gono, n_cond=n_cond, psf=psf,
+                       tile_size=tile_size, vram_fraction=vram_fraction)
+    return (img * 255).clamp(0, 255).to(torch.uint8).cpu().numpy()
+
+
 def build_library(scene_path, root=DEFAULT_ROOT, axis="rotx",
                   step_deg=DEFAULT_STEP_DEG, supersample=DEFAULT_SUPERSAMPLE,
                   pan_mm=DEFAULT_PAN_MM, n_cond=DEFAULT_N_COND,
@@ -516,11 +655,10 @@ def build_library(scene_path, root=DEFAULT_ROOT, axis="rotx",
     import torch
     from PIL import Image
     from ..scene.scene import load
-    from ..motors.goniometer import Goniometer
     from ..renderer.torch_compat import ensure_dynamo
     ensure_dynamo()   # torch 2.0.1 does not bind torch._dynamo itself
-    from ..renderer.engine_torch import (TorchScene, render_torch,
-                                         check_render_fits, RenderTooLargeError)
+    from ..renderer.engine_torch import (TorchScene, check_render_fits,
+                                         RenderTooLargeError)
     from ..renderer.optics import psf_sigma_px
 
     if axis != "rotx":
@@ -532,26 +670,24 @@ def build_library(scene_path, root=DEFAULT_ROOT, axis="rotx",
             f"pose_crop both assume the spindle is rotx. Generalise both "
             f"before enabling another axis.")
 
-    lib_dir = library_dir(scene_path, root)
-    os.makedirs(lib_dir, exist_ok=True)
-    # Retire the old manifest FIRST. Frames are overwritten in place, so an
-    # interrupted build would otherwise leave a manifest describing a mix of
-    # old and new frames -- and is_current would call it good.
-    man_path = os.path.join(lib_dir, "manifest.json")
-    if os.path.exists(man_path):
-        os.remove(man_path)
-
     fmt = str(format).lower()
     if fmt not in ("png", "jpeg"):
         raise ValueError(f"format={format!r} must be 'png' or 'jpeg'")
     ext = "png" if fmt == "png" else "jpg"
-    # Frames are overwritten in place, so a build that CHANGES extension would
-    # leave the old ones behind: still on disk, still tracked by git, no longer
-    # referenced by any manifest. Clear every stale frame image first.
-    for old in sorted(os.listdir(lib_dir)):
-        if old.startswith("rot_") and old.lower().endswith((".png", ".jpg", ".jpeg")) \
-                and not old.endswith("." + ext):
-            os.remove(os.path.join(lib_dir, old))
+
+    lib_dir = library_dir(scene_path, root)
+    # Render into a sibling directory and swap at the end.  Until the swap
+    # nothing on disk is touched, so an OOM at frame 300 of 360, a Ctrl-C or a
+    # dead host all leave the library that was already there exactly as it was.
+    # It also settles what building in place needed two pieces of bookkeeping
+    # for: a manifest describing a mixture of old and new frames, and a format
+    # change orphaning the previous extension's images inside a tracked
+    # directory.
+    new_dir = lib_dir + ".new"
+    old_dir = lib_dir + ".old"
+    if os.path.exists(new_dir):
+        shutil.rmtree(new_dir)
+    os.makedirs(new_dir)
 
     scene = load(scene_path, device="cpu")
     cam = scene.camera_cfg
@@ -633,74 +769,79 @@ def build_library(scene_path, root=DEFAULT_ROOT, axis="rotx",
     baseline = []
     slow_run = 0
     spill_warned = False
-    for i, ang in enumerate(angles):
-        gono = Goniometer(scene.geometry)
-        # The window offset is applied as a sample translation: tx is parallel
-        # to the spindle axis so it is rotation-invariant, and ty must be
-        # counter-rotated because the stage rides on the spindle.
-        th = math.radians(ang)
-        gono.set(**{axis: ang, "tx": -x_win,
-                    "ty": -y_win * math.cos(th), "tz": y_win * math.sin(th)})
-        t_frame = time.time()
-        try:
-            img = render_torch(tscene, gono, n_cond=n_cond, psf=psf,
-                               tile_size=tile_size,
-                               vram_fraction=vram_fraction)
-        except torch.OutOfMemoryError as exc:
-            raise RuntimeError(
-                f"Out of memory rendering {scene_path} at {RW}x{RH}, n_cond={n_cond}. "
-                f"Lower --supersample or --vram-fraction, or pass an explicit "
-                f"--tile-size."
-            ) from exc
-        # No OOM to catch under WSL2 -- the driver spills to host RAM and the
-        # render just crawls, so timing is the only available signal. Baseline
-        # off a median of early frames, NOT frame 0: the first frame carries
-        # CUDA context setup, first-touch allocation and any tile calibration,
-        # so it is the slowest and comparing against it never fires.
-        dt_frame = time.time() - t_frame
-        if len(baseline) < 8:
-            baseline.append(dt_frame)
-        else:
-            typical = sorted(baseline)[len(baseline) // 2]
-            if dt_frame > 2.5 * typical:
-                slow_run += 1                 # a spill is sustained; one slow
-                if slow_run >= 3 and not spill_warned and progress:
-                    spill_warned = True       # frame is just a hiccup
-                    progress(f"    WARNING {slow_run} consecutive frames near "
-                             f"{dt_frame:.1f}s against a typical {typical:.1f}s "
-                             f"-- suspect VRAM spill to host RAM; lower "
-                             f"--vram-fraction")
+    try:
+        for i, ang in enumerate(angles):
+            t_frame = time.time()
+            try:
+                arr = render_sweep_frame(scene, tscene, ang, x_win, y_win,
+                                         axis=axis, n_cond=n_cond, psf=psf,
+                                         tile_size=tile_size,
+                                         vram_fraction=vram_fraction)
+            except torch.OutOfMemoryError as exc:
+                raise RuntimeError(
+                    f"Out of memory rendering {scene_path} at {RW}x{RH}, n_cond={n_cond}. "
+                    f"Lower --supersample or --vram-fraction, or pass an explicit "
+                    f"--tile-size."
+                ) from exc
+            # No OOM to catch under WSL2 -- the driver spills to host RAM and
+            # the render just crawls, so timing is the only available signal.
+            # Baseline off a median of early frames, NOT frame 0: the first
+            # frame carries CUDA context setup, first-touch allocation and any
+            # tile calibration, so it is the slowest and comparing against it
+            # never fires.
+            dt_frame = time.time() - t_frame
+            if len(baseline) < 8:
+                baseline.append(dt_frame)
             else:
-                slow_run = 0
+                typical = sorted(baseline)[len(baseline) // 2]
+                if dt_frame > 2.5 * typical:
+                    slow_run += 1                 # a spill is sustained; one slow
+                    if slow_run >= 3 and not spill_warned and progress:
+                        spill_warned = True       # frame is just a hiccup
+                        progress(f"    WARNING {slow_run} consecutive frames near "
+                                 f"{dt_frame:.1f}s against a typical {typical:.1f}s "
+                                 f"-- suspect VRAM spill to host RAM; lower "
+                                 f"--vram-fraction")
+                else:
+                    slow_run = 0
 
-        arr = (img * 255).clamp(0, 255).to(torch.uint8).cpu().numpy()
-        # Cropped from the frame's own pixels, not `content_window`'s coarse
-        # scout (320x240, n_cond=1, effectively no PSF), which under-measures
-        # and would clip real sample here.  Per frame, not one box for the
-        # sweep: `mitegen_200um` needs 231 distinct bboxes across its 360
-        # angles, against 1 for hampton.  See docs/DECISIONS.md 2026-08-14
-        # (templates store content only).
-        arr, (ox, oy) = crop_to_content(arr, margin)
-        name = f"rot_{i:04d}.{ext}"
-        if fmt == "png":
-            Image.fromarray(arr, mode="RGB").save(
-                os.path.join(lib_dir, name), format="PNG",
-                compress_level=PNG_COMPRESS_LEVEL)
-        else:
-            Image.fromarray(arr, mode="RGB").save(
-                os.path.join(lib_dir, name), format="JPEG", quality=quality)
-        frames.append({"index": i, "angle_deg": ang, "file": name,
-                       "content_origin_px": [ox, oy],
-                       "content_size_px": [arr.shape[1], arr.shape[0]]})
-        if progress and (i % prog_every == 0 or i == len(angles) - 1):
-            el = time.time() - t_start
-            progress(f"    {i+1}/{len(angles)} frames  {el:6.1f}s elapsed "
-                     f"({el/(i+1):.2f}s/frame)")
+            # Cropped from the frame's own pixels, not `content_window`'s coarse
+            # scout (320x240, n_cond=1, effectively no PSF), which under-measures
+            # and would clip real sample here.  Per frame, not one box for the
+            # sweep: `mitegen_200um` needs 231 distinct bboxes across its 360
+            # angles, against 1 for hampton.  See docs/DECISIONS.md 2026-08-14
+            # (templates store content only).
+            arr, (ox, oy) = crop_to_content(arr, margin)
+            name = f"rot_{i:04d}.{ext}"
+            if fmt == "png":
+                Image.fromarray(arr, mode="RGB").save(
+                    os.path.join(new_dir, name), format="PNG",
+                    compress_level=PNG_COMPRESS_LEVEL)
+            else:
+                Image.fromarray(arr, mode="RGB").save(
+                    os.path.join(new_dir, name), format="JPEG", quality=quality)
+            frames.append({"index": i, "angle_deg": ang, "file": name,
+                           "content_origin_px": [ox, oy],
+                           "content_size_px": [arr.shape[1], arr.shape[0]]})
+            if progress and (i % prog_every == 0 or i == len(angles) - 1):
+                el = time.time() - t_start
+                progress(f"    {i+1}/{len(angles)} frames  {el:6.1f}s elapsed "
+                         f"({el/(i+1):.2f}s/frame)")
+    except BaseException:
+        # BaseException, not Exception: Ctrl-C during a multi-hour build is the
+        # likeliest way this ends, and it must report the same thing an OOM
+        # does.  The partial build is left where it is rather than cleaned up --
+        # a half-finished sweep is the only evidence of what went wrong.
+        if progress:
+            progress(f"[frame-library] build did not finish -- {lib_dir} is "
+                     f"untouched; the partial build is at {new_dir}")
+        raise
 
     manifest = {
         "scene": scene_path,
         "scene_sha256": scene_fingerprint(scene_path),
         "built_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "built_commit": _built_commit(),
         "axis": axis,
         "step_deg": step_deg,
         "n_cond": n_cond,
@@ -728,7 +869,18 @@ def build_library(scene_path, root=DEFAULT_ROOT, axis="rotx",
         "crop_margin_px": margin,
         "frames": frames,
     }
-    _write_manifest(lib_dir, manifest)
+    _write_manifest(new_dir, manifest)
+
+    # The swap.  Two renames, so the window in which `lib_dir` is not a whole
+    # library is the gap between them: a reader that opens the manifest before
+    # or after sees one consistent sweep either way.  `.old` goes last, because
+    # deleting 360 frames is the one step here that can take a while.
+    if os.path.exists(old_dir):
+        shutil.rmtree(old_dir)
+    if os.path.exists(lib_dir):
+        os.rename(lib_dir, old_dir)
+    os.rename(new_dir, lib_dir)
+    shutil.rmtree(old_dir, ignore_errors=True)
     return manifest
 
 
@@ -807,7 +959,13 @@ def recrop_library(lib_dir, progress=print):
 
 
 def ensure_library(scene_path, root=DEFAULT_ROOT, progress=print, **kwargs):
-    """Return the manifest, building the library first if it is absent or stale."""
+    """Return the manifest, building ONLY when there is nothing servable.
+
+    `missing` is the one status that builds.  A `stale` library is returned as
+    it stands with its differences named, because clearing that verdict costs
+    hours of GPU time and nothing that calls this is in a position to spend
+    them unasked: `python -m loop_sim.library --force` is.
+    """
     lib_dir = library_dir(scene_path, root)
     # Resolve against build_library's own defaults, or a default build would
     # compare its manifest against None and always look stale.
@@ -816,11 +974,83 @@ def ensure_library(scene_path, root=DEFAULT_ROOT, progress=print, **kwargs):
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
     params = build_params(**kwargs)
 
-    if is_current(scene_path, lib_dir, **params):
+    status = library_status(scene_path, lib_dir, **params)
+    if status != "missing":
+        if status == "stale" and progress:
+            progress(f"[frame-library] {scene_path}: "
+                     + describe_differences(
+                         library_diff(scene_path, lib_dir, **params)))
         return load_manifest(lib_dir)
     if progress:
-        progress(f"[frame-library] no current library for {scene_path} -- building")
+        progress(f"[frame-library] no library for {scene_path} -- building")
     return build_library(scene_path, root=root, progress=progress, **kwargs)
+
+
+def verify_frame(scene_path, lib_dir, angle_deg=0.0, device=None,
+                 tile_size=None, vram_fraction=DEFAULT_VRAM_FRACTION,
+                 progress=None):
+    """Re-render one stored frame live and measure how far it has drifted.
+
+    Returns `(rec, max_abs, mean_abs)`: the frame record, and the worst and mean
+    absolute difference in grey levels over the whole rendered window.
+
+    This is what replaces grading on `render_sha`.  The digest could only say
+    that a tracer's source had changed, never whether a pixel had, and it
+    charged hours of rebuild for the difference.  One frame costs seconds and
+    answers the question that was actually being asked.
+
+    The comparison runs on the WINDOW, not on the two crops: a stored crop and
+    a fresh one are the same picture only while the content bbox agrees, and a
+    box that has moved is itself a difference worth measuring rather than a
+    shape error.
+    """
+    import torch
+    from PIL import Image
+    from ..scene.scene import load
+    from ..renderer.torch_compat import ensure_dynamo
+    ensure_dynamo()   # torch 2.0.1 does not bind torch._dynamo itself
+    from ..renderer.engine_torch import TorchScene, check_render_fits
+
+    man = load_manifest(lib_dir)
+    if man is None:
+        raise FileNotFoundError(f"no manifest in {lib_dir}")
+    rec = frame_for_angle(man, angle_deg)
+    rnd, win = man["rendered"], man["window_mm"]
+
+    scene = load(scene_path, device="cpu")
+    cam = scene.camera_cfg
+    # The template geometry, not the camera's: render_torch reads width, height
+    # and pixel_size off the scene, so this IS how the build set the window.
+    cam["width"] = int(rnd["width"])
+    cam["height"] = int(rnd["height"])
+    cam["pixel_size"] = float(rnd["pixel_size"])
+
+    dev = torch.device(device) if device else torch.device(
+        "cuda" if torch.cuda.is_available() else "cpu")
+    tscene = TorchScene(scene, dev, torch.float64)
+    if tile_size is None:
+        tile_size = check_render_fits(tscene, n_cond=man["n_cond"],
+                                      psf=man.get("psf", True),
+                                      vram_fraction=vram_fraction,
+                                      supersample=man["supersample"],
+                                      progress=progress)
+
+    arr = render_sweep_frame(scene, tscene, rec["angle_deg"],
+                             float(win["centre_x"]), float(win["centre_y"]),
+                             axis=man.get("axis", "rotx"),
+                             n_cond=man["n_cond"], psf=man.get("psf", True),
+                             tile_size=tile_size, vram_fraction=vram_fraction)
+
+    stored = np.empty_like(arr)
+    stored[:, :] = np.asarray(man.get("background_rgb") or BACKGROUND_RGB,
+                              dtype=arr.dtype)
+    with Image.open(os.path.join(lib_dir, rec["file"])) as im:
+        tile = np.asarray(im.convert("RGB"))
+    ox, oy = rec.get("content_origin_px") or (0, 0)
+    stored[oy:oy + tile.shape[0], ox:ox + tile.shape[1]] = tile
+
+    d = np.abs(arr.astype(np.int16) - stored.astype(np.int16))
+    return rec, int(d.max()), float(d.mean())
 
 
 # ---------------------------------------------------------------------------

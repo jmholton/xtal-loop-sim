@@ -11,11 +11,15 @@ The claims here, and the test that guards each:
     axis at phi=90)
   * out-of-range requests are refused, not clamped -> test_*_raises
   * a library built with different parameters is stale -> test_is_current_*
+  * nothing ever builds on its own -> test_*_never_builds_*
+    (a rebuild is hours of GPU time and deletes a tracked deliverable, so
+    it has to be asked for)
 
 Heavier tests are CUDA-gated and use a coarse sweep in tmp_path rather
-than the committed frame_library/.
+than the committed data/frame_library/.
 """
 import inspect
+import json
 import math
 import os
 import sys
@@ -29,9 +33,45 @@ if REPO_ROOT not in sys.path:
 
 from loop_sim.library.frame_library import (            # noqa: E402
     _round_up_to_parity, build_library, build_params, frame_for_angle,
-    is_current, library_dir, plan_window, pose_crop, zoom_limits)
+    is_current, library_dir, library_provenance, library_status, plan_window,
+    pose_crop, render_sha, scene_fingerprint, zoom_limits)
 
-SCENE = os.path.join(REPO_ROOT, "scene_files", "hampton_300um.yaml")
+SCENE_DIR = os.path.join(REPO_ROOT, "data", "scene_files")
+LIB_ROOT = os.path.join(REPO_ROOT, "data", "frame_library")
+SCENE = os.path.join(SCENE_DIR, "hampton_300um.yaml")
+
+
+def _fabricate_library(tmp_path, stem="hampton_300um", scene=SCENE, **overrides):
+    """A complete one-frame library on disk, with no renderer involved.
+
+    `library_status` walks the frame list and opens one of the files, so a
+    manifest on its own will not do.  Building a real sweep to test a grading
+    rule would put a GPU and an hour in the way of a question about JSON.
+    """
+    from PIL import Image
+
+    lib = tmp_path / stem
+    lib.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (8, 6), (255, 255, 255)).save(str(lib / "rot_0000.png"))
+    man = dict(build_params(),
+               scene=scene,
+               scene_sha256=scene_fingerprint(scene),
+               built_utc="2026-08-11T21:30:05Z",
+               built_commit="abc1234",
+               render_sha=render_sha(),
+               camera={"width": 640, "height": 480, "pixel_size": 0.0074},
+               rendered={"width": 8, "height": 6, "pixel_size": 0.00185},
+               window_mm={"centre_x": 0.0, "centre_y": 0.0},
+               frames=[{"index": 0, "angle_deg": 0.0, "file": "rot_0000.png",
+                        "content_origin_px": [0, 0],
+                        "content_size_px": [8, 6]}])
+    man.update(overrides)
+    (lib / "manifest.json").write_text(json.dumps(man))
+    return str(lib), man
+
+
+def _never(*a, **kw):
+    raise AssertionError("build_library was called")
 
 
 def _virtual_frame(man, lib_dir, rec):
@@ -417,11 +457,10 @@ def test_build_params_matches_build_library_defaults():
     assert resolved["jpeg_quality"] == sig["quality"].default
     assert resolved["format"] == sig["format"].default
     assert resolved["psf"] == sig["psf"].default
-    # render_sha has no build_library parameter by design -- it is a property
-    # of the code on disk, not a choice, so both sides must call the same
-    # function rather than agree on a default.
-    from loop_sim.library.frame_library import render_sha
-    assert resolved["render_sha"] == render_sha()
+    # Every key here is a build SETTING. The state of the renderer's own source
+    # is not one: it is not something a caller chooses, and grading on it made
+    # one edit to a tracer cost a rebuild of every library at once.
+    assert "render_sha" not in resolved
     assert "render_sha" not in sig
 
 
@@ -439,14 +478,16 @@ def test_is_current_false_when_absent(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# render_sha: the one staleness hole nothing else covered
+# render_sha: provenance, and what --verify is asking about
 # ---------------------------------------------------------------------------
 def test_render_sha_covers_the_tracers_and_not_the_delivery_stage():
-    """Getting this set wrong is silent BOTH ways -- too few files and a
-    renderer change ships stale frames, too many and an unrelated edit costs
-    hours of rebuild.  `field.py` is the one that must stay out: it runs at
-    serve time, downstream of `pose_crop`, and never enters a template.  Being
-    able to change it without a rebuild is why it was put there.
+    """The set still has to be right even though it no longer grades anything.
+
+    It is what `library_provenance` advises on and what `--verify` is answering
+    a question about, so a tracer left out of it never raises a flag at all.
+    `field.py` is the one that must stay out: it runs at serve time, downstream
+    of `pose_crop`, and never enters a template.  Being able to change it
+    without touching a library is why it was put there.
     """
     from loop_sim.library.frame_library import render_source_paths
 
@@ -482,49 +523,63 @@ def test_render_sha_is_stable_and_content_sensitive(tmp_path):
     assert _sha_over(root, [str(a)]) != base, "a removed file was not seen"
 
 
-def test_a_manifest_built_by_another_renderer_is_stale_not_current(tmp_path):
-    """The gap this closes: `scene_sha256` catches a changed scene and the
-    other build keys catch changed settings, but neither catches a
-    renderer edit that leaves the manifest reading `current` while the
-    frames were traced by code that no longer exists.
+def test_a_renderer_edit_does_not_grade_a_library_stale(tmp_path):
+    """An edit to a hashed tracer must leave every library exactly where it was.
+
+    Grading on the digest meant one line changed in `optics.py` marked all
+    three shipped libraries stale at once, and the launch path then rebuilt
+    them: ~8 h for `hampton_300um_realistic` alone, after deleting a manifest
+    that is tracked in git.  A renderer edit is reported (`library_provenance`)
+    and can be measured (`--verify`); it is not a verdict.
     """
-    import json
-    from loop_sim.library.frame_library import library_diff, render_sha
+    from loop_sim.library.frame_library import library_diff
 
-    man = dict(build_params(),
-               frames=[{"file": "rot_0000.png", "angle": 0.0}],
-               scene=SCENE)
-    (tmp_path / "manifest.json").write_text(json.dumps(man))
-    assert library_diff(SCENE, str(tmp_path), **build_params()) == {}
+    lib, _ = _fabricate_library(tmp_path, render_sha="0" * 64)
+    assert library_status(SCENE, lib, **build_params()) == "current"
+    assert library_diff(SCENE, lib, **build_params()) == {}
 
-    man["render_sha"] = "0" * 64
-    (tmp_path / "manifest.json").write_text(json.dumps(man))
-    diff = library_diff(SCENE, str(tmp_path), **build_params())
-    assert set(diff) == {"render_sha"}
-    assert diff["render_sha"] == {"have": "0" * 64, "want": render_sha()}
-
-    del man["render_sha"]                     # a manifest predating the key
-    (tmp_path / "manifest.json").write_text(json.dumps(man))
-    diff = library_diff(SCENE, str(tmp_path), **build_params())
-    assert diff["render_sha"]["have"] is None
+    # ...and a manifest from before the digest existed is no different.
+    lib, man = _fabricate_library(tmp_path)
+    del man["render_sha"]
+    (tmp_path / "hampton_300um" / "manifest.json").write_text(json.dumps(man))
+    assert library_status(SCENE, lib, **build_params()) == "current"
 
 
-def test_render_sha_difference_reads_as_english_not_a_digest():
-    """64 hex characters tell an operator nothing, and two of them tell them
-    less.  The banner has to say what actually happened."""
-    from loop_sim.server.camera_server import describe_differences
+def test_provenance_says_the_renderer_moved_without_grading_the_library():
+    """The digest still has a job: telling an operator what to check.  It reads
+    as a sentence, never as 64 hex characters, and it names the next step."""
+    base = {"built_utc": "2026-08-11T21:30:05Z", "built_commit": "5390132",
+            "supersample": 4, "n_cond": 7, "step_deg": 1.0, "format": "png"}
 
-    changed = describe_differences({"render_sha": {"have": "a" * 64, "want": "b" * 64}})
-    never = describe_differences({"render_sha": {"have": None, "want": "b" * 64}})
-    assert "renderer" in changed and "a" * 8 not in changed
-    assert "fingerprint" in never
+    matched = library_provenance(dict(base, render_sha=render_sha()))
+    assert matched == ("built 2026-08-11 21:30 UTC, commit 5390132, "
+                       "supersample 4, n_cond 7, step 1.0 deg, png")
+
+    moved = library_provenance(dict(base, render_sha="a" * 64))
+    assert moved.startswith(matched)
+    assert "renderer source changed" in moved and "--verify" in moved
+    assert "a" * 8 not in moved
+
+    # A manifest with no digest at all claims nothing about the renderer.
+    assert library_provenance(base) == matched
+
+
+def test_provenance_never_raises_on_a_thin_manifest():
+    """It goes in a launch banner and a CLI listing.  A field it did not expect
+    must not take either down."""
+    assert library_provenance({}) == "build date unknown"
+    assert library_provenance(None) == "no manifest"
+    assert library_provenance({"built_utc": "whenever"}) == "built whenever"
+    # Format falls back to the extension on disk, as `_stored_format` does.
+    assert library_provenance({"frames": [{"file": "rot_0000.jpg"}]}) == \
+        "build date unknown, jpeg"
 
 
 def test_no_shipped_library_is_stale_on_build_parameters():
-    """Adding a build key silently marks every shipped library stale, and the
-    LAUNCH path rebuilds a stale library before it binds the socket -- so a
-    bare `camera_server --scene ...` would start hours of work.  The three
-    manifests carry the sha of the renderer that actually built them.
+    """Adding a build key silently marks every shipped library stale, and a
+    stale library is one an operator is asked to look at on every launch and
+    every scene switch.  The three manifests must agree with the parameters
+    they would be built with today.
 
     Asserted on `library_diff`, NOT on `library_status`, because the two catch
     different things and only one of them is a mistake.  A build-PARAMETER
@@ -537,14 +592,151 @@ def test_no_shipped_library_is_stale_on_build_parameters():
     from loop_sim.library.frame_library import library_diff, load_manifest
 
     for name in ("hampton_300um", "hampton_300um_realistic", "mitegen_200um"):
-        lib = os.path.join(REPO_ROOT, "frame_library", name)
+        lib = os.path.join(LIB_ROOT, name)
         man = load_manifest(lib)
         if man is None:
             pytest.skip(f"{name} library not present")
         # graded against its OWN supersample, which is per-scene by design
         params = build_params(supersample=man["supersample"])
-        path = os.path.join(REPO_ROOT, "scene_files", name + ".yaml")
+        path = os.path.join(SCENE_DIR, name + ".yaml")
         assert library_diff(path, lib, **params) == {}, name
+
+
+# ---------------------------------------------------------------------------
+# Nothing builds on its own
+# ---------------------------------------------------------------------------
+def test_ensure_library_never_builds_a_stale_one(tmp_path, monkeypatch):
+    """A stale library is complete and servable, and clearing that verdict is
+    hours of GPU time: `python -m loop_sim.library --force` is the only thing
+    entitled to spend them.  This reports the difference and serves."""
+    import loop_sim.library.frame_library as fl
+
+    _fabricate_library(tmp_path, psf=False)
+    monkeypatch.setattr(fl, "build_library", _never)
+
+    said = []
+    man = fl.ensure_library(SCENE, root=str(tmp_path), progress=said.append)
+    assert man["psf"] is False
+    assert "objective PSF" in said[0]
+
+    _fabricate_library(tmp_path)                    # ...nor a current one
+    assert fl.ensure_library(SCENE, root=str(tmp_path),
+                             progress=None)["psf"] is True
+
+
+def test_ensure_library_still_builds_when_there_is_nothing(tmp_path, monkeypatch):
+    """`missing` is the one status that builds -- there is nothing to serve."""
+    import loop_sim.library.frame_library as fl
+
+    built = []
+    monkeypatch.setattr(fl, "build_library",
+                        lambda *a, **kw: built.append(kw) or {"frames": []})
+    fl.ensure_library(SCENE, root=str(tmp_path), progress=None)
+    assert built
+
+
+def test_launching_on_a_stale_library_serves_it_and_never_builds(tmp_path,
+                                                                 monkeypatch):
+    """What this closes cost a tracked deliverable.
+
+    `CameraServer.__init__` used to grade through `ensure_library`, which
+    rebuilt anything not `current` -- so a bare launch on `mitegen_200um`
+    deleted its committed manifest and started a ~1.9 h rebuild of 360 frames
+    that were on disk and fine.  The launch path now grades through
+    `_pick_library`, the same machinery the tab strip uses, and serves.
+    """
+    import loop_sim.library.frame_library as fl
+    from loop_sim.scene.materials import AIR
+    from loop_sim.scene.scene import Scene
+    from loop_sim.server.camera_server import CameraServer
+
+    geom = {"camera_fast": [1, 0, 0], "camera_slow": [0, 1, 0],
+            "beam_axis": [0, 0, 1], "rotx_axis": [1, 0, 0],
+            "roty_axis": [0, 1, 0], "rotz_axis": [0, 0, 1]}
+    cam = {"width": 640, "height": 480, "pixel_size": 0.0074}
+    root = tmp_path / "libs"
+    _fabricate_library(root, psf=False)
+    monkeypatch.setattr(fl, "build_library", _never)
+
+    srv = CameraServer(Scene([], geom, cam, {}, background=AIR),
+                       host="127.0.0.1", port=0, engine="numpy",
+                       scene_path=SCENE, templates=True, prewarm=False,
+                       library_kwargs={"root": str(root)},
+                       preview_root=str(tmp_path / "preview"),
+                       scene_dir=str(tmp_path))
+    try:
+        assert srv._serving_from == "full"
+        assert srv._templates is not None
+        assert "objective PSF" in srv._scene_warning
+        assert srv._want_templates is True
+    finally:
+        srv.server_close()
+
+
+def test_launching_with_no_library_at_all_serves_live(tmp_path):
+    """Nothing to serve and nothing allowed to build, so the scene is rendered
+    live -- exactly what --templates off does.  Refusing to start, or building,
+    would both be worse than coming up."""
+    from loop_sim.scene.materials import AIR
+    from loop_sim.scene.scene import Scene
+    from loop_sim.server.camera_server import CameraServer
+
+    geom = {"camera_fast": [1, 0, 0], "camera_slow": [0, 1, 0],
+            "beam_axis": [0, 0, 1], "rotx_axis": [1, 0, 0],
+            "roty_axis": [0, 1, 0], "rotz_axis": [0, 0, 1]}
+    cam = {"width": 640, "height": 480, "pixel_size": 0.0074}
+    srv = CameraServer(Scene([], geom, cam, {}, background=AIR),
+                       host="127.0.0.1", port=0, engine="numpy",
+                       scene_path=SCENE, templates=True, prewarm=False,
+                       library_kwargs={"root": str(tmp_path / "libs")},
+                       preview_root=str(tmp_path / "preview"),
+                       scene_dir=str(tmp_path))
+    try:
+        assert srv._templates is None
+        assert srv._serving_from is None
+        assert srv._want_templates is False
+        # The raw intent survives, so a switch to a scene that HAS a library
+        # still serves templates rather than rendering that one live too.
+        assert srv._templates_flag is True
+    finally:
+        srv.server_close()
+
+
+@cuda_only
+def test_a_failed_rebuild_leaves_the_previous_library_untouched(tmp_path,
+                                                                monkeypatch):
+    """Why a build renders into a sibling and swaps.
+
+    Building in place retired the manifest first, so a Ctrl-C or an OOM at
+    frame 300 of 360 left a tracked deliverable with no manifest at all,
+    recoverable only by `git checkout`.
+    """
+    import loop_sim.library.frame_library as fl
+
+    root = str(tmp_path)
+    good = build_library(SCENE, root=root, step_deg=180.0, supersample=1,
+                         n_cond=1, progress=None)
+    lib_dir = library_dir(SCENE, root)
+    before = sorted(os.listdir(lib_dir))
+
+    real, calls = fl.render_sweep_frame, []
+
+    def boom(*a, **kw):
+        calls.append(1)
+        if len(calls) > 1:
+            raise RuntimeError("frame 1 exploded")
+        return real(*a, **kw)
+
+    monkeypatch.setattr(fl, "render_sweep_frame", boom)
+    with pytest.raises(RuntimeError, match="exploded"):
+        build_library(SCENE, root=root, step_deg=180.0, supersample=1,
+                      n_cond=1, format="jpeg", progress=None)
+
+    from loop_sim.library.frame_library import load_manifest
+    assert load_manifest(lib_dir) == good
+    assert sorted(os.listdir(lib_dir)) == before
+    assert os.path.isdir(lib_dir + ".new"), \
+        "the partial build is left on disk for inspection"
 
 
 # ---------------------------------------------------------------------------
@@ -657,10 +849,11 @@ def test_servable_pose_is_exact_and_idempotent(tiny_library):
 def test_rebuilding_in_another_format_removes_the_old_frames(tmp_path):
     """A format change must not leave the previous frames on disk.
 
-    Frames are overwritten in place, so rot_0000.png does not replace
-    rot_0000.jpg. Orphans are the bad kind of leftover: still on disk, still
-    tracked by git (frame_library is a committed deliverable), referenced by no
-    manifest -- so the library silently doubles in size and ships two copies.
+    Orphans are the bad kind of leftover: still on disk, still tracked by git
+    (frame_library is a committed deliverable), referenced by no manifest -- so
+    the library silently doubles in size and ships two copies. The sibling-plus-
+    swap build gets this for free, since rot_0000.png is never written next to
+    a rot_0000.jpg it is meant to replace.
     """
     root = str(tmp_path)
     build_library(SCENE, root=root, step_deg=90.0, supersample=1, n_cond=1,
@@ -804,7 +997,7 @@ def test_template_cache_is_honoured_and_actually_stops_the_decode():
     the same angles into cache hits, which is the entire 288 -> 69 ms effect."""
     from loop_sim.server.camera_server import TemplateSource
 
-    lib_dir = os.path.join(REPO_ROOT, "frame_library", "hampton_300um")
+    lib_dir = os.path.join(LIB_ROOT, "hampton_300um")
     if not os.path.exists(os.path.join(lib_dir, "manifest.json")):
         pytest.skip("hampton_300um library not present")
     from loop_sim.library.frame_library import load_manifest
@@ -928,7 +1121,7 @@ def test_cropped_compose_reproduces_the_full_window_it_replaces():
     from loop_sim.library.frame_library import load_manifest
     from loop_sim.server.camera_server import TemplateSource
 
-    lib_dir = os.path.join(REPO_ROOT, "frame_library", "hampton_300um_realistic")
+    lib_dir = os.path.join(LIB_ROOT, "hampton_300um_realistic")
     if not os.path.exists(os.path.join(lib_dir, "manifest.json")):
         pytest.skip("hampton_300um_realistic library not present")
     man = load_manifest(lib_dir)
@@ -964,7 +1157,7 @@ def test_pil_sensor_stretch_matches_to_sensor():
     from loop_sim.renderer import field as F
     from loop_sim.server.camera_server import TemplateSource
 
-    lib_dir = os.path.join(REPO_ROOT, "frame_library", "hampton_300um_realistic")
+    lib_dir = os.path.join(LIB_ROOT, "hampton_300um_realistic")
     if not os.path.exists(os.path.join(lib_dir, "manifest.json")):
         pytest.skip("hampton_300um_realistic library not present")
     man = load_manifest(lib_dir)
@@ -992,10 +1185,10 @@ def test_recrop_is_idempotent_and_leaves_the_library_current():
     from loop_sim.library.frame_library import (build_params, is_current,
                                                 load_manifest, recrop_library)
 
-    lib_dir = os.path.join(REPO_ROOT, "frame_library", "mitegen_200um")
+    lib_dir = os.path.join(LIB_ROOT, "mitegen_200um")
     if not os.path.exists(os.path.join(lib_dir, "manifest.json")):
         pytest.skip("mitegen_200um library not present")
-    scene = os.path.join(REPO_ROOT, "scene_files", "mitegen_200um.yaml")
+    scene = os.path.join(SCENE_DIR, "mitegen_200um.yaml")
     before = is_current(scene, lib_dir, **build_params())
 
     with tempfile.TemporaryDirectory() as d:
