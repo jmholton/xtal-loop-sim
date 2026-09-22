@@ -1,0 +1,16 @@
+# The DHS is stdlib plus these. No torch and no requests: loop-sim's renderer is
+# not imported here, and the camera-server client is urllib.
+#
+# pydhsfw is NOT in this file. It is not on PyPI and it must come from the local
+# checkout, installed editable with --no-deps so its unused extras (opencv,
+# matplotlib, scipy, requests) are not dragged in. The command is in README.md
+# "Create the env".
+PyYAML
+
+# pydhsfw's connection and transport layers log through these two; importing it
+# fails without them.
+verboselogs
+coloredlogs
+
+# The offline test suite.
+pytest

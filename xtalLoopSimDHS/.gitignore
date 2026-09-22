@@ -1,0 +1,10 @@
+# the venv is machine/OS-specific; rebuild it on each target, never copy it
+.venv/
+__pycache__/
+*.pyc
+
+.pytest_cache/
+
+# runtime output
+*.log
+logs/
