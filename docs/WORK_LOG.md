@@ -2,6 +2,11 @@
 
 Dated history, newest first. The reasoning behind each change is in DECISIONS.md under the same date; live state is in HANDOFF.md.
 
+## 2026-09-23
+
+- xtalLoopSimDHS exercised against the local dcss rig seeded with `sandbox/LOCAL_loopsim.txt`: dcss registered the five motors and three shutters, and `gtos_start_motor_move gonio_phi 90`, `gtos_start_motor_move sample_x 0.2` and `gtos_start_oscillation gonio_phi video_trigger 30 2` each completed `normal` with the camera server's pose following; the oscillation pushed 59 JPEGs to a receiver on port 9000. BluIce's phi buttons drove the spindle; its click-to-centre failed on the rig's missing `moveSample` operation. New `sandbox/drive_dcss.py` reproduces the check without BluIce.
+- The 2026-09-22 work was committed as `c0e6415`, `ece4895`, `342d7c9`, `9c3c4b8`.
+
 ## 2026-09-22
 
 - X-ray radiograph library retired: `xray_library/`, `xray_library.py`, the `/xray-stream` push stream, and the Microscope/Radiograph toggle deleted; `GET /xray` renders the live pose on every request instead. New `render.py --xray` writes a radiograph PNG beside a scene, a flag James's master never had. DECISIONS §2026-09-22.
@@ -9,7 +14,7 @@ Dated history, newest first. The reasoning behind each change is in DECISIONS.md
 - `xtalLoopSimDHS/` added: a pydhsfw hardware DHS that drives the goniometer's real motors over dcss and talks to the camera server over localhost HTTP; `camera_server.py` gained `GET /status`, `/move?duration=`, `/video-trigger`, and per-camera zoom-stop serving for it to use. 27 offline tests green; not yet exercised against a running dcss/BluIce. DECISIONS §2026-09-22.
 - Repo reorganized: scenes, frame libraries, and reference photos moved under `data/`; benchmark tooling moved under `tools/`; James's seven root scripts stay at the root. Conda retired; `setup_venv.bash` now builds one `.venv/` from `requirements.txt` on any host. DECISIONS §2026-09-22.
 - Test suite: 274 tests across 21 files, all green in the root `.venv`.
-- Everything above is uncommitted; Jacob commits separately.
+- Committed the next day as four commits (see 2026-09-23).
 
 ## 2026-09-10
 

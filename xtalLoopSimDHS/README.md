@@ -33,6 +33,7 @@ production dcss host is refused at startup unless the beamline is `SIM831`.
 | `config/SIM831.config` | config for a SIM831 dcss instance (localhost:15242) |
 | `sandbox/LOCAL_loopsim.txt` | the dcss database seed that gives this DHS the devices |
 | `sandbox/README.md` | how to restore that seed, run dcss, and point BluIce's video at the simulator |
+| `sandbox/drive_dcss.py` | sends a spindle move, a stage move and an oscillation through dcss's GUI port, no BluIce needed |
 | `tests/test_dhs.py` | the offline suite: handlers, HTTP client, refusal |
 | `requirements.txt` | pip deps (pydhsfw is installed separately, from the local checkout) |
 

@@ -63,11 +63,30 @@ Then start the DHS from its own directory:
 ./xtalLoopSimDHS.sh real          # with the camera server running
 ```
 
+Then drive it without BluIce. `drive_dcss.py` logs in on dcss's GUI port, takes
+master, and sends a spindle move, a stage move and a shuttered oscillation,
+printing what dcss broadcasts back and the camera server's pose after each:
+
+```bash
+../.venv/bin/python sandbox/drive_dcss.py          # from xtalLoopSimDHS/
+```
+
+A pass reads `stog_motor_move_completed gonio_phi 90 normal`, `... sample_x 0.2
+normal`, `stog_report_shutter_state video_trigger open` then `closed` around the
+oscillation, and the camera pose ending at rotx 120, tx 0.2. With the camera
+server started as `--jpeg-receiver http://localhost:9000/` and any HTTP server
+listening there, the oscillation also delivers ~30 JPEG POSTs a second.
+
 BluIce, in a real terminal (it dies on a non-tty stdout):
 
 ```bash
 LOCAL_TEST/run-bluice.sh
 ```
+
+Its Sample-tab phi buttons drive `gonio_phi` through this DHS. Click-to-centre
+does not: it starts the `moveSample` scripting-engine operation, which the rig's
+`LOCAL_full.txt` seed does not define (`stog_operation_completed moveSample ...
+not_exist`). That is a gap in the rig's database, not in the DHS.
 
 ## Point BluIce's sample video at the simulator
 
@@ -95,3 +114,6 @@ The camera server is loop-sim's own; start it from the repository root
 - dcss updates its own record of a motor from the `htos_configure_device` this
   DHS sends at registration, so the numeric line in the seed is what the GUI
   shows only until the DHS connects.
+- The rig's scripting engine logs `Error add system_idle: can't access
+  ::deviceExclusiveLock::lockList` on every move and `can't read "Al"` at start.
+  Both predate this DHS and do not stop a move.

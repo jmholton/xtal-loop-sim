@@ -1,7 +1,7 @@
 ---
 project: loop-sim (xtal-loop-sim), bright-field microscope + X-ray simulator for protein crystals in cryo-loops
-status: active, served from pre-computed templates with no GPU at runtime; the xtalLoopSimDHS DCSS hardware server exists but is not yet exercised against a running dcss/BluIce.
-last_verified: 2026-09-22
+status: active, served from pre-computed templates with no GPU at runtime; the xtalLoopSimDHS DCSS hardware server drives it from a local dcss (spindle, stage, shuttered oscillation with JPEG push all verified 2026-09-23).
+last_verified: 2026-09-23
 verify: for f in tests/test_*.py; do .venv/bin/python -m pytest $f -q; done (or `.venv/bin/python -m pytest tests/ -q` on a box with more than 17 GB)
 ---
 
@@ -54,9 +54,12 @@ way the optical library is. See DECISIONS §2026-09-22.
 
 **Goniometer protocol.** `xtalLoopSimDHS/` puts the camera server behind the DCS wire
 protocol as a hardware DHS named `xtalLoopSimDHS` (never `pmac2`), driving it over
-localhost HTTP from a sandbox dcss database. It has 27 offline tests and has not yet
-been exercised against a running dcss/BluIce; see `xtalLoopSimDHS/README.md` for the
-wire contract and Open items below.
+localhost HTTP from a sandbox dcss database. It has 27 offline tests, and against the
+local dcss rig it answers a spindle move, a stage move and a shuttered oscillation
+correctly, with the camera server pushing JPEGs while `video_trigger` is open
+(`xtalLoopSimDHS/sandbox/README.md`). BluIce's phi buttons drive it; click-to-centre
+needs the `moveSample` operation, which the rig's database lacks. See
+`xtalLoopSimDHS/README.md` for the wire contract.
 
 **Environment.** conda is retired; each project builds its own `.venv/`, with
 `setup_venv.bash` at the repo root and its own recipe in `xtalLoopSimDHS/README.md`
@@ -112,10 +115,10 @@ Priority order:
    assertion.
 6. **Check whether `hampton_300um`'s loop is mislabelled or digitized at another size.**
    Its waypoints span 69x200 µm, not ~300 µm.
-7. **Exercise the DHS against the local dcss sandbox and BluIce.** Not yet run: from the
-   Sample tab, phi +90 should turn the stream, click-to-centre should move `sample_x`/
-   `sample_y`/`sample_z`, and an oscillation should push frames to a `jpeg_receiver`.
-   See `xtalLoopSimDHS/sandbox/README.md`.
+7. **Run the DHS against a SIM831 dcss with the real scripting engine.** The local rig
+   proves the motor and oscillation paths; `moveSample` and `loopFast` (click-to-centre
+   and Center Loop) need a database that defines those operations, and `loopFast` also
+   needs loopDHS and AutoML. `xtalLoopSimDHS/config/SIM831.config` is ready for it.
 8. **Calibrate the zoom-stop table.** `--camera-zoom` (default `1:1.0,2:0.5,3:0.25`) is
    a placeholder until measured against the three real BL831 sample cameras.
 9. **A renderer edit now needs a manual check.** Nothing rebuilds a frame library
