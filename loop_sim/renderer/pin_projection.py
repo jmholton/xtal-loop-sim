@@ -121,7 +121,7 @@ def _clip_to_frame(p, q, w, h, mx, my):
     The margin is the ridge's reach PERPENDICULAR to the axis, resolved onto
     each pixel axis by the caller -- a pin whose axis is just past the top edge
     can still have its lower flank, and its ridge, inside the frame.  It must
-    NOT be applied along the axis: the shank genuinely stops where it stops, and
+    NOT be applied along the axis: the shank stops where it stops, and
     inflating that direction keeps a pin "in frame" for a third of a millimetre
     after it has left (measured: it held `hampton_300um_realistic` alive at zoom
     2.5 and 3.0, where the crop ends 0.2 mm short of the metal).

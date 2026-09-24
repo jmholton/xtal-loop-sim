@@ -22,26 +22,31 @@ against. Paths are relative to the repo root.
 
 ## External dependencies & succession
 
-**None.** Nothing this project needs lives in another person's homedir or on external
-infrastructure; the authoritative inputs are all tracked in this repo. The only external
-dependency is the runtime itself: a torch+CUDA interpreter, now pinned to `torch==2.6.0`
-(the cu124 wheel) by `requirements.txt` and installed by `setup_venv.bash`; what stays
-open is a compiled-vs-eager fallback that warns rather than refuses, see `docs/HANDOFF.md`
-Open items.
+The authoritative inputs are all tracked in this repo. Two runtime dependencies come from
+outside it:
+
+- **torch 2.6.0 (cu124 wheel)**, pinned by `requirements.txt` and installed from the
+  public wheel index by `setup_venv.bash`. A compiled-vs-eager fallback warns rather than
+  refuses, see `docs/HANDOFF.md` Open items.
+- **pydhsfw**, the beamline's DHS framework, needed by `xtalLoopSimDHS/` only. It is not
+  on PyPI; the DHS venv installs it from a checkout (on the beamline,
+  `/home/classen/pydhsfw`; upstream github.com/tetrahedron-technologies/pydhsfw). See
+  `xtalLoopSimDHS/README.md` "Create the env".
 
 ## Known gaps
 
 - **Frame libraries.** ~37 MB tracked: `hampton_300um` 15 MB, `hampton_300um_realistic` 14
-  MB (both `--supersample 4`), `mitegen_200um` 9 MB (`--supersample 1`); 360 PNG frames
-  each, all `current`. Each rebuild writes a fresh copy into git history, roughly 15 MB per
-  library, so rebuilding is not free.
+  MB (both `--supersample 4`), `mitegen_200um` 9 MB (`--supersample 1`); 360 PNG frames each.
+  `hampton_300um` and `hampton_300um_realistic` are current; `mitegen_200um` is stale (built
+  at supersample 1 against the supersample-4 default) and is served as-is. Each rebuild
+  writes a fresh copy into git history, roughly 15 MB per library, so rebuilding is not free.
 - **Benchmark baselines don't travel.** `tools/bench_results/` is gitignored, so the
   numbers a perf claim rests on exist only on the machine that produced them. Comparing
   this machine's results against the beamline's TITAN V (voltron) requires committing a
   baseline set, which needs a `.gitignore` exception.
 - **No golden reference image; parity gates are architecture-blind.** The parity tests
   compare GPU against a CPU reference computed on the same machine, so a different
-  architecture, such as the beamline's Volta TITAN V (RUNBOOK "Deploy on the TITAN V"),
+  architecture, such as the beamline's Volta TITAN V (RUNBOOK §7a),
   could pass every test while producing wrong images. A numpy-anchored golden image,
   committed and compared against, would close this; it needs the kind of `.gitignore`
   exception `data/frame_library/**/*.png` already has. A cheaper partial answer needs no

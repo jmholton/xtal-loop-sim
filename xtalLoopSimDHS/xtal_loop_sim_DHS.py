@@ -4,13 +4,15 @@
 loop-sim serves an AXIS-compatible view of a crystal loop and takes goniometer
 poses over HTTP. This DHS puts that simulator behind the DCS wire protocol, so
 dcss and BluIce drive it exactly as they drive the real goniometer: it owns the
-sample motors and the shutters in a SANDBOX database and turns each DCSS motor
-command into a camera-server call. It renders nothing.
+sample motors and the shutters in whichever dcss database names it as their
+hardware host, and turns each DCSS motor command into a camera-server call. It
+renders nothing.
 
-It is not pmac2. It announces itself as `xtalLoopSimDHS` and a sandbox database
-re-points the devices at that name (sandbox/README.md); the production database
-is never touched, and a config naming the production dcss host is refused at
-startup unless the beamline is SIM831.
+It serves the same device names as pmac2, the real goniometer's DHS, but connects
+under its own name, `xtalLoopSimDHS`, so it can only receive them from a database
+edited to hand them over (README.md "dcss integration"); connecting as pmac2
+would take the real devices with no edit. A config naming the production dcss
+host is refused at startup unless the beamline is SIM831.
 
 Device state lives in sim_link.py. The handlers below only translate:
 
@@ -72,7 +74,7 @@ from sim_link import SimLink, build_link, num
 
 
 # NOTE: these three belong in pydhsfw. Added here rather than by editing the
-# framework, the way lukepi_dhs.py adds the string messages it is missing.
+# framework checkout, which this DHS does not own.
 # ---------------------------------------------------------------------------
 @register_message('stoh_start_oscillation', 'dcss')
 class DcssStoHStartOscillation(DcssStoCMessage):

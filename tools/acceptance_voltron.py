@@ -210,7 +210,7 @@ def main():
         finally:
             dynamo.config.suppress_errors = prev_suppress
         frames_compiled = dynamo.utils.counters.get("frames", {}).get("ok", 0)
-    # Operative signal is a REAL speedup with no error -- robust across torch
+    # Operative signal is a REAL speedup with no error -- stable across torch
     # versions (the dynamo counter keys changed between 2.0 and 2.6, so treat the
     # graph count as corroborating only, never as the gate).
     compiled_engaged = frames_compiled > 0

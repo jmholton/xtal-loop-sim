@@ -1,4 +1,7 @@
 #!/bin/bash
+# Renders hampton_300um at n_cond 7 on CPU (scene_ref.jpg, the reference) then
+# GPU (scene_optim.jpg) and reports max/mean pixel difference and the count of
+# pixels off by more than 10 grey levels.
 PT=.venv/bin/python
 cd "$(dirname "$0")/.."
 

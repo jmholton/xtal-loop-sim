@@ -132,9 +132,8 @@ def main(argv=None):
     # already-current short-circuit, so that on a GPU-less box a run with
     # nothing to do still succeeds instead of refusing a no-op.  --device cpu
     # counts: there is exactly one way to say "yes, I mean it on CPU", and it is
-    # --allow-cpu.  This is the only escape hatch anywhere -- the live server
-    # never offers one, because a wedged daemon thread with no cancel endpoint
-    # is a far worse place to discover you meant something else.
+    # --allow-cpu, the only escape hatch anywhere. See docs/DECISIONS.md
+    # 2026-08-06 for why the live server never offers one.
     refuse_cpu = (not args.allow_cpu) and (
         args.device == "cpu" or (args.device is None and not cuda_available()))
 

@@ -1,4 +1,6 @@
 #!/bin/bash
+# Renders hampton_300um on the GPU, timed, into scene_optim.jpg, and diffs it
+# against the scene_gpu.jpg a previous test_gpu.bash run left behind.
 PT=.venv/bin/python
 cd "$(dirname "$0")/.."
 

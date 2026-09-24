@@ -5,7 +5,87 @@ the measurement behind each call, and what would reopen it. Read by date or topi
 end to end. To change a fact in a live doc, replace it there and log the reasoning here;
 never append a dated correction beside the old sentence.
 
+## Contents
+
+- [Decisions](#decisions)
+  - [2026-09-23: no dcss database dump ships; the DHS README lists the rows instead](#2026-09-23-no-dcss-database-dump-ships-the-dhs-readme-lists-the-rows-instead)
+  - [2026-09-22: the X-ray radiograph library is retired; radiographs render live](#2026-09-22-the-x-ray-radiograph-library-is-retired-radiographs-render-live)
+  - [2026-09-22: a frame library is never rebuilt without being asked: the renderer digest becomes advisory](#2026-09-22-a-frame-library-is-never-rebuilt-without-being-asked-the-renderer-digest-becomes-advisory)
+  - [2026-09-22: the goniometer is driven over the DCS protocol by xtalLoopSimDHS, a separate process](#2026-09-22-the-goniometer-is-driven-over-the-dcs-protocol-by-xtalloopsimdhs-a-separate-process)
+  - [2026-09-22: layout: data/, tools/, one .venv, James's seven scripts stay at the root](#2026-09-22-layout-data-tools-one-venv-jamess-seven-scripts-stay-at-the-root)
+  - [2026-09-10: cleanup pass, and the helpers kept apart on purpose](#2026-09-10-cleanup-pass-and-the-helpers-kept-apart-on-purpose)
+  - [2026-08-19: radiograph ships as a push stream](#2026-08-19-radiograph-ships-as-a-push-stream)
+  - [2026-08-19: three X-ray radiograph libraries built](#2026-08-19-three-x-ray-radiograph-libraries-built)
+  - [2026-08-19: Microscope/Radiograph toggle and /beam panel ship](#2026-08-19-microscoperadiograph-toggle-and-beam-panel-ship)
+  - [2026-08-18: X-ray mu_xray stays illustrative](#2026-08-18-x-ray-mu_xray-stays-illustrative)
+  - [2026-08-18: X-ray radiograph frame library module (xray_library.py)](#2026-08-18-x-ray-radiograph-frame-library-module-xray_librarypy)
+  - [2026-08-18: xray_torch split out of engine_torch.py](#2026-08-18-xray_torch-split-out-of-engine_torchpy)
+  - [2026-08-18: /beam and /xray release _scene_lock before rendering](#2026-08-18-beam-and-xray-release-_scene_lock-before-rendering)
+  - [2026-08-18: render.py --device cuda unified on the resident engine](#2026-08-18-renderpy---device-cuda-unified-on-the-resident-engine)
+  - [2026-08-14: all three beamline hosts serve the viewer above 10 fps](#2026-08-14-all-three-beamline-hosts-serve-the-viewer-above-10-fps)
+  - [2026-08-14: viewer prewarms; decoded-template byte figures corrected](#2026-08-14-viewer-prewarms-decoded-template-byte-figures-corrected)
+  - [2026-08-14: voltron measured: crop lands, remaining gap is memory](#2026-08-14-voltron-measured-crop-lands-remaining-gap-is-memory)
+  - [2026-08-14: templates store content only; --mono defaults off](#2026-08-14-templates-store-content-only---mono-defaults-off)
+  - [2026-08-13: voltron measured on both halves: build there is a wash, serve there needs the cache](#2026-08-13-voltron-measured-on-both-halves-build-there-is-a-wash-serve-there-needs-the-cache)
+  - [2026-08-12: the droplet scene ships at supersample 4 with a Rayleigh-matched mesh](#2026-08-12-the-droplet-scene-ships-at-supersample-4-with-a-rayleigh-matched-mesh)
+  - [2026-08-12: the glint is projected from the scene; the silhouette fit is deleted](#2026-08-12-the-glint-is-projected-from-the-scene-the-silhouette-fit-is-deleted)
+  - [2026-08-11: the VRAM budget is enforced, not assumed](#2026-08-11-the-vram-budget-is-enforced-not-assumed)
+  - [2026-08-11: the mesh path never culled, and that was 43x](#2026-08-11-the-mesh-path-never-culled-and-that-was-43x)
+  - [2026-08-11: the NA fork resolves to 0.28: the confound was the space, not the zoom stop](#2026-08-11-the-na-fork-resolves-to-028-the-confound-was-the-space-not-the-zoom-stop)
+  - [2026-08-11: the glint met an operator: four defects that only motion shows](#2026-08-11-the-glint-met-an-operator-four-defects-that-only-motion-shows)
+  - [2026-08-11: click-to-recentre closed by observation, not by a code fix](#2026-08-11-click-to-recentre-closed-by-observation-not-by-a-code-fix)
+  - [2026-08-11: real_images has no mid-stop photograph, and the D set is the dimensionally reliable one](#2026-08-11-real_images-has-no-mid-stop-photograph-and-the-d-set-is-the-dimensionally-reliable-one)
+  - [2026-08-10: the renders became photographs: camera emulation, sensor resolution, and what gets hashed for staleness](#2026-08-10-the-renders-became-photographs-camera-emulation-sensor-resolution-and-what-gets-hashed-for-staleness)
+  - [2026-08-10: the pin's specular streak, as measured on A01 and E02](#2026-08-10-the-pins-specular-streak-as-measured-on-a01-and-e02)
+  - [2026-08-10: the scene changes that produced the NA evidence](#2026-08-10-the-scene-changes-that-produced-the-na-evidence)
+  - [2026-08-07: the black droplet was two scene-side mechanisms; the solver is replaced by the closed form and scenes are validated mesh-back](#2026-08-07-the-black-droplet-was-two-scene-side-mechanisms-the-solver-is-replaced-by-the-closed-form-and-scenes-are-validated-mesh-back)
+  - [2026-08-07: the droplet generator's failure is recorded, not repaired](#2026-08-07-the-droplet-generators-failure-is-recorded-not-repaired)
+  - [2026-08-07: the analysis tree is out of git, but stays on the mirror](#2026-08-07-the-analysis-tree-is-out-of-git-but-stays-on-the-mirror)
+  - [2026-08-07: the default trace tile is calculated, not measured](#2026-08-07-the-default-trace-tile-is-calculated-not-measured)
+  - [2026-08-06: runtime scene switching: build off-lock, install under lock](#2026-08-06-runtime-scene-switching-build-off-lock-install-under-lock)
+  - [2026-08-06: a stale frame library is served as-is, never silently rebuilt](#2026-08-06-a-stale-frame-library-is-served-as-is-never-silently-rebuilt)
+  - [2026-08-06: motion is a velocity profile, and the stage speeds were halved](#2026-08-06-motion-is-a-velocity-profile-and-the-stage-speeds-were-halved)
+  - [2026-08-06: a preempted animation could write its pose after losing the race](#2026-08-06-a-preempted-animation-could-write-its-pose-after-losing-the-race)
+  - [2026-08-06: realism pass: the objective PSF, and lossless templates](#2026-08-06-realism-pass-the-objective-psf-and-lossless-templates)
+  - [2026-08-06: the interactive path: what the operator sees must be what the server means](#2026-08-06-the-interactive-path-what-the-operator-sees-must-be-what-the-server-means)
+  - [2026-07-31: templates serve every frame; VRAM stops limiting resolution](#2026-07-31-templates-serve-every-frame-vram-stops-limiting-resolution)
+  - [2026-07-31: the tile clamp was the VRAM ceiling, and it was never a correctness one](#2026-07-31-the-tile-clamp-was-the-vram-ceiling-and-it-was-never-a-correctness-one)
+  - [2026-07-28: deliver a pre-computed rotation sweep, not a faster live renderer](#2026-07-28-deliver-a-pre-computed-rotation-sweep-not-a-faster-live-renderer)
+  - [2026-07-28: scene-fidelity audit: the physics is sound, the bundled scene is not](#2026-07-28-scene-fidelity-audit-the-physics-is-sound-the-bundled-scene-is-not)
+  - [2026-07-28: the mesh VRAM law, and why the documented tiling fix is unreachable](#2026-07-28-the-mesh-vram-law-and-why-the-documented-tiling-fix-is-unreachable)
+  - [2026-07-17: TITAN V measured: 10 fps confirmed (11.9 fps), gated on the software stack](#2026-07-17-titan-v-measured-10-fps-confirmed-119-fps-gated-on-the-software-stack)
+  - [2026-07-14: deploy target is a TITAN V; GPU speed is NOT the bottleneck (analysis)](#2026-07-14-deploy-target-is-a-titan-v-gpu-speed-is-not-the-bottleneck-analysis)
+  - [2026-07-06: 10 fps interactive via a flag-gated torch.compile preview path](#2026-07-06-10-fps-interactive-via-a-flag-gated-torchcompile-preview-path)
+  - [2026-07-06: dev-box eager/compiled render timings (RTX 4080 SUPER)](#2026-07-06-dev-box-eagercompiled-render-timings-rtx-4080-super)
+  - [2026-07-06: converge-on-idle preview policy (approximate in motion, exact at rest)](#2026-07-06-converge-on-idle-preview-policy-approximate-in-motion-exact-at-rest)
+  - [2026-06-25: GPU-resident torch engine, byte-identical to the numpy reference (f64)](#2026-06-25-gpu-resident-torch-engine-byte-identical-to-the-numpy-reference-f64)
+  - [2026-06-25: float64 in the GPU intersection quadratic (THE correctness fix)](#2026-06-25-float64-in-the-gpu-intersection-quadratic-the-correctness-fix)
+  - [2026-06-25: threaded camera server](#2026-06-25-threaded-camera-server)
+  - [2026-05-22: CPU-vs-GPU diff thresholds on the legacy per-object CUDA path](#2026-05-22-cpu-vs-gpu-diff-thresholds-on-the-legacy-per-object-cuda-path)
+  - [(inherited from James's model: recorded so they aren't "cleaned up")](#inherited-from-jamess-model-recorded-so-they-arent-cleaned-up)
+- [Already Tried](#already-tried)
+  - [numpy mesh parity at 96x72 on the 50,976-face droplet](#numpy-mesh-parity-at-96x72-on-the-50976-face-droplet)
+  - [probe-ray material lookup after an interface (`_obj_index_at_points_batch`)](#probe-ray-material-lookup-after-an-interface-_obj_index_at_points_batch)
+  - [three template-serving speedups shelved after the crop (prefetch pool, raw on disk, mip tiers)](#three-template-serving-speedups-shelved-after-the-crop-prefetch-pool-raw-on-disk-mip-tiers)
+  - [df64 (Dekker double-float) to emulate float64](#df64-dekker-double-float-to-emulate-float64)
+  - [rasterisation instead of ray tracing](#rasterisation-instead-of-ray-tracing)
+  - [float32 in the camera-delivery stage](#float32-in-the-camera-delivery-stage)
+  - [global Lagrange / Neville polynomial waypoints for the fiber path](#global-lagrange--neville-polynomial-waypoints-for-the-fiber-path)
+  - [fp32 preview mode](#fp32-preview-mode)
+  - [`torch.compile(mode="reduce-overhead")` / CUDA graphs in the threaded server](#torchcompilemodereduce-overhead--cuda-graphs-in-the-threaded-server)
+  - [custom Triton megakernel (one thread per ray, whole bounce loop in registers)](#custom-triton-megakernel-one-thread-per-ray-whole-bounce-loop-in-registers)
+  - [dense alive-mask `trace_rays` (instead of compaction)](#dense-alive-mask-trace_rays-instead-of-compaction)
+  - ["fix the hairy fiber" via normals, gate-softening, or more condenser rays](#fix-the-hairy-fiber-via-normals-gate-softening-or-more-condenser-rays)
+
 ## Decisions
+
+### 2026-09-23: no dcss database dump ships; the DHS README lists the rows instead
+
+Removed: `xtalLoopSimDHS/sandbox/LOCAL_loopsim.txt` (the 1,860-line dcss server database that the offline dcss was seeded with) and `sandbox/README.md`. `sandbox/drive_dcss.py` moved up to `xtalLoopSimDHS/drive_dcss.py`; it depends on no seed, only on a dcss GUI port. The last commit carrying the dump is `3b90abb`.
+
+Reason (Jacob's call at handoff): a full dump goes stale silently. It was a copy of one test rig's database with nine blocks edited; the beamline's `BL-831.dat` is edited by hand as the beamline changes, and nothing would tell a reader that the shipped dump had fallen behind it. The dcss deploy path is untested and there is no time left in the contract to test it, so the deliverable is the specification: the type-3 host row and the eight device blocks, verbatim, in the dump-file format staff already edit (`xtalLoopSimDHS/README.md` "dcss integration: next steps"), plus a plain statement of what has and has not been exercised. Those ~40 lines are the whole difference between a stock database and one that hands the DHS its devices; the other 1,800 lines were the rig's.
+
+What would reopen it: a SIM831 or beamline run. At that point the edited rows live in the real database and a shipped dump would be redundant anyway.
 
 ### 2026-09-22: the X-ray radiograph library is retired; radiographs render live
 

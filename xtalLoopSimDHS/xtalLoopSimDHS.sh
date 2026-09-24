@@ -7,8 +7,9 @@
 # `real` drives the loop-sim camera server over HTTP; `pretend` models the pose
 # internally with the same timing and contacts nothing. The beamline word picks
 # config/<name>.config and defaults to LOCAL. Anything after it goes to the DHS
-# unchanged. Runs from any directory. Ends in `exec`, so the python process is
-# the only one left and a kill by script name finds it.
+# unchanged. Runs from any directory. Ends in `exec`, so the python process
+# replaces this shell rather than running under it; match `xtal_loop_sim_DHS.py`,
+# not this launcher, to find or kill it.
 set -u
 cd "$(dirname "$(readlink -f "$0")")" || exit 1
 

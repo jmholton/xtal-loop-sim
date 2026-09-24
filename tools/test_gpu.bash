@@ -1,4 +1,6 @@
 #!/bin/bash
+# Renders hampton_300um on CPU then GPU, timed: the base A/B smoke test.
+# Writes scene_cpu.jpg and scene_gpu.jpg at the repo root.
 PT=.venv/bin/python
 cd "$(dirname "$0")/.."
 

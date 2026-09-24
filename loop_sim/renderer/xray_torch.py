@@ -4,7 +4,7 @@ GPU-resident X-ray radiograph tracer.
 Split out of engine_torch.py (2026-08-18) so an X-ray-only change never
 invalidates the optical frame libraries: `frame_library.py`'s
 `_RENDER_SOURCES` hashes `engine_torch.py` whole, and that file's shared
-`TorchScene`/`next_interface` machinery is genuinely optical-relevant, but
+`TorchScene`/`next_interface` machinery is optical-relevant, but
 `render_xray_torch`/`trace_xray` never contributed a single optical template
 pixel -- they were just riding along in the same file. This module is
 deliberately NOT in `_RENDER_SOURCES`; an eventual X-ray frame library hashes

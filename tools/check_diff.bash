@@ -1,4 +1,6 @@
 #!/bin/bash
+# Three-way diff of scene_ref.jpg / scene_gpu.jpg / scene_optim.jpg, after
+# test_gpu.bash, test_optim.bash and debug_optim.bash have produced them.
 PT=.venv/bin/python
 cd "$(dirname "$0")/.."
 
