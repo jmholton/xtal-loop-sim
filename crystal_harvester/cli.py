@@ -160,7 +160,7 @@ def main(argv=None):
         pin_kwargs["pin_bevel_deg"] = args.pin_bevel
 
     if args.contact_angle is not None:
-        print("WARNING: --contact-angle is ignored — the droplet rim is pinned "
+        print("WARNING: --contact-angle is ignored: the droplet rim is pinned "
               "at the loop, so the contact angle follows from --solvent-volume "
               "and the loop radius.", file=sys.stderr)
 

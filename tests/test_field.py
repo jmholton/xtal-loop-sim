@@ -397,7 +397,6 @@ def test_streak_refuses_mitegen_at_every_angle():
     the old fit should and did accept -- so it tested the opposite of the bug.
     """
     import json
-    from PIL import Image
     from loop_sim.library.frame_library import frame_for_angle, pose_crop
     from loop_sim.motors.goniometer import Goniometer
     from loop_sim.renderer.pin_projection import project_pin, template_mapper
@@ -438,7 +437,7 @@ def test_streak_never_lands_on_the_droplet():
     found by driving it, none by a synthetic frame.
     """
     import json
-    from PIL import Image, ImageFilter
+    from PIL import ImageFilter
     from loop_sim.library.frame_library import frame_for_angle, pose_crop
     from loop_sim.motors.goniometer import Goniometer
     from loop_sim.renderer.pin_projection import project_pin, template_mapper
@@ -493,7 +492,6 @@ def test_projected_pin_matches_the_rendered_silhouette():
     wrong transform cannot pass it.
     """
     import json
-    from PIL import Image
     from loop_sim.library.frame_library import frame_for_angle, pose_crop
     from loop_sim.motors.goniometer import Goniometer
     from loop_sim.renderer.pin_projection import project_pin, template_mapper

@@ -8,7 +8,6 @@ preview/settle selection logic in _render_frame runs (engine='numpy' path).
 """
 import os
 import sys
-import threading
 import time
 
 import numpy as np

@@ -56,14 +56,14 @@ def _watertight_failures(faces):
     out = []
     dup = sum(1 for n in directed.values() if n != 1)
     if dup:
-        out.append(f"{dup} directed edges repeat — inconsistent face winding")
+        out.append(f"{dup} directed edges repeat: inconsistent face winding")
     undirected = {}
     for (a, b), n in directed.items():
         k = (a, b) if a < b else (b, a)
         undirected[k] = undirected.get(k, 0) + n
     open_e = sum(1 for n in undirected.values() if n != 2)
     if open_e:
-        out.append(f"{open_e} edges not shared by exactly 2 faces — mesh not closed")
+        out.append(f"{open_e} edges not shared by exactly 2 faces: mesh not closed")
     return out
 
 
@@ -161,7 +161,7 @@ def validate_scene(scene, requested_volume_mm3=None, expect_droplet=True,
     shape = solvent[1]["shape"]
     if shape.get("type") != "surface_mesh":
         raise SceneValidationError(
-            f"solvent shape is '{shape.get('type')}', not a surface_mesh — "
+            f"solvent shape is '{shape.get('type')}', not a surface_mesh: "
             "a degenerate fallback shape must never ship silently")
 
     verts = np.asarray(shape["vertices"], dtype=float)
@@ -200,8 +200,8 @@ def validate_scene(scene, requested_volume_mm3=None, expect_droplet=True,
     rim = verts[np.abs(plane_dist) < 1e-4]
     report["rim_vertices"] = int(len(rim))
     if len(rim) < 8:
-        failures.append(f"only {len(rim)} rim vertices found in the loop plane "
-                        "— droplet does not sit in the loop")
+        failures.append(f"only {len(rim)} rim vertices found in the loop plane: "
+                        "droplet does not sit in the loop")
     else:
         rim_gap = _point_polyline_dist(rim, loop_pts)
         report["rim_to_fiber_mm"] = {"min": float(rim_gap.min()),
@@ -209,7 +209,7 @@ def validate_scene(scene, requested_volume_mm3=None, expect_droplet=True,
         if rim_gap.max() > fiber_d:
             failures.append(
                 f"rim vertices up to {rim_gap.max():.4f} mm from the loop "
-                f"fiber (fiber diameter {fiber_d:.4f}) — droplet is not "
+                f"fiber (fiber diameter {fiber_d:.4f}): droplet is not "
                 "pinned in the loop aperture")
 
     # --- shape: must straddle the loop plane, not sit on it ---
@@ -218,7 +218,7 @@ def validate_scene(scene, requested_volume_mm3=None, expect_droplet=True,
     if h_up < 1e-3 or h_dn < 1e-3:
         failures.append(
             f"droplet does not straddle the loop plane (extent {h_up:.4f} mm "
-            f"above / {h_dn:.4f} mm below) — a one-sided dome is the old "
+            f"above / {h_dn:.4f} mm below): a one-sided dome is the old "
             "hemisphere fallback signature")
 
     # --- shape: is the drop FAT enough to look like a drop, and to be seen? ---
@@ -244,7 +244,7 @@ def validate_scene(scene, requested_volume_mm3=None, expect_droplet=True,
         if r_mean / h_mean > 6.0:
             warnings.append(
                 f"droplet is {r_mean / h_mean:.1f}:1 (h {h_mean * 1e3:.1f} um "
-                f"vs rim radius {r_mean * 1e3:.1f} um) — visibly flat; it will "
+                f"vs rim radius {r_mean * 1e3:.1f} um): visibly flat; it will "
                 "show no bulge edge-on at the shipped pixel size")
 
         # Rim-ray deflection vs the objective's acceptance cone (see
@@ -262,7 +262,7 @@ def validate_scene(scene, requested_volume_mm3=None, expect_droplet=True,
         report["na_objective"] = na_obj
         if defl < na_obj:
             warnings.append(
-                f"rim ray deflects sin={defl:.3f}, inside NA {na_obj:.2f} — the "
+                f"rim ray deflects sin={defl:.3f}, inside NA {na_obj:.2f}: the "
                 "whole droplet collects, so it renders near-background-bright "
                 "with no rim. Real drops of this size do not")
 
@@ -270,7 +270,7 @@ def validate_scene(scene, requested_volume_mm3=None, expect_droplet=True,
     if crystal is not None:
         ci, cobj = crystal
         if ci > solvent[0]:
-            failures.append("crystal is listed after solvent — priority order "
+            failures.append("crystal is listed after solvent: priority order "
                             "makes it invisible inside the droplet")
         children = cobj["shape"].get("children", [])
         centre = _crystal_centre(children) if children else None
@@ -281,7 +281,7 @@ def validate_scene(scene, requested_volume_mm3=None, expect_droplet=True,
             if in_plane > fiber_d:
                 failures.append(
                     f"crystal centre is {in_plane:.4f} mm from the droplet "
-                    "centre in the loop plane — crystal not in the droplet")
+                    "centre in the loop plane: crystal not in the droplet")
             half_axial = max(
                 abs(float(hs["offset"]) - np.dot(hs["normal"], centre))
                 for hs in children
@@ -291,7 +291,7 @@ def validate_scene(scene, requested_volume_mm3=None, expect_droplet=True,
             if half_axial > max(h_up, h_dn):
                 warnings.append(
                     f"crystal half-height {half_axial:.4f} mm exceeds the "
-                    f"droplet half-thickness {max(h_up, h_dn):.4f} mm — the "
+                    f"droplet half-thickness {max(h_up, h_dn):.4f} mm: the "
                     "crystal pokes out of the solvent (a real mount does "
                     "this, but the renderer shows hard crystal/air "
                     "interfaces with no wetting film)")
@@ -309,7 +309,7 @@ def validate_scene(scene, requested_volume_mm3=None, expect_droplet=True,
             if not _point_in_csg(end, pin[1]["shape"]):
                 failures.append(
                     f"{stem_name} ends at {np.round(end, 4).tolist()} outside "
-                    "the pin — the mount is not attached to the metal")
+                    "the pin: the mount is not attached to the metal")
 
     report["warnings"] = warnings
     if failures:

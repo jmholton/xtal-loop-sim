@@ -6,7 +6,7 @@ oscillation. Prints what dcss broadcasts back and the camera server's pose
 before and after each command, so one run shows the whole chain
 dcss -> xtalLoopSimDHS -> camera server.
 
-    .venv/bin/python sandbox/drive_dcss.py [--dcss localhost:14243] [--camera http://localhost:8080]
+    .venv/bin/python drive_dcss.py [--dcss localhost:14243] [--camera http://localhost:8081]
 
 Wire detail this depends on: dcss reads the login line as a 200-byte
 space-padded protocol-1 frame and speaks protocol 2 (12-char text length,
@@ -14,6 +14,7 @@ space-padded protocol-1 frame and speaks protocol 2 (12-char text length,
 master steals it from any BluIce that is connected.
 """
 import argparse
+import getpass
 import json
 import socket
 import time
@@ -66,8 +67,9 @@ def listen(sock: socket.socket, seconds: float) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--dcss", default="localhost:14243", help="dcss GUI port")
-    ap.add_argument("--camera", default="http://localhost:8080", help="camera server")
-    ap.add_argument("--user", default="unix_jadoughty")
+    ap.add_argument("--camera", default="http://localhost:8081", help="camera server")
+    ap.add_argument("--user", default=getpass.getuser(),
+                    help="login name sent in gtos_client_is_gui (default: the current user)")
     args = ap.parse_args()
     host, port = args.dcss.rsplit(":", 1)
 

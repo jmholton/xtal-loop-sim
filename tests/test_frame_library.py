@@ -10,7 +10,7 @@ The claims here, and the test that guards each:
     (guards the phi coupling: `ty` is lateral at phi=0, along the view
     axis at phi=90)
   * out-of-range requests are refused, not clamped -> test_*_raises
-  * a library built with different parameters is stale -> test_is_current_*
+  * a library built with different parameters is stale -> test_library_status_*
   * nothing ever builds on its own -> test_*_never_builds_*
     (a rebuild is hours of GPU time and deletes a tracked deliverable, so
     it has to be asked for)
@@ -20,7 +20,6 @@ than the committed data/frame_library/.
 """
 import inspect
 import json
-import math
 import os
 import sys
 
@@ -33,7 +32,7 @@ if REPO_ROOT not in sys.path:
 
 from loop_sim.library.frame_library import (            # noqa: E402
     _round_up_to_parity, build_library, build_params, frame_for_angle,
-    is_current, library_dir, library_provenance, library_status, plan_window,
+    library_dir, library_provenance, library_status, plan_window,
     pose_crop, render_sha, scene_fingerprint, zoom_limits)
 
 SCENE_DIR = os.path.join(REPO_ROOT, "data", "scene_files")
@@ -277,7 +276,6 @@ def test_template_matches_live_render(tiny_library):
     Y and Z swap, which is exactly where a naive `ty` crop is a no-op.
     """
     import torch
-    from PIL import Image
     from loop_sim.scene.scene import load
     from loop_sim.renderer.engine_torch import TorchScene, render_torch
     from loop_sim.motors.goniometer import Goniometer
@@ -422,7 +420,7 @@ def test_pose_crop_registration_offset_is_half_a_source_pixel():
 # Staleness
 # ---------------------------------------------------------------------------
 @cuda_only
-def test_is_current_tracks_build_parameters(tiny_library):
+def test_library_status_tracks_build_parameters(tiny_library):
     """Asking for different settings and silently getting the old library back
     would be indistinguishable from a correct build."""
     man, lib_dir = tiny_library
@@ -430,7 +428,7 @@ def test_is_current_tracks_build_parameters(tiny_library):
                         pan_mm=man["pan_mm"], n_cond=1,
                         quality=man["jpeg_quality"], format=man["format"],
                         psf=man["psf"])
-    assert is_current(SCENE, lib_dir, **base)
+    assert library_status(SCENE, lib_dir, **base) == "current"
 
     # `format` and `psf` matter as much as the geometric settings: a JPEG
     # library and a PNG one differ in compression loss, and a pre-PSF library
@@ -440,7 +438,8 @@ def test_is_current_tracks_build_parameters(tiny_library):
                        ("pan_mm", 99.0), ("axis", "roty"),
                        ("jpeg_quality", 60), ("format", "jpeg"),
                        ("psf", False)):
-        assert not is_current(SCENE, lib_dir, **dict(base, **{key: other})), \
+        assert library_status(SCENE, lib_dir,
+                              **dict(base, **{key: other})) == "stale", \
             f"a change to {key} should invalidate the library"
 
 
@@ -473,8 +472,8 @@ def test_non_rotx_axis_is_refused(tmp_path):
                       supersample=1, n_cond=1, progress=None)
 
 
-def test_is_current_false_when_absent(tmp_path):
-    assert not is_current(SCENE, str(tmp_path))
+def test_library_status_missing_when_absent(tmp_path):
+    assert library_status(SCENE, str(tmp_path)) == "missing"
 
 
 # ---------------------------------------------------------------------------
@@ -605,36 +604,6 @@ def test_no_shipped_library_is_stale_on_build_parameters():
 # ---------------------------------------------------------------------------
 # Nothing builds on its own
 # ---------------------------------------------------------------------------
-def test_ensure_library_never_builds_a_stale_one(tmp_path, monkeypatch):
-    """A stale library is complete and servable, and clearing that verdict is
-    hours of GPU time: `python -m loop_sim.library --force` is the only thing
-    entitled to spend them.  This reports the difference and serves."""
-    import loop_sim.library.frame_library as fl
-
-    _fabricate_library(tmp_path, psf=False)
-    monkeypatch.setattr(fl, "build_library", _never)
-
-    said = []
-    man = fl.ensure_library(SCENE, root=str(tmp_path), progress=said.append)
-    assert man["psf"] is False
-    assert "objective PSF" in said[0]
-
-    _fabricate_library(tmp_path)                    # ...nor a current one
-    assert fl.ensure_library(SCENE, root=str(tmp_path),
-                             progress=None)["psf"] is True
-
-
-def test_ensure_library_still_builds_when_there_is_nothing(tmp_path, monkeypatch):
-    """`missing` is the one status that builds -- there is nothing to serve."""
-    import loop_sim.library.frame_library as fl
-
-    built = []
-    monkeypatch.setattr(fl, "build_library",
-                        lambda *a, **kw: built.append(kw) or {"frames": []})
-    fl.ensure_library(SCENE, root=str(tmp_path), progress=None)
-    assert built
-
-
 def test_launching_on_a_stale_library_serves_it_and_never_builds(tmp_path,
                                                                  monkeypatch):
     """What this closes cost a tracked deliverable.
@@ -765,8 +734,8 @@ def test_server_defaults_do_not_invalidate_a_default_library():
     ap.add_argument("--template-format", choices=["png", "jpeg"], default=None)
     args = ap.parse_args([])
 
-    # What is_current() will compare against the manifest, vs what a no-flag
-    # `python -m loop_sim.library` writes into it.
+    # What library_status() will compare against the manifest, vs what a
+    # no-flag `python -m loop_sim.library` writes into it.
     requested = build_params(**library_kwargs_from_args(args))
     default_build = build_params()
     differing = {k: (requested[k], default_build[k])
@@ -1182,14 +1151,14 @@ def test_recrop_is_idempotent_and_leaves_the_library_current():
     rebuild.  Running it twice must be a no-op."""
     import shutil
     import tempfile
-    from loop_sim.library.frame_library import (build_params, is_current,
+    from loop_sim.library.frame_library import (build_params, library_status,
                                                 load_manifest, recrop_library)
 
     lib_dir = os.path.join(LIB_ROOT, "mitegen_200um")
     if not os.path.exists(os.path.join(lib_dir, "manifest.json")):
         pytest.skip("mitegen_200um library not present")
     scene = os.path.join(SCENE_DIR, "mitegen_200um.yaml")
-    before = is_current(scene, lib_dir, **build_params())
+    before = library_status(scene, lib_dir, **build_params())
 
     with tempfile.TemporaryDirectory() as d:
         copy = os.path.join(d, "mitegen_200um")
@@ -1211,7 +1180,7 @@ def test_recrop_is_idempotent_and_leaves_the_library_current():
             "a second pass must not crop the crop"
 
     # The real library's staleness verdict is unchanged by any of this.
-    assert is_current(scene, lib_dir, **build_params()) == before
+    assert library_status(scene, lib_dir, **build_params()) == before
 
 
 def test_ensure_dynamo_binds_or_stubs_a_torch_that_lacks_it(monkeypatch):

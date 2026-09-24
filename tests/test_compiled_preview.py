@@ -10,7 +10,6 @@ pixels; this suite bounds that divergence and proves the gating is real.
 CUDA-only (compilation on CPU is forbidden here). Kept cheap: the server-wiring
 test spies render_torch so nothing actually compiles.
 """
-import io
 import os
 import sys
 

@@ -1,67 +1,8 @@
-"""
-AXIS-compatible HTTP camera server.
+"""AXIS-compatible HTTP camera server: MJPEG stream, JPEG snapshot, motor
+control, animated moves, scene switching, and X-ray beam/radiograph
+endpoints. See README.md "HTTP endpoints" for the full endpoint table and
+docs/RUNBOOK.md "Flags" for the CLI flags.
 
-Endpoints
----------
-GET /axis-cgi/mjpg/video.cgi
-    MJPEG stream  (multipart/x-mixed-replace).
-    Client connects and receives a continuous stream of JPEG frames.
-    `camera=N` picks a zoom stop from the --camera-zoom table (see
-    `_Handler._camera_zoom`); other VAPIX parameters are ignored.
-
-GET /axis-cgi/jpg/image.cgi
-    Single JPEG snapshot of the current view.  Takes `camera=N` like the
-    stream.
-
-GET/POST /motor
-    Set motor positions.  Parameters: tx, ty, tz, rotx, roty, rotz, zoom.
-    All are optional; unspecified motors keep their current values.
-    Returns JSON with current motor state.
-
-GET /status
-    {"positions": {...}, "target": {...}, "moving": bool}: the live pose,
-    the last commanded target, and whether an animated move is running.
-
-GET /beam
-    Compute and return X-ray beam illuminated volumes + attenuation as JSON.
-
-GET /xray
-    Per-pixel X-ray transmission map (radiograph) as a grayscale PNG,
-    registered to the optical view (bright = transmitted, dark = absorbed).
-    Rendered live on every new pose.
-
-GET / , /index.html
-    Interactive control page (live MJPEG view + pan/rotate/zoom buttons,
-    editable angle box, click-to-recentre, center crosshair, speed dial).
-
-GET/POST /move
-    Animated move.  Absolute motor keys (tx, ty, ...), relative deltas
-    (dtx, drotx, ...), screen-fraction pan (panx, pany), and `speed`
-    (>1 faster, <1 slow-motion).  `duration=<s>` instead fixes the move's
-    wall time; `duration=0` commits the target at once, like /motor.  The
-    sample interpolates to the target instead of teleporting.  Returns the
-    target motor state as JSON.
-
-GET /recenter?px=COL&py=ROW
-    Animated move that brings the clicked pixel to the image centre.
-
-GET/POST /video-trigger?state=open|closed
-    While open, every newly published frame is POSTed as image/jpeg to the
-    --jpeg-receiver URL, at most --push-fps a second.  Returns {"state": ...}.
-
-GET /scenes
-    Every switchable scene plus the build state of its frame libraries,
-    as JSON.
-
-GET /scene
-    The scene currently served, plus the state of any switch in flight.
-
-POST /scene
-    Switch the served scene.  Parameters: path, build ("preview"|"full").
-    Returns 202 accepted (poll GET /scene for progress) or a JSON refusal.
-
-Usage
------
 Command line (preferred):
 
     python -m loop_sim.server.camera_server --scene data/scene_files/hampton_300um.yaml
@@ -71,10 +12,9 @@ Or from Python:
 
     from loop_sim.server.camera_server import CameraServer
     from loop_sim.scene.scene import load
-    from loop_sim.motors.goniometer import Goniometer
 
     scene = load("data/scene_files/hampton_300um.yaml")
-    server = CameraServer(scene, host="0.0.0.0", port=8080)
+    server = CameraServer(scene, host="0.0.0.0", port=8081)
     server.start()   # blocks; Ctrl-C to stop
 """
 import glob
@@ -1165,7 +1105,7 @@ class CameraServer(ThreadingHTTPServer):
                  _CAMERA_ZOOM_DEFAULT.
     """
 
-    def __init__(self, scene, host="0.0.0.0", port=8080,
+    def __init__(self, scene, host="0.0.0.0", port=8081,
                  n_cond=7, fps_limit=30.0, engine="auto", jpeg_quality=85,
                  preview_mode=True, compile_preview=True, settle_delay=0.5,
                  scene_path=None, templates=True, library_kwargs=None,
@@ -1271,8 +1211,8 @@ class CameraServer(ThreadingHTTPServer):
         self._compile_preview = bool(compile_preview)
         self._compiled_ok     = False   # flipped True once warmup compiles cleanly
         # Set whenever compilation was requested but is NOT running -- warmup
-        # failure or a runtime fallback -- so a mis-set stack (RUNBOOK "Deploy
-        # on the TITAN V" risk B) shows up in GET /scene instead of only in a
+        # failure or a runtime fallback -- so a mis-set stack (HANDOFF open
+        # item: the eager fallback only warns) shows up in GET /scene instead of only in a
         # stderr line an operator has to already be watching for.
         self._compile_error   = None
         # "Moving" is what selects the fast preview path. Animated /move sets
@@ -1455,8 +1395,6 @@ class CameraServer(ThreadingHTTPServer):
             self._last_render_preview = preview
         n_cond = 1 if preview else self._n_cond
         if self._tscene is not None:
-            import torch
-            from PIL import Image
             from ..renderer.torch_compat import ensure_dynamo
             ensure_dynamo()   # torch 2.0.1 does not bind torch._dynamo itself
             from ..renderer.engine_torch import render_torch
@@ -2064,7 +2002,7 @@ class CameraServer(ThreadingHTTPServer):
     def _build_kwargs(self, preview=False):
         """Library build parameters this server would ask for.
 
-        `root` is dropped: ensure_library consumes it as a named parameter and
+        `root` is dropped: build_library consumes it as a named parameter and
         build_params ignores it, but leaving it in would invite someone to pass
         this dict somewhere that treats every key as a build parameter.
         """
@@ -2543,8 +2481,8 @@ class CameraServer(ThreadingHTTPServer):
         if self._compile_preview:
             # Server-wide, not scene-specific -- included here because this is
             # the JSON endpoint an operator already checks (RUNBOOK "curl -s
-            # http://host:8080/scene"), so a silently-eager compile fallback
-            # (RUNBOOK "Deploy on the TITAN V" risk B) shows up there too.
+            # http://host:8081/scene"), so a silently-eager compile fallback
+            # (HANDOFF open item: the eager fallback only warns) shows up there too.
             payload["compile_preview"] = {"compiled_ok": self._compiled_ok,
                                           "error": self._compile_error}
         payload["switch"] = self._switch_state()
@@ -2704,8 +2642,8 @@ def library_kwargs_from_args(args):
     if getattr(args, "template_format", None) is not None:
         kwargs["format"] = args.template_format
     if getattr(args, "library_root", None) is not None:
-        # Safe to carry here: ensure_library/build_library consume `root` as a
-        # named parameter, and build_params ends in **_ignored, so it can never
+        # Safe to carry here: build_library consumes `root` as a named
+        # parameter, and build_params ends in **_ignored, so it can never
         # reach the manifest comparison and make every library read as stale.
         kwargs["root"] = args.library_root
     return kwargs
@@ -2723,7 +2661,8 @@ def main(argv=None):
     ap.add_argument("--scene", default="data/scene_files/hampton_300um.yaml",
                     help="scene YAML to serve (default: %(default)s)")
     ap.add_argument("--host", default="0.0.0.0")
-    ap.add_argument("--port", type=int, default=8080)
+    # 8081, not 8080: on the beamline gateway 8080 belongs to GitLab's puma.
+    ap.add_argument("--port", type=int, default=8081)
     ap.add_argument("--n-cond", type=int, default=7,
                     help="condenser rays for settled frames (default: %(default)s)")
     ap.add_argument("--fps-limit", type=float, default=30.0,

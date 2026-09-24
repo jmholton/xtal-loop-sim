@@ -216,12 +216,8 @@ class PretendBackend(SimBackend):
 class CameraServerBackend(SimBackend):
     """The camera server over HTTP: it owns the pose and does the animation.
 
-    Endpoints, all on the loop-sim camera server (`loop_sim/server/camera_server.py`):
-
-        GET  /status                          -> {"positions": {...}, "target": {...}, "moving": bool}
-        POST /move?<key>=<v>&duration=<s>     animated move
-        POST /motor?<key>=<v>                 instant set
-        POST /video-trigger?state=open|closed the simulated AXIS push
+    Uses the four endpoints listed in README.md "What the camera server must
+    provide" (`loop_sim/server/camera_server.py`).
 
     Everything is caught here so the move loop above never has to: a failed read
     reports the last known pose, standing still. The cache holds exactly the
@@ -510,7 +506,7 @@ def build_link(conf: dict, pretend: bool) -> SimLink:
         backend: SimBackend = PretendBackend(seed)
     else:
         backend = CameraServerBackend(
-            section.get('camera_server', 'http://localhost:8080'), seed,
+            section.get('camera_server', 'http://localhost:8081'), seed,
             timeout_s=float(section.get('http_timeout_s', DEFAULT_TIMEOUT_S)))
 
     return SimLink(

@@ -251,11 +251,11 @@ def build_params(axis="rotx", step_deg=DEFAULT_STEP_DEG, n_cond=DEFAULT_N_COND,
                  psf=DEFAULT_PSF, **_ignored):
     """The pixel-affecting settings, keyed as the manifest stores them.
 
-    One place to resolve defaults, so `is_current` cannot drift from
+    One place to resolve defaults, so `library_status` cannot drift from
     `build_library` and start reporting every default build as stale (or, worse,
     every changed build as current).
 
-    Every value here must resolve to something concrete -- `is_current` skips
+    Every value here must resolve to something concrete -- `library_diff` skips
     any key whose requested value is None, so a None default would silently
     disable staleness checking for that parameter.
 
@@ -275,9 +275,8 @@ def build_params(axis="rotx", step_deg=DEFAULT_STEP_DEG, n_cond=DEFAULT_N_COND,
 def _frames_complete(lib_dir, man):
     """True when every frame the manifest lists is on disk and undamaged.
 
-    Split out because `is_current` and `library_status` both need it and must
-    agree: if they ever disagreed, a library could read as 'stale' (servable)
-    while actually being half-written.
+    The completeness half of `library_status`: a library that fails this reads
+    as 'missing', never as 'stale' (servable), so a half-written one is refused.
     """
     if not man.get("frames"):
         return False
@@ -328,10 +327,10 @@ def _stored_format(man):
 def library_diff(scene_path, lib_dir, **params):
     """Which BUILD PARAMETERS a library on disk disagrees with `params` about.
 
-    Returns {key: {"have":…, "want":…}}, empty when they match.  `is_current`
-    only answers yes/no; anything that serves a mismatched library anyway has to
-    tell the operator WHAT differs, and re-deriving that in the caller is how
-    the two would drift apart.
+    Returns {key: {"have":…, "want":…}}, empty when they match.  `library_status`
+    only answers current/stale/missing; anything that serves a stale library
+    anyway has to tell the operator WHAT differs, and re-deriving that in the
+    caller is how the two would drift apart.
 
     A key absent from the manifest reads as None and so differs from any
     concrete request -- exactly `data/frame_library/mitegen_200um`, written before
@@ -356,8 +355,8 @@ def library_diff(scene_path, lib_dir, **params):
 def library_status(scene_path, lib_dir, **params):
     """'current' | 'stale' | 'missing' for a library on disk.
 
-    Splits the single bool `is_current` returns, because its two failure modes
-    need opposite answers:
+    Three answers rather than a bool, because the two failure modes need
+    opposite handling:
 
       missing -- nothing usable: no manifest, frames absent or damaged, or the
                 scene YAML has changed since the build (those frames are of a
@@ -380,17 +379,6 @@ def library_status(scene_path, lib_dir, **params):
     if not _frames_complete(lib_dir, man):
         return "missing"
     return "stale" if library_diff(scene_path, lib_dir, **params) else "current"
-
-
-def is_current(scene_path, lib_dir, **params):
-    """True when a complete library matching the scene AND the requested build
-    parameters is on disk.  See `library_status` for the three-way answer.
-
-    Comparing the scene hash alone is not enough: asking for a different
-    supersample or step and silently getting the old library back would be
-    indistinguishable from a correct build.
-    """
-    return library_status(scene_path, lib_dir, **params) == "current"
 
 
 _DIFF_PHRASES = {
@@ -657,8 +645,7 @@ def build_library(scene_path, root=DEFAULT_ROOT, axis="rotx",
     from ..scene.scene import load
     from ..renderer.torch_compat import ensure_dynamo
     ensure_dynamo()   # torch 2.0.1 does not bind torch._dynamo itself
-    from ..renderer.engine_torch import (TorchScene, check_render_fits,
-                                         RenderTooLargeError)
+    from ..renderer.engine_torch import TorchScene, check_render_fits
     from ..renderer.optics import psf_sigma_px
 
     if axis != "rotx":
@@ -956,34 +943,6 @@ def recrop_library(lib_dir, progress=print):
                  f"on disk, {full*3/1e9:.2f} -> {px*3/1e9:.2f} GB decoded "
                  f"({px/full:.1%} of the window, margin {margin} px)")
     return man
-
-
-def ensure_library(scene_path, root=DEFAULT_ROOT, progress=print, **kwargs):
-    """Return the manifest, building ONLY when there is nothing servable.
-
-    `missing` is the one status that builds.  A `stale` library is returned as
-    it stands with its differences named, because clearing that verdict costs
-    hours of GPU time and nothing that calls this is in a position to spend
-    them unasked: `python -m loop_sim.library --force` is.
-    """
-    lib_dir = library_dir(scene_path, root)
-    # Resolve against build_library's own defaults, or a default build would
-    # compare its manifest against None and always look stale.
-    # A None reaching build_library would blow up on px0 / supersample, so drop
-    # them here rather than forwarding a value this function already resolved.
-    kwargs = {k: v for k, v in kwargs.items() if v is not None}
-    params = build_params(**kwargs)
-
-    status = library_status(scene_path, lib_dir, **params)
-    if status != "missing":
-        if status == "stale" and progress:
-            progress(f"[frame-library] {scene_path}: "
-                     + describe_differences(
-                         library_diff(scene_path, lib_dir, **params)))
-        return load_manifest(lib_dir)
-    if progress:
-        progress(f"[frame-library] no library for {scene_path} -- building")
-    return build_library(scene_path, root=root, progress=progress, **kwargs)
 
 
 def verify_frame(scene_path, lib_dir, angle_deg=0.0, device=None,

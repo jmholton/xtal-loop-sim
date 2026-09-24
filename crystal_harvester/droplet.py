@@ -57,10 +57,10 @@ def biconvex_lens_profile(R_loop, volume, n_z, clamp=False):
 
     Parameters
     ----------
-    R_loop : float — rim radius (mm)
-    volume : float — total droplet volume (mm^3)
-    n_z    : int   — samples per cap (profile has 2*n_z - 1 points)
-    clamp  : bool  — a half-volume exceeding the hemisphere capacity is
+    R_loop : float, rim radius (mm)
+    volume : float, total droplet volume (mm^3)
+    n_z    : int, samples per cap (profile has 2*n_z - 1 points)
+    clamp  : bool, a half-volume exceeding the hemisphere capacity is
              clamped with a warning instead of raising (legacy add_droplet
              behaviour; the generator uses the default and raises)
 
@@ -70,8 +70,8 @@ def biconvex_lens_profile(R_loop, volume, n_z, clamp=False):
         index 0        : top apex    (r = 0,      z = +h)
         index n_z - 1  : rim         (r = R_loop, z =  0)
         index 2*n_z-2  : bottom apex (r = 0,      z = -h)
-    h_opt : float — dome height of each cap (mm)
-    rho   : float — sphere radius of curvature (mm)
+    h_opt : float, dome height of each cap (mm)
+    rho   : float, sphere radius of curvature (mm)
     """
     V_half = volume / 2.0
     V_hemi = (2.0 / 3.0) * np.pi * R_loop**3
@@ -79,7 +79,7 @@ def biconvex_lens_profile(R_loop, volume, n_z, clamp=False):
         if not clamp:
             raise ValueError(
                 f"droplet half-volume {V_half:.6f} mm^3 exceeds the hemisphere "
-                f"capacity {V_hemi:.6f} mm^3 of a {R_loop:.4f} mm rim — the "
+                f"capacity {V_hemi:.6f} mm^3 of a {R_loop:.4f} mm rim: the "
                 f"loop cannot pin this much solvent; reduce --solvent-volume"
             )
         if V_half > V_hemi * 1.001:
@@ -169,7 +169,7 @@ def revolve_biconvex(r_profile, z_profile, n_phi, R_phi=None, R_mean=None,
     R_phi  : (n_phi,) per-angle rim radii.  If given, each phi column is
              scaled so the rim lands at R_phi[j] rather than R_mean, letting
              the droplet follow a non-circular loop outline.
-    R_mean : scalar — the R_loop value used to build r_profile (the rim
+    R_mean : scalar, the R_loop value used to build r_profile (the rim
              value in the profile).  Required when R_phi is given.
 
     Returns (vertices, faces) for a closed surface mesh.
@@ -274,8 +274,8 @@ def droplet_in_loop(loop_pts, fiber_diameter_mm, volume_mm3,
     Parameters
     ----------
     loop_pts          : (N, 3) fiber-axis waypoints of the loop
-    fiber_diameter_mm : float — the rim pins at the inner fiber edge
-    volume_mm3        : float — target droplet volume; raises ValueError if
+    fiber_diameter_mm : float, the rim pins at the inner fiber edge
+    volume_mm3        : float, target droplet volume; raises ValueError if
                         the loop cannot pin it (no silent fallback)
     n_z, n_phi        : mesh resolution
     dense_poly_xy     : optional (M, 2) densely sampled fiber-axis polygon for
@@ -286,10 +286,10 @@ def droplet_in_loop(loop_pts, fiber_diameter_mm, volume_mm3,
 
     Returns
     -------
-    vertices : (V, 3) float array — translated to the aperture centroid,
+    vertices : (V, 3) float array, translated to the aperture centroid,
                straddling the loop plane, volume matching volume_mm3
     faces    : (F, 3) int array
-    info     : dict — measured h_mm, rho_mm, R_mean_mm, centroid, volume_mm3
+    info     : dict, measured h_mm, rho_mm, R_mean_mm, centroid, volume_mm3
     """
     pts = np.asarray(loop_pts, dtype=float)
     if np.allclose(pts[0], pts[-1]):
@@ -330,8 +330,8 @@ def droplet_in_loop(loop_pts, fiber_diameter_mm, volume_mm3,
     v_now = mesh_volume(vertices, faces)
     if v_now <= 0:
         raise ValueError(
-            f"droplet mesh has non-positive signed volume ({v_now:.3e} mm^3) "
-            "— inconsistent face winding")
+            f"droplet mesh has non-positive signed volume ({v_now:.3e} mm^3): "
+            "inconsistent face winding")
     vertices[:, 2] *= volume_mm3 / v_now
     h_opt *= volume_mm3 / v_now
 
