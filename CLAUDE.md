@@ -155,3 +155,29 @@ Almost all differing pixels are binary flips (TIR or NA cutoff crossing due to
 float32 geometry), not gradual noise.  The n_cond=7 count is ~1.6× the
 n_cond=1 count because independent condenser rays can each flip a different set
 of edge pixels.
+
+## Jacob's renderer and camera server (jacob_run/)
+
+`jacob_run/` holds the scripts that run James's hi-mag scenes through Jacob
+Doughty's xtal-loop-sim (`/home/jadoughty/projects/loop_sim_MINE/xtal-loop-sim`).
+See `jacob_run/README.md` for the recipes.  Rules:
+
+- **Never modify Jacob's repo** (it is read-only for jamesh anyway).  Fix
+  things from outside: generate input for it, or patch at runtime in
+  `jacob_run/serve.py`.
+- Run Jacob's code with **his** venv from **his** repo root
+  (`cd $J && env PYTHONPATH=. .venv/bin/python ...`).  Run James's generators
+  (`make_scene.py`, `add_ice.py`) with `/programs/pytorch/envs/pt/bin/python`.
+- Generated output (scene files, frame libraries, renders) goes to
+  `/home/jamesh/projects/loop_sim/jacob_run/`, not to this repo.
+- **Hi-mag pixels are not square**: 0.8233 (h) × 0.9139 (v) µm.  Scenes render
+  at 634×480 × 0.9139 µm; `hoop.yaml` y values are scaled by 1.110.
+- Library builds for hi-mag scenes need `--supersample 1 --pan-mm 0.2`.  Every
+  scene object multiplies the build time (180 ice flecks took 168 s/frame, 17 h).
+- **Handedness**: James's scenes use `camera_slow: [0,-1,0]` with
+  `beam_axis: [0,0,1]` (left-handed).  Jacob's template crop (`pose_crop`)
+  assumes right-handed, which mirrors vertical motion at phi ≠ 0.  `serve.py`
+  corrects for it, so always launch the server through `serve.py`.
+- Only scenes with a built library go in `served_scenes/`, because every file
+  there becomes a UI tab.  Start the server with `setsid nohup ... &` so it
+  survives the session.
