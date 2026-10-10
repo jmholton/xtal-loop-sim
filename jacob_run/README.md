@@ -9,12 +9,14 @@ wraps it at runtime.
 
 ![Real hi-mag loop beside the simulated icy loop](docs/icy_loop_real_vs_sim.jpg)
 
-*Left: [`real_loop_himag.jpg`](../real_loop_himag.jpg), the BL831 hi-mag photo the hoop was digitized
-from (no ice).  Middle and right: the same loop simulated as
-`james_himag_rod60_ice2`, at 0° and 80°.  It has a 60 × 20 µm crystal and a
-52 µm drop, plus 180 ice flecks from `add_ice.py` (120 on the nylon, 60 on the
-drop faces).  Rendered by Jacob's tracer, then blurred and camera-matched to
-the photo by `postprocess.py`.*
+*Left, "real (BL831 hi-mag)": [`real_loop_himag.jpg`](../real_loop_himag.jpg),
+the photo the hoop was digitized from.  It shows a clean loop with no ice and
+no crystal; the scale bar is 100 µm.  Middle, "simulated with ice: 0°": the
+same loop at the same pose and scale (`james_himag_rod60_ice2`).  The red bar
+is a 60 × 20 µm crystal, and the specks on the fiber and across the drop are
+ice flecks from `add_ice.py`.  Right, "simulated with ice: 80°": the same scene
+turned nearly edge-on.  The drop shows as a lens around the fiber, ringed with
+ice, and the crystal shows only as red fragments behind the ice.*
 
 The scripts live here in git.  The work directory
 `/home/jamesh/projects/loop_sim/jacob_run/` holds the generated output (scene
