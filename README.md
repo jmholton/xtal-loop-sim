@@ -4,6 +4,18 @@ Bright-field microscope simulator for protein crystals mounted in nylon cryo-loo
 Useful for beamline alignment algorithm development, AI training data generation,
 and dose estimation.
 
+![Real hi-mag loop beside the simulated icy loop](jacob_run/docs/icy_loop_real_vs_sim.jpg)
+
+*Left, "real (BL831 hi-mag)": [`real_loop_himag.jpg`](real_loop_himag.jpg), a
+real beamline photo of a clean loop, with no ice and no crystal.  The scale bar
+is 100 µm.  Middle, "simulated with ice: 0°": the same loop, digitized from that
+photo and rendered at the same pose and scale.  The red bar is a 60 × 20 µm
+crystal, and the specks on the fiber and across the drop are ice flecks.
+Right, "simulated with ice: 80°": the same scene turned nearly edge-on.  The
+drop shows as a lens around the fiber, ringed with ice, and the crystal shows
+only as red fragments behind the ice.  How it was made:
+[`jacob_run/`](jacob_run/README.md).*
+
 **Physics model:** Snell's law refraction at every material interface + Beer-Lambert
 absorption + Köhler condenser illumination (soft NA edges via multi-ray sampling).
 X-ray beam volumes are computed separately by grid ray-casting.
