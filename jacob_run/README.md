@@ -1,7 +1,7 @@
 # jacob_run — James's hi-mag scenes on Jacob's renderer and camera server
 
 Scripts for running James's digitized hi-mag loop (`../hoop.yaml`, from
-`real_loop_himag.jpg`) through Jacob Doughty's xtal-loop-sim
+[`real_loop_himag.jpg`](../real_loop_himag.jpg)) through Jacob Doughty's xtal-loop-sim
 (`/home/jadoughty/projects/loop_sim_MINE/xtal-loop-sim`, branch
 `performance-correctness-optimizations`).  Jacob's repo is read-only for
 jamesh and is never modified: everything here either generates input for it or
@@ -9,7 +9,7 @@ wraps it at runtime.
 
 ![Real hi-mag loop beside the simulated icy loop](docs/icy_loop_real_vs_sim.jpg)
 
-*Left: `real_loop_himag.jpg`, the BL831 hi-mag photo the hoop was digitized
+*Left: [`real_loop_himag.jpg`](../real_loop_himag.jpg), the BL831 hi-mag photo the hoop was digitized
 from (no ice).  Middle and right: the same loop simulated as
 `james_himag_rod60_ice2`, at 0° and 80°.  It has a 60 × 20 µm crystal and a
 52 µm drop, plus 180 ice flecks from `add_ice.py` (120 on the nylon, 60 on the
