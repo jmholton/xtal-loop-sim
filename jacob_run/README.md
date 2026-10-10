@@ -7,6 +7,15 @@ Scripts for running James's digitized hi-mag loop (`../hoop.yaml`, from
 jamesh and is never modified: everything here either generates input for it or
 wraps it at runtime.
 
+![Real hi-mag loop beside the simulated icy loop](docs/icy_loop_real_vs_sim.jpg)
+
+*Left: `real_loop_himag.jpg`, the BL831 hi-mag photo the hoop was digitized
+from (no ice).  Middle and right: the same loop simulated as
+`james_himag_rod60_ice2`, at 0° and 80°.  It has a 60 × 20 µm crystal and a
+52 µm drop, plus 180 ice flecks from `add_ice.py` (120 on the nylon, 60 on the
+drop faces).  Rendered by Jacob's tracer, then blurred and camera-matched to
+the photo by `postprocess.py`.*
+
 The scripts live here in git.  The work directory
 `/home/jamesh/projects/loop_sim/jacob_run/` holds the generated output (scene
 files, frame libraries, renders) and symlinks back to these scripts.  The paths
