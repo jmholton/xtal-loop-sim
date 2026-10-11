@@ -8,6 +8,7 @@
 # ...except reference photos and README figures
 !real_loop_himag.jpg
 !jacob_run/docs/*.jpg
+!jacob_run/docs/*.png
 
 # Generated scene files (built by the pipeline)
 scene.yaml

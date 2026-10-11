@@ -29,6 +29,7 @@ are absolute on purpose.
 | `add_ice.py` | Adds frost flecks (convex ice grains) to an existing scene, on the nylon (`--n`) and on the drop faces (`--n-drop`). |
 | `oneshot.slurm` | Renders one scene at 0°, 80° and 90° on voltron.  `sbatch --export=ALL,NAME=<stem> oneshot.slurm` |
 | `postprocess.py` | Applies a 2.3 µm blur and the camera fit to `real_loop_himag.jpg`, then writes the 2×2 panel (0° \| photo / 80° \| 90°). |
+| `beam_scan.py` | Computes the beam-weighted volume of crystal, nylon and drop (∝ scattered photons at equal flux) while Gaussian X-ray beams scan horizontally.  Runs with Jacob's venv; writes a CSV and a plot. |
 | `camera_fit.npy` | Camera fit to the photo: E, F, vignette amplitude = 0.996, 0.543, 0.288. |
 | `build_library.slurm` | Builds the 360-frame library the camera server plays back.  `sbatch --export=ALL,NAME=<stem> build_library.slurm` |
 | `serve.py` | Launches Jacob's camera server with two runtime fixes (see the docstring): the UI page from `static/`, and correct vertical motion for James's scenes. |

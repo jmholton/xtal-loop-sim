@@ -16,6 +16,19 @@ drop shows as a lens around the fiber, ringed with ice, and the crystal shows
 only as red fragments behind the ice.  How it was made:
 [`jacob_run/`](jacob_run/README.md).*
 
+![Beam-weighted volume of crystal, nylon and drop vs horizontal beam position](jacob_run/docs/beam_scan_14x105.png)
+
+*The same scene probed by a 14 × 105 µm FWHM (H × V) Gaussian X-ray beam,
+scanned horizontally across the crystal at φ = 0°.  Each curve is a material's
+volume weighted by the beam profile, per incident photon (µm³/µm², the mean
+path length through it), so at equal flux it is proportional to the photons
+that material scatters.  The crystal curve (blue) gives the Bragg signal: a flat
+top of 3.1 µm wherever the beam is within about ±20 µm of the crystal centre.
+The drop (green) and the nylon loop (orange) give the background: the drop is
+about 20× the crystal, and the nylon peaks where the tall beam runs along the
+far end of the hoop.  The y-axis is logarithmic.  Made with
+[`jacob_run/beam_scan.py`](jacob_run/beam_scan.py).*
+
 **Physics model:** Snell's law refraction at every material interface + Beer-Lambert
 absorption + Köhler condenser illumination (soft NA edges via multi-ray sampling).
 X-ray beam volumes are computed separately by grid ray-casting.
