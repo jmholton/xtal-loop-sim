@@ -27,7 +27,8 @@ on the crystal centre.
 Run with Jacob's venv:
   cd /home/jadoughty/projects/loop_sim_MINE/xtal-loop-sim && env PYTHONPATH=. \\
       .venv/bin/python /home/jamesh/projects/loop_sim/jacob_run/beam_scan.py SCENE \\
-      [--fwhm H V [H V ...]] [--phi 0 80] [--range 150] [--step 0.5] [--grid 1]
+      [--fwhm H V [H V ...]] [--aperture W H [W H ...]] [--phi 0 80] [--range 150]
+      [--step 0.5] [--grid 1]
 writes probe/<stem>_beam_scan.csv and probe/<stem>_beam_scan.png in the work dir
 """
 import argparse
@@ -45,13 +46,18 @@ ap = argparse.ArgumentParser()
 ap.add_argument("scene")
 ap.add_argument("--fwhm", nargs="+", type=float, default=[14.0, 105.0, 100.0, 50.0],
                 help="beam FWHM pairs, um: H V [H V ...]")
+ap.add_argument("--aperture", nargs="+", type=float, default=None,
+                help="rectangular collimator per beam, um: W H [W H ...]; 0 0 = none.  "
+                     "Sharp-edged, centred on the beam and moving with it")
 ap.add_argument("--phi", nargs="+", type=float, default=[0.0], help="spindle angles, deg")
 ap.add_argument("--range", type=float, default=150.0, help="scan +/- this far, um")
 ap.add_argument("--step", type=float, default=0.5, help="scan step, um")
 ap.add_argument("--grid", type=float, default=1.0, help="ray spacing, um")
 args = ap.parse_args()
 assert len(args.fwhm) % 2 == 0, "--fwhm takes H V pairs"
-BEAMS = [tuple(args.fwhm[i:i + 2]) for i in range(0, len(args.fwhm), 2)]
+apert = args.aperture or [0.0, 0.0] * (len(args.fwhm) // 2)
+assert len(apert) == len(args.fwhm), "--aperture takes one W H pair per beam"
+BEAMS = [tuple(args.fwhm[i:i + 2]) + tuple(apert[i:i + 2]) for i in range(0, len(args.fwhm), 2)]
 K = 2 * np.sqrt(2 * np.log(2))
 MATS = ["crystal", "nylon", "solvent"]
 LABEL = {"crystal": "crystal (Bragg)", "nylon": "nylon loop", "solvent": "drop (solvent)"}
@@ -81,6 +87,27 @@ gu = np.arange(-reach_u, reach_u + args.grid / 2, args.grid)
 gv = np.arange(-reach_v, reach_v + args.grid / 2, args.grid)
 GU, GV = np.meshgrid(gu, gv)                                # (nv, nu)
 
+
+
+def window(g, centre, width):
+    """Fraction of each grid cell inside a sharp aperture [centre +/- width/2]."""
+    if width <= 0:
+        return np.ones_like(g)
+    lo, hi = centre - width / 2, centre + width / 2
+    h = args.grid / 2
+    return np.clip(np.minimum(g + h, hi) - np.maximum(g - h, lo), 0, None) / args.grid
+
+
+def transmission(bh, bv, aw, ah):
+    """Fraction of the Gaussian beam's photons that pass the collimator."""
+    from math import erf, sqrt
+    t = 1.0
+    for f, a in ((bh, aw), (bv, ah)):
+        if a > 0:
+            t *= erf(a / 2 / (sqrt(2) * f / K))
+    return t
+
+
 rows = []
 for phi in args.phi:
     c, s = np.cos(np.radians(phi)), np.sin(np.radians(phi))
@@ -99,35 +126,47 @@ for phi in args.phi:
     print(f"phi {phi:g}: {len(lab):,} rays traced in {time.time() - t0:.0f} s; volumes in "
           f"window " + ", ".join(f"{m} {L.sum() * dA:,.0f}" for m, L in Lmap.items())
           + f" um^3 (crystal exact {vol_true:,.0f})")
-    for bh, bv in BEAMS:
+    for bh, bv, aw, ah in BEAMS:
         sx, sy = bh / K, bv / K
-        fy = np.exp(-gv ** 2 / (2 * sy ** 2)) / (np.sqrt(2 * np.pi) * sy)   # 1/um
+        # Profile normalised to unit integral AFTER the collimator: equal flux on the
+        # sample, so beams with and without a collimator compare directly.
+        fy = np.exp(-gv ** 2 / (2 * sy ** 2)) * window(gv, 0.0, ah)
+        fy /= fy.sum() * args.grid                                # 1/um
         for m in MATS:
             col = fy @ Lmap[m] * args.grid                  # (nu,) um per um of u
             for x in xs:
-                fx = np.exp(-(gu - x) ** 2 / (2 * sx ** 2)) / (np.sqrt(2 * np.pi) * sx)
-                rows.append((phi, bh, bv, MATS.index(m), x, float(fx @ col * args.grid)))
+                fx = np.exp(-(gu - x) ** 2 / (2 * sx ** 2)) * window(gu, x, aw)
+                fx /= fx.sum() * args.grid
+                rows.append((phi, bh, bv, aw, ah, MATS.index(m), x, float(fx @ col * args.grid)))
 
 rows = np.array(rows)
 out = os.path.join(WORK, "probe", f"{stem}_beam_scan")
-np.savetxt(out + ".csv", rows, delimiter=",", fmt=["%g", "%g", "%g", "%d", "%g", "%.5f"],
-           header="phi_deg,fwhm_h_um,fwhm_v_um,material(0=crystal 1=nylon 2=solvent),"
+np.savetxt(out + ".csv", rows, delimiter=",", fmt=["%g", "%g", "%g", "%g", "%g", "%d", "%g", "%.5f"],
+           header="phi_deg,fwhm_h_um,fwhm_v_um,aperture_w_um,aperture_h_um,"
+                  "material(0=crystal 1=nylon 2=solvent),"
                   "beam_x_um,beam_weighted_volume_per_photon_um  (sum f*L*dA, f = unit-integral "
                   "Gaussian; proportional to scattered photons at fixed flux)", comments="# ")
 
 
-def curve(phi, bh, bv, m):
-    r = rows[(rows[:, 0] == phi) & (rows[:, 1] == bh) & (rows[:, 2] == bv)
-             & (rows[:, 3] == MATS.index(m))]
-    return r[:, 4], r[:, 5]
+def curve(phi, b, m):
+    r = rows[(rows[:, 0] == phi) & np.all(rows[:, 1:5] == b, axis=1) & (rows[:, 5] == MATS.index(m))]
+    return r[:, 6], r[:, 7]
+
+
+def beam_label(b):
+    bh, bv, aw, ah = b
+    lab = f"{bh:g} × {bv:g} µm FWHM beam"
+    if aw > 0 or ah > 0:
+        lab += f", {aw:g} × {ah:g} µm collimator ({100 * transmission(*b):.0f}% passes)"
+    return lab
 
 
 for phi in args.phi:
-    for bh, bv in BEAMS:
-        x, y = curve(phi, bh, bv, "crystal")
+    for b in BEAMS:
+        x, y = curve(phi, b, "crystal")
         k = np.argmax(y)
-        msg = ", ".join(f"{m} {np.interp(x[k], *curve(phi, bh, bv, m)):.2f}" for m in MATS)
-        print(f"phi {phi:g}, beam {bh:g} x {bv:g}: at crystal peak (x = {x[k]:g} um) {msg} um")
+        msg = ", ".join(f"{m} {np.interp(x[k], *curve(phi, b, m)):.2f}" for m in MATS)
+        print(f"phi {phi:g}, {beam_label(b)}: at crystal peak (x = {x[k]:g} um) {msg} um")
 
 # ---- plot: one panel per beam, one fixed colour per material -----------------
 import matplotlib
@@ -142,17 +181,18 @@ plt.rcParams.update({"font.family": "DejaVu Sans", "font.size": 11})
 fig, axes = plt.subplots(1, len(BEAMS), figsize=(max(5.2 * len(BEAMS), 7.6), 5.0), dpi=150,
                          sharey=True, squeeze=False)
 fig.patch.set_facecolor(SURF)
-ymax = max(curve(phi, bh, bv, m)[1].max() for bh, bv in BEAMS for m in MATS)
-for ax, (bh, bv) in zip(axes[0], BEAMS):
+ymax = max(curve(phi, b, m)[1].max() for b in BEAMS for m in MATS)
+for ax, b in zip(axes[0], BEAMS):
     ax.set_facecolor(SURF)
     for m in MATS:
-        x, y = curve(phi, bh, bv, m)
+        x, y = curve(phi, b, m)
         ax.plot(x, y, color=COLOR[m], lw=2, solid_capstyle="round")
         k = np.argmax(y)
         ax.plot(x[k], y[k], "o", ms=7, color=COLOR[m], mec=SURF, mew=2, zorder=3)
         ax.annotate(f"{y[k]:.2f}", (x[k], y[k]), xytext=(0, 8), textcoords="offset points",
                     ha="center", color=INK2, fontsize=9.5)
-    ax.set_title(f"{bh:g} × {bv:g} µm FWHM beam (H × V)", color=INK, fontsize=11, loc="left")
+    ax.set_title(beam_label(b).replace(", ", ",\n", 1) + "  (H × V)", color=INK, fontsize=10.5,
+                 loc="left")
     ax.set_xlim(xs[0], xs[-1])
     # Log: the drop is ~20x the crystal; a linear axis flattens the crystal curve.
     ax.set_yscale("log")
